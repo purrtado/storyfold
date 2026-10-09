@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+:root {
+  color-scheme: light dark;
+  --background: light-dark(oklch(98.5% 0.002 none), oklch(16% 0.008 264));
+  --foreground: light-dark(oklch(20% 0.01 264), oklch(93% 0.005 264));
+  --surface: light-dark(oklch(96.5% 0.004 264), oklch(19.5% 0.01 264));
+  --raised: light-dark(oklch(100% 0 0), oklch(23% 0.012 264));
+  --muted: light-dark(oklch(48% 0.015 264), oklch(68% 0.012 264));
+  --border: light-dark(oklch(90% 0.006 264), oklch(29% 0.012 264));
+  --accent: light-dark(oklch(52% 0.17 264), oklch(66% 0.16 264));
+  --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+  --accent-fg: light-dark(oklch(98.5% 0.002 none), oklch(16% 0.008 264));
+}
+
+[data-theme="light"] { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+:root {
+  interpolate-size: allow-keywords;
+  scrollbar-gutter: stable;
+  text-wrap: pretty;
+  overflow-wrap: break-word;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+}
+
+h1, h2, h3, h4 { text-wrap: balance; }
+
+img, svg, video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+input, textarea, select { font-size: max(16px, 1rem); }
+
+textarea { text-wrap: stable; }
+
+button, a, [role="button"] { touch-action: manipulation; }
+
+button, [role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:focus-visible {
+  outline: max(2px, 0.08em) solid var(--accent);
+  outline-offset: 0.15em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pressable { transition: transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1); }
+  .pressable:active { transform: scale(0.97); }
+}
+
+/* Sidebar / drawer transition */
+@media (prefers-reduced-motion: no-preference) {
+  .drawer { transition: translate 0.25s cubic-bezier(0.2, 0.7, 0.3, 1); }
+  .backdrop { transition: opacity 0.25s ease-out; }
+}
+
+/* Chat scroll area sits between header and composer */
+.chat-scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* Composer textarea that grows with its content */
+.composer {
+  field-sizing: content;
+  min-block-size: 1.5rem;
+  max-block-size: 12lh;
+  resize: none;
+}
+
+/* Markdown replies */
+.md > * { margin-block: 0.75em; }
+.md > *:first-child { margin-block-start: 0; }
+.md > *:last-child { margin-block-end: 0; }
+.md h1, .md h2, .md h3 { line-height: 1.3; font-weight: 650; }
+.md h1 { font-size: 1.25rem; }
+.md h2 { font-size: 1.125rem; }
+.md h3 { font-size: 1rem; }
+.md ul, .md ol { padding-inline-start: 1.5em; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li + li { margin-block-start: 0.25em; }
+.md blockquote {
+  border-inline-start: 3px solid var(--accent);
+  padding-inline-start: 0.9em;
+  color: var(--muted);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.1em 0.35em;
+}
+.md pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9375rem;
+}
+.md th, .md td {
+  border: 1px solid var(--border);
+  padding: 0.375em 0.75em;
+  text-align: start;
+}
+.md th { background: var(--surface); font-weight: 600; }
+.md a { color: var(--accent); text-underline-offset: 0.2em; }
+.md hr { border: none; border-block-start: 1px solid var(--border); }
