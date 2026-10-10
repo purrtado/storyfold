@@ -41,7 +41,7 @@ bun run typecheck
 
 The composer, transcript scroller, and tooltips are adapted from [beUI](https://beui.dev) registry sources (installed by copying and trimming the component code, not via the shadcn CLI):
 
-- [Prompt Input](https://beui.dev/components/agents/prompt-input) — composer form, keyboard submission with IME safety, and send-button motion. Model/attachment/stop UI is omitted because this app has no backend; auto-grow uses the repo's `field-sizing` CSS instead of the registry's measurement mirror, so browsers without `field-sizing` show a fixed-height scrolling composer.
+- [Prompt Input](https://beui.dev/components/agents/prompt-input) — composer form, keyboard submission with IME safety, and send-button motion. Model/attachment/stop UI is omitted because this app has no backend; auto-grow uses the repo's `field-sizing` CSS instead of the registry's measurement mirror, so browsers without `field-sizing` show a fixed-height scrolling composer. Focus uses the existing rounded composer border; forced-colors mode retains a visible textarea outline.
 - [Message Scroller](https://beui.dev/components/agents/message-scroller) — reader-aware transcript viewport. Deviations: viewport resizes (composer growth, mobile drawer) re-align the live edge instantly while you are following, wheel, touch, and upward keyboard scrolling interrupt an in-flight follow, and the optional message navigation rail is omitted.
 - [Tooltip](https://beui.dev/components/motion/tooltip) — hover/focus tooltips on the sidebar rail and theme control.
 

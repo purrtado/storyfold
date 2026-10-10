@@ -80,6 +80,11 @@ button, [role="button"] {
   outline: max(2px, 0.08em) solid var(--accent);
   outline-offset: 0.15em;
 }
+.composer:focus-visible { outline-color: transparent; }
+
+@media (forced-colors: active) {
+  .composer:focus-visible { outline-color: Highlight; }
+}
 
 @media (prefers-reduced-motion: no-preference) {
   .pressable { transition: transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1); }
