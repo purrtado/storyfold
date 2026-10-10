@@ -79,6 +79,7 @@ export default function App() {
           onNew={handleNew}
           theme={theme}
           onToggleTheme={toggle}
+          showTheme={false}
         />
       </Sheet>
 

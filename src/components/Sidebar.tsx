@@ -23,6 +23,7 @@ export function Sidebar(props: {
   onNew: () => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  showTheme?: boolean;
   onCollapse?: () => void;
 }) {
   const groups = ["Today", "Previous 7 days", "Older"].map((label) => ({
@@ -43,7 +44,9 @@ export function Sidebar(props: {
           <FoldIcon className="size-5 text-accent" />
           <span className="text-foreground text-base">Storyfold</span>
         </a>
-        <ThemeButton theme={props.theme} onClick={props.onToggleTheme} />
+        {(props.showTheme ?? true) && (
+          <ThemeButton theme={props.theme} onClick={props.onToggleTheme} />
+        )}
         {props.onCollapse && (
           <button
             type="button"
