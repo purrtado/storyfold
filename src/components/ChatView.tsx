@@ -12,7 +12,7 @@ const starters = [
       "Explore an idea with me: what would change if people could revisit a single day of their past?",
   },
   {
-    label: "Make something clear",
+    label: "Clarify an idea",
     prompt:
       "Help me make something clear — I'll share rough notes and you ask questions until the main point stands out.",
   },
