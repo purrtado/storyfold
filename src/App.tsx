@@ -97,28 +97,30 @@ export default function App() {
       </Sheet>
 
       <aside
-        className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
+        className={`sidebar-shell hidden flex-none overflow-clip border-e border-border bg-surface md:block ${
           collapsed ? "w-14" : "w-60"
         }`}
       >
-        {isSettings ? (
-          <SettingsSidebar
-            variant={collapsed ? "rail" : "full"}
-            onCollapse={() => setCollapsed((c) => !c)}
-          />
-        ) : (
-          <Sidebar
-            variant={collapsed ? "rail" : "full"}
-            conversations={conversations}
-            activeId={activeId}
-            onSelect={(id) => {
-              setActiveId(id);
-              setDraft("");
-            }}
-            onNew={handleNew}
-            onCollapse={() => setCollapsed((c) => !c)}
-          />
-        )}
+        <div className={`h-full ${collapsed ? "" : "w-[calc(15rem_-_1px)]"}`}>
+          {isSettings ? (
+            <SettingsSidebar
+              variant={collapsed ? "rail" : "full"}
+              onCollapse={() => setCollapsed((c) => !c)}
+            />
+          ) : (
+            <Sidebar
+              variant={collapsed ? "rail" : "full"}
+              conversations={conversations}
+              activeId={activeId}
+              onSelect={(id) => {
+                setActiveId(id);
+                setDraft("");
+              }}
+              onNew={handleNew}
+              onCollapse={() => setCollapsed((c) => !c)}
+            />
+          )}
+        </div>
       </aside>
 
       <Routes>
