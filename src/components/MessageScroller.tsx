@@ -81,6 +81,12 @@ export function MessageScroller({
 
   const leaveLiveEdge = useCallback(() => {
     programmaticScrollRef.current = false;
+    const viewport = viewportRef.current;
+    // Stop an in-flight programmatic follow at the current position so the
+    // reader's wheel/touch/keys win instead of the animation dragging them.
+    if (viewport && typeof viewport.scrollTo === "function") {
+      viewport.scrollTo({ top: viewport.scrollTop, behavior: "instant" });
+    }
   }, []);
 
   useLayoutEffect(() => {
@@ -95,13 +101,20 @@ export function MessageScroller({
 
   useEffect(() => {
     const content = contentRef.current;
-    if (!content || typeof ResizeObserver === "undefined") return;
+    const viewport = viewportRef.current;
+    if (!content || !viewport || typeof ResizeObserver === "undefined") return;
 
-    const observer = new ResizeObserver(() => {
+    const observer = new ResizeObserver((entries) => {
       if (!followOutput || !followingRef.current) return;
-      scrollToEnd(reduce || !smooth ? "auto" : "smooth");
+      // Viewport geometry changes (composer growth, drawer churn) re-align
+      // instantly; content growth keeps the registry's smooth follow.
+      const viewportResized = entries.some((entry) => entry.target === viewport);
+      scrollToEnd(
+        viewportResized || reduce || !smooth ? "auto" : "smooth",
+      );
     });
     observer.observe(content);
+    observer.observe(viewport);
 
     return () => observer.disconnect();
   }, [followOutput, reduce, scrollToEnd, smooth]);

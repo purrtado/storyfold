@@ -163,8 +163,7 @@ button, [role="button"] {
   scrollbar-gutter: stable;
 }
 
-/* Composer textarea that grows with its content; browsers without
-   field-sizing show a fixed 2-row box that scrolls past 8 rows. */
+/* Composer textarea grows with its content */
 .composer {
   field-sizing: content;
   min-block-size: 3rem;
