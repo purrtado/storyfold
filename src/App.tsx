@@ -82,8 +82,7 @@ export default function App() {
         />
       </Sheet>
 
-      <aside
-        className="hidden border-e border-border bg-surface md:block"
+      <aside className="hidden w-60 flex-none border-e border-border bg-surface md:block"
         style={collapsed ? { display: "none" } : undefined}
       >
         <Sidebar
@@ -121,5 +120,6 @@ export default function App() {
     setConversations((cs) => [fresh, ...cs]);
     setActiveId(fresh.id);
     setDraft("");
+    setMobileOpen(false);
   }
 }
