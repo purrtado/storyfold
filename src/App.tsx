@@ -27,8 +27,10 @@ export default function App() {
   const [activeId, setActiveId] = useState(boot.activeId);
   const [draft, setDraft] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-  const { theme, toggle } = useTheme();
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem("storyfold-sidebar-collapsed") === "1",
+  );
+  const { preference, setPreference } = useTheme();
 
   const active = useMemo(
     () => conversations.find((c) => c.id === activeId),
@@ -36,6 +38,9 @@ export default function App() {
   );
 
   useEffect(() => saveConversations(conversations), [conversations]);
+  useEffect(() => {
+    localStorage.setItem("storyfold-sidebar-collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
 
   const ensureActive = () => {
     if (active) return active;
@@ -77,16 +82,18 @@ export default function App() {
             setMobileOpen(false);
           }}
           onNew={handleNew}
-          theme={theme}
-          onToggleTheme={toggle}
-          showTheme={false}
+          preference={preference}
+          onPreferenceChange={setPreference}
         />
       </Sheet>
 
-      <aside className="hidden w-60 flex-none border-e border-border bg-surface md:block"
-        style={collapsed ? { display: "none" } : undefined}
+      <aside
+        className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
+          collapsed ? "w-14" : "w-60"
+        }`}
       >
         <Sidebar
+          variant={collapsed ? "rail" : "full"}
           conversations={conversations}
           activeId={activeId}
           onSelect={(id) => {
@@ -94,9 +101,9 @@ export default function App() {
             setDraft("");
           }}
           onNew={handleNew}
-          theme={theme}
-          onToggleTheme={toggle}
-          onCollapse={() => setCollapsed(true)}
+          preference={preference}
+          onPreferenceChange={setPreference}
+          onCollapse={() => setCollapsed((c) => !c)}
         />
       </aside>
 
@@ -108,10 +115,6 @@ export default function App() {
         onStarter={handleStarter}
         onOpenSidebar={() => setMobileOpen(true)}
         onNew={handleNew}
-        collapsed={collapsed}
-        onExpandSidebar={() => setCollapsed(false)}
-        theme={theme}
-        onToggleTheme={toggle}
       />
     </div>
   );

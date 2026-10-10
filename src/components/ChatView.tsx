@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { Conversation } from "../lib/types";
 import { Markdown } from "./Markdown";
 import { MenuIcon, PlusIcon } from "./icons";
-import { ThemeButton } from "./ThemeToggle";
 import { Composer } from "./Composer";
 
 const starters = [
@@ -95,25 +94,11 @@ export function ChatView(props: {
   onStarter: (text: string) => void;
   onOpenSidebar: () => void;
   onNew: () => void;
-  collapsed: boolean;
-  onExpandSidebar: () => void;
-  theme: "light" | "dark";
-  onToggleTheme: () => void;
 }) {
   const empty = props.conversation.messages.length === 0;
   return (
     <div className="flex min-inline-size-0 flex-1 flex-col">
       <header className="flex flex-none items-center gap-1 border-b border-border px-3 py-2">
-        {props.collapsed && (
-          <button
-            type="button"
-            className="pressable hidden size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:inline-flex"
-            onClick={props.onExpandSidebar}
-            aria-label="Expand sidebar"
-          >
-            <MenuIcon />
-          </button>
-        )}
         <button
           type="button"
           className="pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
@@ -133,7 +118,6 @@ export function ChatView(props: {
         >
           <PlusIcon />
         </button>
-        <ThemeButton theme={props.theme} onClick={props.onToggleTheme} />
       </header>
 
       {empty ? (

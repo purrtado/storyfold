@@ -21,11 +21,56 @@ export function Sidebar(props: {
   activeId: string;
   onSelect: (id: string) => void;
   onNew: () => void;
-  theme: "light" | "dark";
-  onToggleTheme: () => void;
-  showTheme?: boolean;
+  preference: "system" | "light" | "dark";
+  onPreferenceChange: (preference: "system" | "light" | "dark") => void;
   onCollapse?: () => void;
+  variant?: "full" | "rail";
 }) {
+  const rail = props.variant === "rail";
+
+  if (rail) {
+    return (
+      <div className="flex h-full flex-col items-center gap-1 py-3">
+        <a
+          href="/"
+          className="rail-btn"
+          aria-label="Storyfold home"
+          data-tip="Storyfold"
+        >
+          <FoldIcon className="size-5 text-accent" />
+        </a>
+
+        <button
+          type="button"
+          className="rail-btn"
+          onClick={props.onCollapse}
+          aria-label="Expand sidebar"
+          data-tip="Expand sidebar"
+        >
+          <PanelIcon />
+        </button>
+
+        <button
+          type="button"
+          className="rail-btn rail-btn--primary"
+          onClick={props.onNew}
+          aria-label="New conversation"
+          data-tip="New conversation"
+        >
+          <PlusIcon />
+        </button>
+
+        <div className="[margin-block-start:auto]">
+          <ThemeButton
+            preference={props.preference}
+            onPreferenceChange={props.onPreferenceChange}
+            compact
+          />
+        </div>
+      </div>
+    );
+  }
+
   const groups = ["Today", "Previous 7 days", "Older"].map((label) => ({
     label,
     items: props.conversations.filter(
@@ -44,9 +89,6 @@ export function Sidebar(props: {
           <FoldIcon className="size-5 text-accent" />
           <span className="text-foreground text-base">Storyfold</span>
         </a>
-        {(props.showTheme ?? true) && (
-          <ThemeButton theme={props.theme} onClick={props.onToggleTheme} />
-        )}
         {props.onCollapse && (
           <button
             type="button"
@@ -108,9 +150,15 @@ export function Sidebar(props: {
         )}
       </nav>
 
-      <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
-        No AI connection yet — conversations stay on this device.
-      </p>
+      <div className="flex flex-col gap-2">
+        <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
+          No AI connection yet — conversations stay on this device.
+        </p>
+        <ThemeButton
+          preference={props.preference}
+          onPreferenceChange={props.onPreferenceChange}
+        />
+      </div>
     </div>
   );
 }

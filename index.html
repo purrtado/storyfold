@@ -6,11 +6,14 @@
     <meta name="color-scheme" content="light dark" />
     <title>Storyfold</title>
     <script>
-      // Apply the stored theme before first paint to avoid a flash.
-      const stored = localStorage.getItem("storyfold-theme");
-      if (stored === "light" || stored === "dark") {
-        document.documentElement.dataset.theme = stored;
-      }
+      // Resolve the saved preference before first paint to avoid a flash.
+      const preference = localStorage.getItem("storyfold-theme") ?? "system";
+      const theme = preference === "light" || preference === "dark"
+        ? preference
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+      document.documentElement.dataset.theme = theme;
     </script>
   </head>
   <body>
