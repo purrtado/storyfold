@@ -39,7 +39,7 @@ function Welcome(props: { onStarter: (text: string) => void }) {
           <button
             key={starter.label}
             type="button"
-            className="pressable w-full cursor-pointer rounded-xl border border-border bg-raised px-4 py-3 text-start text-sm hover:border-accent"
+            className="pressable w-full cursor-pointer rounded-xl border border-border bg-raised px-4 py-3 text-center text-sm hover:border-accent"
             onClick={() => props.onStarter(starter.prompt)}
           >
             <span className="font-medium">{starter.label}</span>
