@@ -32,4 +32,4 @@ bun run typecheck
 - Conversations and submitted messages are saved in browser localStorage on this device; nothing is sent to a server, and no AI replies are generated.
 - Switch between light and dark themes (sidebar or header toggle); the selected theme is saved in browser localStorage.
 - Collapse the sidebar on desktop; on mobile it becomes a slide-in drawer.
-- Press Enter to send a message or Shift+Enter for a newline.
+- Press Enter to send a message or Shift+Enter for a newline. The composer grows with multiline text; the send button stays aligned to its bottom edge.

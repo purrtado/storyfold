@@ -33,7 +33,7 @@ export function Composer(props: {
         <textarea
           id="composer"
           ref={ref}
-          className="composer flex-1 rounded-xl border border-border bg-raised px-3.5 py-2.5 text-[15px] outline-offset-0 focus-visible:border-accent"
+          className="composer flex-1 rounded-xl border border-border bg-raised px-3.5 py-[11px] text-base leading-6 outline-offset-0 focus-visible:border-accent"
           placeholder="Write a message…"
           rows={1}
           value={props.draft}
@@ -47,7 +47,7 @@ export function Composer(props: {
         />
         <button
           type="submit"
-          className="pressable inline-flex size-10 cursor-pointer items-center justify-center rounded-xl bg-accent text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="pressable inline-flex size-12 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-accent text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
           disabled={props.draft.trim().length === 0}
           aria-label="Send message"
         >
