@@ -1,3 +1,6 @@
+import { useId } from "react";
+import { motion, useReducedMotion } from "motion/react";
+import { SPRING_LAYOUT } from "../lib/ease";
 import { Link, NavLink } from "react-router-dom";
 import { ArrowLeft, Monitor, Moon, Settings, Sun } from "lucide-react";
 import type { ThemePreference } from "../lib/useTheme";
@@ -14,6 +17,9 @@ export function SettingsPage(props: {
   preference: ThemePreference;
   onPreferenceChange: (preference: ThemePreference) => void;
 }) {
+  const indicatorId = useId();
+  const reducedMotion = useReducedMotion();
+
   return (
     <div className="settings">
       <header className="settings-side">
@@ -52,9 +58,21 @@ export function SettingsPage(props: {
               </p>
               <p className="theme-desc">Choose how Storyfold looks.</p>
             </div>
-            <div className="theme-segments">
+            <motion.div layoutRoot className="theme-segments">
               {themeOptions.map(({ value, label, Icon }) => (
-                <label key={value} className="theme-segment pressable">
+                <label key={value} className="theme-segment">
+                  {props.preference === value &&
+                    (reducedMotion ? (
+                      <span className="theme-indicator" aria-hidden="true" />
+                    ) : (
+                      <motion.span
+                        className="theme-indicator"
+                        aria-hidden="true"
+                        layoutId={indicatorId}
+                        transition={SPRING_LAYOUT}
+                        style={{ borderRadius: 9999 }}
+                      />
+                    ))}
                   <input
                     className="theme-input"
                     type="radio"
@@ -67,7 +85,7 @@ export function SettingsPage(props: {
                   <span>{label}</span>
                 </label>
               ))}
-            </div>
+            </motion.div>
           </div>
         </fieldset>
       </main>

@@ -126,6 +126,7 @@
 
 .theme-segments {
   display: flex;
+  isolation: isolate;
   flex: none;
   max-inline-size: 100%;
   gap: 0.25rem;
@@ -153,9 +154,24 @@
 }
 
 .theme-segment:has(.theme-input:checked) {
-  background: var(--raised);
   color: var(--foreground);
+}
+
+.theme-indicator {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--raised);
   box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 8%, transparent);
+  pointer-events: none;
+}
+
+.theme-seg-icon,
+.theme-segment > span:not(.theme-indicator) {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .theme-segment:active {
@@ -165,6 +181,7 @@
 /* Invisible native radio stretched over the pill: keyboard operable, global focus ring. */
 .theme-input {
   position: absolute;
+  z-index: 2;
   inset: 0;
   inline-size: 100%;
   block-size: 100%;
