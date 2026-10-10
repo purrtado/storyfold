@@ -111,6 +111,33 @@ button, [role="button"] {
   cursor: pointer;
 }
 
+/* Collapsed rail expand slot: logo rests, toggle glyph reveals on hover or focus */
+.rail-expand {
+  display: grid;
+}
+
+.rail-expand-logo,
+.rail-expand-glyph {
+  grid-area: 1 / 1;
+  place-self: center;
+}
+
+.rail-expand-glyph { opacity: 0; }
+
+.rail-expand:focus-visible .rail-expand-glyph { opacity: 1; }
+.rail-expand:focus-visible .rail-expand-logo { opacity: 0; }
+
+@media (hover: hover) and (pointer: fine) {
+  .rail-expand:hover .rail-expand-glyph { opacity: 1; }
+  .rail-expand:hover .rail-expand-logo { opacity: 0; }
+}
+
+/* No hover to reveal the glyph: show the toggle statically so one tap expands. */
+@media (pointer: coarse), (hover: none) {
+  .rail-expand-glyph { opacity: 1; }
+  .rail-expand-logo { opacity: 0; }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .rail-btn:not(.rail-btn--primary):hover {
     background: var(--raised);

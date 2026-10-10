@@ -32,20 +32,16 @@ export function Sidebar(props: {
   if (rail) {
     return (
       <div className="flex h-full [inline-size:3.5rem] flex-col items-center gap-1 py-3">
-        <Tooltip content="Storyfold" side="right">
-          <a href="/" className="rail-btn" aria-label="Storyfold home">
-            <FoldIcon className="size-5 text-accent" />
-          </a>
-        </Tooltip>
-
         <Tooltip content="Expand sidebar" side="right">
           <button
             type="button"
-            className="rail-btn"
+            className="rail-btn rail-expand"
             onClick={props.onCollapse}
             aria-label="Expand sidebar"
+            aria-expanded={false}
           >
-            <PanelIcon />
+            <FoldIcon className="rail-expand-logo size-5 text-accent" aria-hidden="true" />
+            <PanelIcon className="rail-expand-glyph" aria-hidden="true" />
           </button>
         </Tooltip>
 
