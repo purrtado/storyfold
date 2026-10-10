@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import type { Conversation } from "../lib/types";
 import { Markdown } from "./Markdown";
 import { MenuIcon, PlusIcon } from "./icons";
 import { Composer } from "./Composer";
+import { MessageScroller } from "./MessageScroller";
 
 const starters = [
   {
@@ -68,21 +69,24 @@ function MessageRow(props: { content: string; role: "user" | "assistant" }) {
   );
 }
 
-function ConversationView(props: { conversation: Conversation }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [props.conversation.messages.length, props.conversation.id]);
-
+function ConversationView(props: {
+  conversation: Conversation;
+  followOutput: boolean;
+  onFollowChange: (following: boolean) => void;
+}) {
   return (
-    <div ref={scrollRef} className="chat-scroll">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6">
-        {props.conversation.messages.map((m) => (
-          <MessageRow key={m.id} role={m.role} content={m.content} />
-        ))}
-      </div>
-    </div>
+    <MessageScroller
+      className="flex-1"
+      followOutput={props.followOutput}
+      followThreshold={56}
+      onFollowChange={props.onFollowChange}
+      contentClassName="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6"
+      label="Conversation"
+    >
+      {props.conversation.messages.map((m) => (
+        <MessageRow key={m.id} role={m.role} content={m.content} />
+      ))}
+    </MessageScroller>
   );
 }
 
@@ -95,13 +99,25 @@ export function ChatView(props: {
   onOpenSidebar: () => void;
   onNew: () => void;
 }) {
+  const [following, setFollowing] = useState(true);
+
+  // A fresh scroller mounts per conversation; re-arm the live edge so the
+  // switch lands on the newest message instead of the stale scroll position.
+  useEffect(() => {
+    setFollowing(true);
+  }, [props.conversation.id]);
+
   const empty = props.conversation.messages.length === 0;
+  const handleSend = (value: string) => {
+    setFollowing(true);
+    props.onSend(value);
+  };
   return (
     <div className="flex min-inline-size-0 flex-1 flex-col">
       <header className="flex flex-none items-center gap-1 border-b border-border px-3 py-2">
         <button
           type="button"
-          className="pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
+          className="hit-44 pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
           onClick={props.onOpenSidebar}
           aria-label="Open sidebar"
         >
@@ -112,7 +128,7 @@ export function ChatView(props: {
         </h1>
         <button
           type="button"
-          className="pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
+          className="hit-44 pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
           onClick={props.onNew}
           aria-label="New conversation"
         >
@@ -123,13 +139,18 @@ export function ChatView(props: {
       {empty ? (
         <Welcome onStarter={props.onStarter} />
       ) : (
-        <ConversationView conversation={props.conversation} />
+        <ConversationView
+          key={props.conversation.id}
+          conversation={props.conversation}
+          followOutput={following}
+          onFollowChange={setFollowing}
+        />
       )}
 
       <Composer
-        draft={props.draft}
-        onDraftChange={props.onDraftChange}
-        onSend={props.onSend}
+        value={props.draft}
+        onValueChange={props.onDraftChange}
+        onSubmit={handleSend}
       />
     </div>
   );

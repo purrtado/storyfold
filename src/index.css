@@ -93,7 +93,7 @@ button, [role="button"] {
   .sidebar-shell { transition: inline-size 0.2s cubic-bezier(0.2, 0.7, 0.3, 1); }
 }
 
-/* Collapsed desktop rail: icon buttons with tooltips */
+/* Collapsed desktop rail: icon buttons */
 .rail-btn {
   position: relative;
   display: inline-flex;
@@ -131,38 +131,30 @@ button, [role="button"] {
 
 .rail-btn--primary:active { background: color-mix(in oklch, var(--accent) 75%, oklch(0 0 none)); }
 
-.rail-btn::after {
-  content: attr(data-tip);
-  position: absolute;
-  inset-inline-start: calc(100% + 0.5rem);
-  inset-block-start: 50%;
-  translate: 0 -50%;
-  z-index: 10;
-  white-space: nowrap;
-  border-radius: 0.375rem;
-  background: var(--raised);
-  border: 1px solid var(--border);
-  color: var(--foreground);
-  font-size: 0.75rem;
-  line-height: 1.4;
-  padding: 0.2rem 0.5rem;
-  pointer-events: none;
-  opacity: 0;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .rail-btn:hover::after { opacity: 1; }
-}
-
-.rail-btn:focus-visible::after { opacity: 1; }
-
 @media (prefers-reduced-motion: no-preference) {
   .rail-btn { transition: transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1); }
   .rail-btn:active { transform: scale(0.97); }
-  .rail-btn::after { transition: opacity 150ms ease-out; }
 }
 
-/* Chat scroll area sits between header and composer */
+/* Hide a scrollbar while keeping the element scrollable (composer auto-grow) */
+.scrollbar-hide {
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Grow small icon buttons to a 44px touch target */
+.hit-44 {
+  position: relative;
+}
+.hit-44::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, (100% - 44px) / 2);
+}
+
+/* Sidebar conversation list scrolls between header and footer */
 .chat-scroll {
   flex: 1;
   min-block-size: 0;
@@ -171,12 +163,12 @@ button, [role="button"] {
   scrollbar-gutter: stable;
 }
 
-/* Composer textarea that grows with its content */
+/* Composer textarea that grows with its content; browsers without
+   field-sizing show a fixed 2-row box that scrolls past 8 rows. */
 .composer {
   field-sizing: content;
-  min-block-size: 1.5rem;
-  max-block-size: 12lh;
-  resize: none;
+  min-block-size: 3rem;
+  max-block-size: 12rem;
 }
 
 /* Markdown replies */

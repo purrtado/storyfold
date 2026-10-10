@@ -1,58 +1,77 @@
-import { useEffect, useRef } from "react";
-import { SendIcon } from "./icons";
+// Adapted from beUI Prompt Input — https://beui.dev/components/agents/prompt-input
+// Model select, prompt actions, and loading/stop states omitted; this app has no backend.
+// Auto-grow uses the repo's field-sizing CSS instead of the registry's measurement mirror.
+import { ArrowUp } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { type FormEvent, type KeyboardEvent, useEffect, useRef } from "react";
+import { SPRING_PRESS } from "../lib/ease";
 
-export function Composer(props: {
-  draft: string;
-  onDraftChange: (value: string) => void;
-  onSend: (value: string) => void;
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null);
+export interface ComposerProps {
+  value: string;
+  onValueChange: (value: string) => void;
+  onSubmit: (value: string) => void;
+}
+
+export function Composer({ value, onValueChange, onSubmit }: ComposerProps) {
+  const reduce = useReducedMotion() ?? false;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const canSubmit = Boolean(value.trim());
 
   useEffect(() => {
-    ref.current?.focus();
+    textareaRef.current?.focus();
   }, []);
 
-  const send = () => {
-    const value = props.draft.trim();
-    if (value.length === 0) return;
-    props.onSend(value);
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
+    const prompt = value.trim();
+    if (!prompt) return;
+
+    onSubmit(prompt);
+    textareaRef.current?.focus({ preventScroll: true });
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    submit();
   };
 
   return (
-    <div className="border-t border-border bg-background">
+    <div className="flex-none border-t border-border bg-background px-4 pbs-3 pbe-[calc(1rem+env(safe-area-inset-bottom,0px))]">
       <form
-        className="mx-auto flex w-full max-w-3xl items-end gap-2 px-4 pbs-3 pbe-[calc(1rem+env(safe-area-inset-bottom,0px))]"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
+        onSubmit={submit}
+        className="relative mx-auto w-full max-w-3xl rounded-2xl border border-border/80 bg-raised p-2 transition-colors focus-within:border-foreground/25"
       >
-        <label className="sr-only" htmlFor="composer">
-          Message
-        </label>
         <textarea
-          id="composer"
-          ref={ref}
-          className="composer flex-1 rounded-xl border border-border bg-raised px-3.5 py-[11px] text-base leading-6 outline-offset-0 focus-visible:border-accent"
+          ref={textareaRef}
+          value={value}
           placeholder="Write a message…"
-          rows={1}
-          value={props.draft}
-          onChange={(e) => props.onDraftChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send();
-            }
-          }}
+          aria-label="Message"
+          rows={2}
+          onChange={(event) => onValueChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          className="composer scrollbar-hide block w-full resize-none overflow-y-auto bg-transparent px-2 [padding-block-start:0.375rem] text-base leading-6 text-foreground outline-hidden placeholder:text-muted/55"
         />
-        <button
-          type="submit"
-          className="pressable inline-flex size-12 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-accent text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={props.draft.trim().length === 0}
-          aria-label="Send message"
-        >
-          <SendIcon className="size-4" />
-        </button>
+
+        <div className="flex min-h-8 items-center gap-1 [margin-block-start:0.25rem]">
+          <motion.button
+            type="submit"
+            disabled={!canSubmit}
+            aria-label="Send message"
+            whileTap={reduce ? undefined : { scale: 0.97 }}
+            transition={SPRING_PRESS}
+            className="hit-44 ms-auto inline-flex size-9 cursor-pointer select-none items-center justify-center rounded-full bg-accent text-accent-fg transition-colors [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <ArrowUp className="size-4" />
+          </motion.button>
+        </div>
       </form>
     </div>
   );

@@ -35,3 +35,14 @@ bun run typecheck
 - Theme defaults to System and follows browser/OS light/dark changes live; explicitly picking Light or Dark overrides System until you switch back (saved in browser localStorage).
 - Collapse the sidebar on desktop to a narrow icon rail (preference saved); on mobile it remains a slide-in drawer.
 - Press Enter to send a message or Shift+Enter for a newline. The composer grows with multiline text; the send button stays aligned to its bottom edge.
+- The transcript keeps new messages in view while you are near the bottom and hands scrolling back to you the moment you scroll up to read.
+
+## UI components
+
+The composer, transcript scroller, and tooltips are adapted from [beUI](https://beui.dev) registry sources (installed by copying and trimming the component code, not via the shadcn CLI):
+
+- [Prompt Input](https://beui.dev/components/agents/prompt-input) — composer form, keyboard submission with IME safety, and send-button motion. Model/attachment/stop UI is omitted because this app has no backend; auto-grow uses the repo's `field-sizing` CSS instead of the registry's measurement mirror.
+- [Message Scroller](https://beui.dev/components/agents/message-scroller) — reader-aware transcript viewport. The optional message navigation rail is omitted.
+- [Tooltip](https://beui.dev/components/tooltip) — hover/focus tooltips on the sidebar rail and theme control.
+
+Dependencies added for these components: `motion` (reduced-motion-aware animation), `@floating-ui/dom` (tooltip positioning), `lucide-react` (send icon), and `clsx` + `tailwind-merge` (the `cn` class helper).

@@ -1,6 +1,7 @@
 import type { Conversation } from "../lib/types";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
 import { ThemeButton } from "./ThemeToggle";
+import { Tooltip } from "./Tooltip";
 
 function conversationGroup(createdAt: number): string {
   const days = (Date.now() - createdAt) / 86_400_000;
@@ -30,35 +31,34 @@ export function Sidebar(props: {
 
   if (rail) {
     return (
-      <div className="flex h-full flex-col items-center gap-1 py-3">
-        <a
-          href="/"
-          className="rail-btn"
-          aria-label="Storyfold home"
-          data-tip="Storyfold"
-        >
-          <FoldIcon className="size-5 text-accent" />
-        </a>
+      <div className="flex h-full [inline-size:3.5rem] flex-col items-center gap-1 py-3">
+        <Tooltip content="Storyfold" side="right">
+          <a href="/" className="rail-btn" aria-label="Storyfold home">
+            <FoldIcon className="size-5 text-accent" />
+          </a>
+        </Tooltip>
 
-        <button
-          type="button"
-          className="rail-btn"
-          onClick={props.onCollapse}
-          aria-label="Expand sidebar"
-          data-tip="Expand sidebar"
-        >
-          <PanelIcon />
-        </button>
+        <Tooltip content="Expand sidebar" side="right">
+          <button
+            type="button"
+            className="rail-btn"
+            onClick={props.onCollapse}
+            aria-label="Expand sidebar"
+          >
+            <PanelIcon />
+          </button>
+        </Tooltip>
 
-        <button
-          type="button"
-          className="rail-btn rail-btn--primary"
-          onClick={props.onNew}
-          aria-label="New conversation"
-          data-tip="New conversation"
-        >
-          <PlusIcon />
-        </button>
+        <Tooltip content="New conversation" side="right">
+          <button
+            type="button"
+            className="rail-btn rail-btn--primary"
+            onClick={props.onNew}
+            aria-label="New conversation"
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
 
         <div className="[margin-block-start:auto]">
           <ThemeButton
@@ -90,14 +90,16 @@ export function Sidebar(props: {
           <span className="text-foreground text-base">Storyfold</span>
         </a>
         {props.onCollapse && (
-          <button
-            type="button"
-            className="pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-foreground"
-            onClick={props.onCollapse}
-            aria-label="Collapse sidebar"
-          >
-            <PanelIcon />
-          </button>
+          <Tooltip content="Collapse sidebar">
+            <button
+              type="button"
+              className="pressable inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              onClick={props.onCollapse}
+              aria-label="Collapse sidebar"
+            >
+              <PanelIcon />
+            </button>
+          </Tooltip>
         )}
       </div>
 

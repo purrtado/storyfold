@@ -37,12 +37,6 @@ export const CloseIcon = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-export const SendIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...props}>
-    <path d="M12 19V5M5 12l7-7 7 7" />
-  </svg>
-);
-
 export const SunIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg {...base} {...props}>
     <circle cx="12" cy="12" r="4" />

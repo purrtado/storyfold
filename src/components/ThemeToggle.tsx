@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent } from "react";
 import { MoonIcon, SunIcon } from "./icons";
+import { Tooltip } from "./Tooltip";
 
 export type Theme = "light" | "dark";
 export type ThemePreference = "system" | Theme;
@@ -80,15 +81,20 @@ export function ThemeButton(props: {
             <SunIcon />
           )}
         </span>
-        <select
-          aria-label="Theme preference"
-          title={`Theme preference: ${preferenceLabel}`}
-          className="absolute inset-0 size-full cursor-pointer appearance-none opacity-0"
-          onChange={onChange}
-          value={props.preference}
+        <Tooltip
+          content={`Theme preference: ${preferenceLabel}`}
+          side="right"
+          wrapperClassName="absolute inset-0"
         >
-          {options}
-        </select>
+          <select
+            aria-label="Theme preference"
+            className="absolute inset-0 size-full cursor-pointer appearance-none opacity-0"
+            onChange={onChange}
+            value={props.preference}
+          >
+            {options}
+          </select>
+        </Tooltip>
       </span>
     );
   }
