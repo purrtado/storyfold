@@ -1,0 +1,74 @@
+.user-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  inline-size: 100%;
+  min-block-size: 3rem;
+  padding-block: 0.375rem;
+  padding-inline: 0.5rem;
+  border-radius: 0.75rem;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: start;
+}
+
+.user-menu-trigger--compact {
+  justify-content: center;
+  inline-size: 2.75rem;
+  padding: 0;
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  inline-size: 2rem;
+  block-size: 2rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.user-menu-content {
+  z-index: 50;
+  inline-size: 14rem;
+  max-inline-size: calc(100vw - 1.5rem);
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--raised);
+  color: var(--foreground);
+  box-shadow: 0 0.5rem 2rem
+    color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-block-size: 2.75rem;
+  padding-inline: 0.75rem;
+  border-radius: 0.625rem;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+.user-menu-trigger[data-state="open"],
+.user-menu-trigger:active,
+.user-menu-item[data-highlighted],
+.user-menu-item:active {
+  background: var(--surface);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .user-menu-trigger:hover {
+    background: var(--raised);
+  }
+  .user-menu-item:hover {
+    background: var(--surface);
+  }
+}

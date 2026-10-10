@@ -32,10 +32,13 @@ bun run typecheck
 - Start new conversations, switch between existing ones, and browse sample conversations with clearly-marked sample replies rendered as Markdown (headings, lists, code blocks, tables).
 - On first visit you land on an empty conversation with starter prompts that fill the composer; their concise labels are centered, and samples stay in the sidebar.
 - Conversations and submitted messages are saved in browser localStorage on this device; nothing is sent to a server, and no AI replies are generated.
-- Theme defaults to System and follows browser/OS light/dark changes live; explicitly picking Light or Dark overrides System until you switch back (saved in browser localStorage).
+- Open Settings from the User menu at the bottom of the sidebar or compact rail. General lives at `/settings/general`, with System / Light / Dark theme choices; Back to app returns to your conversation without clearing its draft.
+- Theme defaults to System and follows browser/OS light/dark changes live; explicitly picking Light or Dark overrides System until you switch back (saved in browser localStorage). The User avatar is a display-only placeholder, not an account.
 - Collapse the sidebar on desktop to a narrow icon rail (preference saved); its logo toggles expansion, with the sidebar icon revealed on hover or keyboard focus. On mobile it remains a slide-in drawer.
 - Press Enter to send a message or Shift+Enter for a newline. The composer grows with multiline text; the send button stays aligned to its bottom edge.
 - The transcript keeps new messages in view while you are near the bottom and hands scrolling back to you the moment you scroll up to read.
+
+Settings uses browser-history routes. Production hosting must serve `index.html` for application URLs such as `/settings/general` so direct links and refreshes work (Vite dev/preview already handle this).
 
 ## UI components
 
@@ -43,6 +46,8 @@ The composer, transcript scroller, and tooltips are adapted from [beUI](https://
 
 - [Prompt Input](https://beui.dev/components/agents/prompt-input) — composer form, keyboard submission with IME safety, and send-button motion. Model/attachment/stop UI is omitted because this app has no backend; auto-grow uses the repo's `field-sizing` CSS instead of the registry's measurement mirror, so browsers without `field-sizing` show a fixed-height scrolling composer. Focus uses the existing rounded composer border; forced-colors mode retains a visible textarea outline.
 - [Message Scroller](https://beui.dev/components/agents/message-scroller) — reader-aware transcript viewport. Deviations: viewport resizes (composer growth, mobile drawer) re-align the live edge instantly while you are following, wheel, touch, and upward keyboard scrolling interrupt an in-flight follow, and the optional message navigation rail is omitted.
-- [Tooltip](https://beui.dev/components/motion/tooltip) — hover/focus tooltips on the sidebar rail and theme control.
+- [Tooltip](https://beui.dev/components/motion/tooltip) — hover/focus tooltips on the sidebar rail.
 
 Dependencies added for these components: `motion` (reduced-motion-aware animation), `@floating-ui/dom` (tooltip positioning), `lucide-react` (send icon), and `clsx` + `tailwind-merge` (the `cn` class helper).
+
+The User menu uses Radix Dropdown Menu; page navigation uses React Router. Settings theme choices use native radios for keyboard navigation and accessible selection.

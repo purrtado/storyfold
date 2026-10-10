@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Sheet } from "./components/Sheet";
-import { useTheme } from "./components/ThemeToggle";
+import { useTheme } from "./lib/useTheme";
+import { SettingsPage } from "./components/SettingsPage";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import {
   appendMessage,
   loadConversations,
@@ -31,6 +33,9 @@ export default function App() {
     () => localStorage.getItem("storyfold-sidebar-collapsed") === "1",
   );
   const { preference, setPreference } = useTheme();
+  const { pathname } = useLocation();
+
+  useEffect(() => setMobileOpen(false), [pathname]);
 
   const active = useMemo(
     () => conversations.find((c) => c.id === activeId),
@@ -67,56 +72,73 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-dvh overflow-clip">
-      <Sheet
-        open={mobileOpen}
-        onOpenChange={setMobileOpen}
-        title="Conversations"
-      >
-        <Sidebar
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={(id) => {
-            setActiveId(id);
-            setDraft("");
-            setMobileOpen(false);
-          }}
-          onNew={handleNew}
-          preference={preference}
-          onPreferenceChange={setPreference}
-        />
-      </Sheet>
-
-      <aside
-        className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
-          collapsed ? "w-14" : "w-60"
-        }`}
-      >
-        <Sidebar
-          variant={collapsed ? "rail" : "full"}
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={(id) => {
-            setActiveId(id);
-            setDraft("");
-          }}
-          onNew={handleNew}
-          preference={preference}
-          onPreferenceChange={setPreference}
-          onCollapse={() => setCollapsed((c) => !c)}
-        />
-      </aside>
-
-      <ChatView
-        conversation={active ?? newConversation()}
-        draft={draft}
-        onDraftChange={setDraft}
-        onSend={handleSend}
-        onStarter={handleStarter}
-        onOpenSidebar={() => setMobileOpen(true)}
-        onNew={handleNew}
+    <Routes>
+      <Route
+        path="/settings"
+        element={<Navigate to="/settings/general" replace />}
       />
-    </div>
+      <Route
+        path="/settings/general"
+        element={
+          <SettingsPage
+            preference={preference}
+            onPreferenceChange={setPreference}
+          />
+        }
+      />
+      <Route
+        path="/"
+        element={
+          <div className="flex h-dvh overflow-clip">
+            <Sheet
+              open={mobileOpen}
+              onOpenChange={setMobileOpen}
+              title="Conversations"
+            >
+              <Sidebar
+                conversations={conversations}
+                activeId={activeId}
+                onSelect={(id) => {
+                  setActiveId(id);
+                  setDraft("");
+                  setMobileOpen(false);
+                }}
+                onNew={handleNew}
+              />
+            </Sheet>
+
+            <aside
+              className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
+                collapsed ? "w-14" : "w-60"
+              }`}
+            >
+              <Sidebar
+                variant={collapsed ? "rail" : "full"}
+                conversations={conversations}
+                activeId={activeId}
+                onSelect={(id) => {
+                  setActiveId(id);
+                  setDraft("");
+                }}
+                onNew={handleNew}
+                onCollapse={() => setCollapsed((c) => !c)}
+              />
+            </aside>
+
+            <ChatView
+              conversation={active ?? newConversation()}
+              draft={draft}
+              onDraftChange={setDraft}
+              onSend={handleSend}
+              onStarter={handleStarter}
+              onOpenSidebar={() => setMobileOpen(true)}
+              onNew={handleNew}
+            />
+          </div>
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 
   function handleNew() {

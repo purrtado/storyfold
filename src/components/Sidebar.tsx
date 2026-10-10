@@ -1,6 +1,7 @@
 import type { Conversation } from "../lib/types";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
-import { ThemeButton } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
+import { Link } from "react-router-dom";
 import { Tooltip } from "./Tooltip";
 
 function conversationGroup(createdAt: number): string {
@@ -22,8 +23,6 @@ export function Sidebar(props: {
   activeId: string;
   onSelect: (id: string) => void;
   onNew: () => void;
-  preference: "system" | "light" | "dark";
-  onPreferenceChange: (preference: "system" | "light" | "dark") => void;
   onCollapse?: () => void;
   variant?: "full" | "rail";
 }) {
@@ -57,11 +56,7 @@ export function Sidebar(props: {
         </Tooltip>
 
         <div className="[margin-block-start:auto]">
-          <ThemeButton
-            preference={props.preference}
-            onPreferenceChange={props.onPreferenceChange}
-            compact
-          />
+          <UserMenu compact />
         </div>
       </div>
     );
@@ -77,14 +72,14 @@ export function Sidebar(props: {
   return (
     <div className="flex h-full flex-col gap-2 p-3">
       <div className="flex items-center gap-2">
-        <a
-          href="/"
+        <Link
+          to="/"
           className="flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 font-semibold tracking-tight no-underline"
           aria-label="Storyfold home"
         >
           <FoldIcon className="size-5 text-accent" />
           <span className="text-foreground text-base">Storyfold</span>
-        </a>
+        </Link>
         {props.onCollapse && (
           <Tooltip content="Collapse sidebar">
             <button
@@ -152,10 +147,7 @@ export function Sidebar(props: {
         <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
           No AI connection yet — conversations stay on this device.
         </p>
-        <ThemeButton
-          preference={props.preference}
-          onPreferenceChange={props.onPreferenceChange}
-        />
+        <UserMenu />
       </div>
     </div>
   );
