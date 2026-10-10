@@ -13,6 +13,8 @@ bun run dev
 
 Vite prints the local URL in the terminal.
 
+To access the dev server from another device, run `bun run dev -- --host` and open Vite's Network URL. LAN HTTP is not a secure context, so id generation falls back to `crypto.getRandomValues` when `crypto.randomUUID` is unavailable.
+
 Create a production build with:
 
 ```sh
