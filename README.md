@@ -19,10 +19,17 @@ Create a production build with:
 bun run build
 ```
 
+Type-check without building:
+
+```sh
+bun run typecheck
+```
+
 ## Interface
 
-- Start new conversations, switch between existing ones, and browse sample conversations with Markdown-formatted sample replies.
+- Start new conversations, switch between existing ones, and browse sample conversations with clearly-marked sample replies rendered as Markdown (headings, lists, code blocks, tables).
+- On first visit you land on an empty conversation with starter prompts that fill the composer; samples stay in the sidebar.
 - Conversations and submitted messages are saved in browser localStorage on this device; nothing is sent to a server, and no AI replies are generated.
-- Switch between light and dark themes; the selected theme is saved in browser localStorage.
+- Switch between light and dark themes (sidebar or header toggle); the selected theme is saved in browser localStorage.
+- Collapse the sidebar on desktop; on mobile it becomes a slide-in drawer.
 - Press Enter to send a message or Shift+Enter for a newline.
-- Use the responsive conversation drawer on mobile.
