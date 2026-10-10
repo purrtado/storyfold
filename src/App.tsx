@@ -3,7 +3,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Sheet } from "./components/Sheet";
 import { useTheme } from "./lib/useTheme";
-import { SettingsPage } from "./components/SettingsPage";
+import { SettingsPage, SettingsSidebar } from "./components/SettingsPage";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import {
   appendMessage,
@@ -71,60 +71,74 @@ export default function App() {
     setDraft(text);
   };
 
+  const isSettings = pathname.startsWith("/settings");
+
   return (
-    <Routes>
-      <Route
-        path="/settings"
-        element={<Navigate to="/settings/general" replace />}
-      />
-      <Route
-        path="/settings/general"
-        element={
-          <SettingsPage
-            preference={preference}
-            onPreferenceChange={setPreference}
+    <div className="flex h-dvh overflow-clip">
+      <Sheet
+        open={mobileOpen}
+        onOpenChange={setMobileOpen}
+        title={isSettings ? "Settings" : "Conversations"}
+      >
+        {isSettings ? (
+          <SettingsSidebar />
+        ) : (
+          <Sidebar
+            conversations={conversations}
+            activeId={activeId}
+            onSelect={(id) => {
+              setActiveId(id);
+              setDraft("");
+              setMobileOpen(false);
+            }}
+            onNew={handleNew}
           />
-        }
-      />
-      <Route
-        path="/"
-        element={
-          <div className="flex h-dvh overflow-clip">
-            <Sheet
-              open={mobileOpen}
-              onOpenChange={setMobileOpen}
-              title="Conversations"
-            >
-              <Sidebar
-                conversations={conversations}
-                activeId={activeId}
-                onSelect={(id) => {
-                  setActiveId(id);
-                  setDraft("");
-                  setMobileOpen(false);
-                }}
-                onNew={handleNew}
-              />
-            </Sheet>
+        )}
+      </Sheet>
 
-            <aside
-              className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
-                collapsed ? "w-14" : "w-60"
-              }`}
-            >
-              <Sidebar
-                variant={collapsed ? "rail" : "full"}
-                conversations={conversations}
-                activeId={activeId}
-                onSelect={(id) => {
-                  setActiveId(id);
-                  setDraft("");
-                }}
-                onNew={handleNew}
-                onCollapse={() => setCollapsed((c) => !c)}
-              />
-            </aside>
+      <aside
+        className={`sidebar-shell hidden flex-none border-e border-border bg-surface md:block ${
+          collapsed ? "w-14" : "w-60"
+        }`}
+      >
+        {isSettings ? (
+          <SettingsSidebar
+            variant={collapsed ? "rail" : "full"}
+            onCollapse={() => setCollapsed((c) => !c)}
+          />
+        ) : (
+          <Sidebar
+            variant={collapsed ? "rail" : "full"}
+            conversations={conversations}
+            activeId={activeId}
+            onSelect={(id) => {
+              setActiveId(id);
+              setDraft("");
+            }}
+            onNew={handleNew}
+            onCollapse={() => setCollapsed((c) => !c)}
+          />
+        )}
+      </aside>
 
+      <Routes>
+        <Route
+          path="/settings"
+          element={<Navigate to="/settings/general" replace />}
+        />
+        <Route
+          path="/settings/general"
+          element={
+            <SettingsPage
+              preference={preference}
+              onPreferenceChange={setPreference}
+              onOpenSidebar={() => setMobileOpen(true)}
+            />
+          }
+        />
+        <Route
+          path="/"
+          element={
             <ChatView
               conversation={active ?? newConversation()}
               draft={draft}
@@ -134,11 +148,11 @@ export default function App() {
               onOpenSidebar={() => setMobileOpen(true)}
               onNew={handleNew}
             />
-          </div>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </div>
   );
 
   function handleNew() {

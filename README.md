@@ -32,9 +32,9 @@ bun run typecheck
 - Start new conversations, switch between existing ones, and browse sample conversations with clearly-marked sample replies rendered as Markdown (headings, lists, code blocks, tables).
 - On first visit you land on an empty conversation with starter prompts that fill the composer; their concise labels are centered, and samples stay in the sidebar.
 - Conversations and submitted messages are saved in browser localStorage on this device; nothing is sent to a server, and no AI replies are generated.
-- Open Settings from the User menu at the bottom of the sidebar or compact rail. General lives at `/settings/general`, with System / Light / Dark theme choices; Back to app returns to your conversation without clearing its draft.
+- Open Settings from the User menu at the bottom of the sidebar or compact rail; it opens inside the same app frame as chat — same tinted sidebar, brand/collapse row, header, and icon rail. General lives at `/settings/general`, with System / Light / Dark theme choices; Back to app returns to your conversation without clearing its draft.
 - Theme defaults to System and follows browser/OS light/dark changes live; explicitly picking Light or Dark overrides System until you switch back (saved in browser localStorage). The User avatar is a display-only placeholder, not an account.
-- Collapse the sidebar on desktop to a narrow icon rail (preference saved); its logo toggles expansion, with the sidebar icon revealed on hover or keyboard focus. On mobile it remains a slide-in drawer.
+- Collapse the sidebar on desktop to a narrow icon rail (preference saved); its logo toggles expansion, with the sidebar icon revealed on hover or keyboard focus. The rail adapts per page: chat shows new-conversation, settings shows Back to app and General. On mobile it remains a slide-in drawer.
 - Press Enter to send a message or Shift+Enter for a newline. The composer grows with multiline text; the send button stays aligned to its bottom edge.
 - The transcript keeps new messages in view while you are near the bottom and hands scrolling back to you the moment you scroll up to read.
 

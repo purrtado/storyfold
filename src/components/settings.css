@@ -1,86 +1,13 @@
-.settings {
-  display: flex;
-  flex-wrap: wrap;
-  align-content: start;
-  gap: 2.25rem clamp(1.25rem, 0.5rem + 3vw, 3rem);
-  min-block-size: 100svh;
-  padding-block: 1.25rem 3rem;
+/* Main column scrolls independently inside the app frame between the
+   header and the viewport edge. */
+.settings-scroll {
   padding-inline: clamp(1rem, 0.25rem + 3.5vw, 2.5rem);
 }
 
-.settings-side {
-  flex: 0 1 15rem;
-  align-self: start;
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
-.settings-brand {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0.5rem;
-  font-size: 1rem;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  color: var(--foreground);
-  text-decoration: none;
-}
-
-.settings-brand-icon {
-  flex: none;
-  inline-size: 1.25rem;
-  block-size: 1.25rem;
-  color: var(--accent);
-}
-
-.settings-back,
-.settings-nav-link {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem;
-  border-radius: 0.625rem;
-  font-size: 0.9375rem;
-  color: var(--muted);
-  text-decoration: none;
-}
-
-.settings-link-icon {
-  flex: none;
-  inline-size: 1em;
-  block-size: 1em;
-}
-
-.settings-nav-link--active {
-  background: var(--accent-soft);
-  color: var(--foreground);
-}
-
-.settings-brand:active {
-  color: var(--accent);
-}
-
-.settings-back:active,
-.settings-nav-link:active {
-  background: var(--surface);
-  color: var(--foreground);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .settings-back:hover,
-  .settings-nav-link:not(.settings-nav-link--active):hover {
-    background: var(--surface);
-    color: var(--foreground);
-  }
-}
-
 .settings-main {
-  flex: 999 1 0%;
-  min-inline-size: min(100%, 32rem);
   max-inline-size: 50rem;
   margin-inline: auto;
+  padding-block: 1.25rem 3rem;
 }
 
 .settings-heading {

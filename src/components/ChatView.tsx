@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Conversation } from "../lib/types";
 import { Markdown } from "./Markdown";
-import { MenuIcon, PlusIcon } from "./icons";
+import { PlusIcon } from "./icons";
+import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
 
@@ -114,27 +115,20 @@ export function ChatView(props: {
   };
   return (
     <div className="flex min-inline-size-0 flex-1 flex-col">
-      <header className="flex flex-none items-center gap-1 border-b border-border px-3 py-2">
-        <button
-          type="button"
-          className="hit-44 pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
-          onClick={props.onOpenSidebar}
-          aria-label="Open sidebar"
-        >
-          <MenuIcon />
-        </button>
-        <h1 className="flex-1 truncate px-1 text-sm font-medium">
-          {props.conversation.title}
-        </h1>
-        <button
-          type="button"
-          className="hit-44 pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
-          onClick={props.onNew}
-          aria-label="New conversation"
-        >
-          <PlusIcon />
-        </button>
-      </header>
+      <AppHeader
+        title={props.conversation.title}
+        onOpenSidebar={props.onOpenSidebar}
+        actions={
+          <button
+            type="button"
+            className="hit-44 pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-surface hover:text-foreground md:hidden"
+            onClick={props.onNew}
+            aria-label="New conversation"
+          >
+            <PlusIcon />
+          </button>
+        }
+      />
 
       {empty ? (
         <Welcome onStarter={props.onStarter} />

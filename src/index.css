@@ -111,6 +111,12 @@ button, [role="button"] {
   cursor: pointer;
 }
 
+/* Current-page item on the settings rail */
+.rail-btn--active {
+  background: var(--accent-soft);
+  color: var(--foreground);
+}
+
 /* Collapsed rail expand slot: logo rests, toggle glyph reveals on hover or focus */
 .rail-expand {
   display: grid;
@@ -139,13 +145,13 @@ button, [role="button"] {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .rail-btn:not(.rail-btn--primary):hover {
+  .rail-btn:not(.rail-btn--primary):not(.rail-btn--active):hover {
     background: var(--raised);
     color: var(--foreground);
   }
 }
 
-.rail-btn:not(.rail-btn--primary):active {
+.rail-btn:not(.rail-btn--primary):not(.rail-btn--active):active {
   background: color-mix(in oklch, var(--raised) 80%, oklch(0 0 none));
   color: var(--foreground);
 }
