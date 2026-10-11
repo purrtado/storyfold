@@ -267,7 +267,12 @@ button, [role="button"] {
   content: "▍";
   margin-inline-start: 0.125em;
   color: var(--muted);
-  animation: md-caret 1.1s steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .md[data-streaming] > :last-child::after {
+    animation: md-caret 1.1s steps(1, end) infinite;
+  }
 }
 
 @keyframes md-caret {
