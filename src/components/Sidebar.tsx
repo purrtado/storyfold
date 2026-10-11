@@ -1,6 +1,7 @@
 import type { Conversation } from "../lib/types";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
 import { ThemeButton } from "./ThemeToggle";
+import { Tooltip } from "./Tooltip";
 
 function conversationGroup(createdAt: number): string {
   const days = (Date.now() - createdAt) / 86_400_000;
@@ -21,11 +22,51 @@ export function Sidebar(props: {
   activeId: string;
   onSelect: (id: string) => void;
   onNew: () => void;
-  theme: "light" | "dark";
-  onToggleTheme: () => void;
-  showTheme?: boolean;
+  preference: "system" | "light" | "dark";
+  onPreferenceChange: (preference: "system" | "light" | "dark") => void;
   onCollapse?: () => void;
+  variant?: "full" | "rail";
 }) {
+  const rail = props.variant === "rail";
+
+  if (rail) {
+    return (
+      <div className="flex h-full [inline-size:3.5rem] flex-col items-center gap-1 py-3">
+        <Tooltip content="Expand sidebar" side="right">
+          <button
+            type="button"
+            className="rail-btn rail-expand"
+            onClick={props.onCollapse}
+            aria-label="Expand sidebar"
+            aria-expanded={false}
+          >
+            <FoldIcon className="rail-expand-logo size-5 text-accent" aria-hidden="true" />
+            <PanelIcon className="rail-expand-glyph" aria-hidden="true" />
+          </button>
+        </Tooltip>
+
+        <Tooltip content="New conversation" side="right">
+          <button
+            type="button"
+            className="rail-btn rail-btn--primary"
+            onClick={props.onNew}
+            aria-label="New conversation"
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
+
+        <div className="[margin-block-start:auto]">
+          <ThemeButton
+            preference={props.preference}
+            onPreferenceChange={props.onPreferenceChange}
+            compact
+          />
+        </div>
+      </div>
+    );
+  }
+
   const groups = ["Today", "Previous 7 days", "Older"].map((label) => ({
     label,
     items: props.conversations.filter(
@@ -44,18 +85,17 @@ export function Sidebar(props: {
           <FoldIcon className="size-5 text-accent" />
           <span className="text-foreground text-base">Storyfold</span>
         </a>
-        {(props.showTheme ?? true) && (
-          <ThemeButton theme={props.theme} onClick={props.onToggleTheme} />
-        )}
         {props.onCollapse && (
-          <button
-            type="button"
-            className="pressable inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-foreground"
-            onClick={props.onCollapse}
-            aria-label="Collapse sidebar"
-          >
-            <PanelIcon />
-          </button>
+          <Tooltip content="Collapse sidebar">
+            <button
+              type="button"
+              className="pressable inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              onClick={props.onCollapse}
+              aria-label="Collapse sidebar"
+            >
+              <PanelIcon />
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -108,9 +148,15 @@ export function Sidebar(props: {
         )}
       </nav>
 
-      <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
-        No AI connection yet — conversations stay on this device.
-      </p>
+      <div className="flex flex-col gap-2">
+        <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
+          No AI connection yet — conversations stay on this device.
+        </p>
+        <ThemeButton
+          preference={props.preference}
+          onPreferenceChange={props.onPreferenceChange}
+        />
+      </div>
     </div>
   );
 }
