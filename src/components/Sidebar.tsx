@@ -1,6 +1,7 @@
 import type { Conversation } from "../lib/types";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
-import { ThemeButton } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
+import { Link } from "react-router-dom";
 import { Tooltip } from "./Tooltip";
 
 function conversationGroup(createdAt: number): string {
@@ -17,13 +18,55 @@ function relativeDate(createdAt: number): string {
   });
 }
 
+export function RailExpand({ onCollapse }: { onCollapse?: () => void }) {
+  return (
+    <Tooltip content="Expand sidebar" side="right">
+      <button
+        type="button"
+        className="rail-btn rail-expand"
+        onClick={onCollapse}
+        aria-label="Expand sidebar"
+        aria-expanded={false}
+      >
+        <FoldIcon className="rail-expand-logo size-5 text-accent" aria-hidden="true" />
+        <PanelIcon className="rail-expand-glyph" aria-hidden="true" />
+      </button>
+    </Tooltip>
+  );
+}
+
+export function SidebarBrand({ onCollapse }: { onCollapse?: () => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Link
+        to="/"
+        className="flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 font-semibold tracking-tight no-underline"
+        aria-label="Storyfold home"
+      >
+        <FoldIcon className="size-5 text-accent" />
+        <span className="text-foreground text-base">Storyfold</span>
+      </Link>
+      {onCollapse && (
+        <Tooltip content="Collapse sidebar">
+          <button
+            type="button"
+            className="pressable inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+            onClick={onCollapse}
+            aria-label="Collapse sidebar"
+          >
+            <PanelIcon />
+          </button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
 export function Sidebar(props: {
   conversations: Conversation[];
   activeId: string;
   onSelect: (id: string) => void;
   onNew: () => void;
-  preference: "system" | "light" | "dark";
-  onPreferenceChange: (preference: "system" | "light" | "dark") => void;
   onCollapse?: () => void;
   variant?: "full" | "rail";
 }) {
@@ -32,18 +75,7 @@ export function Sidebar(props: {
   if (rail) {
     return (
       <div className="flex h-full [inline-size:3.5rem] flex-col items-center gap-1 py-3">
-        <Tooltip content="Expand sidebar" side="right">
-          <button
-            type="button"
-            className="rail-btn rail-expand"
-            onClick={props.onCollapse}
-            aria-label="Expand sidebar"
-            aria-expanded={false}
-          >
-            <FoldIcon className="rail-expand-logo size-5 text-accent" aria-hidden="true" />
-            <PanelIcon className="rail-expand-glyph" aria-hidden="true" />
-          </button>
-        </Tooltip>
+        <RailExpand onCollapse={props.onCollapse} />
 
         <Tooltip content="New conversation" side="right">
           <button
@@ -57,11 +89,7 @@ export function Sidebar(props: {
         </Tooltip>
 
         <div className="[margin-block-start:auto]">
-          <ThemeButton
-            preference={props.preference}
-            onPreferenceChange={props.onPreferenceChange}
-            compact
-          />
+          <UserMenu compact />
         </div>
       </div>
     );
@@ -76,28 +104,7 @@ export function Sidebar(props: {
 
   return (
     <div className="flex h-full flex-col gap-2 p-3">
-      <div className="flex items-center gap-2">
-        <a
-          href="/"
-          className="flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 font-semibold tracking-tight no-underline"
-          aria-label="Storyfold home"
-        >
-          <FoldIcon className="size-5 text-accent" />
-          <span className="text-foreground text-base">Storyfold</span>
-        </a>
-        {props.onCollapse && (
-          <Tooltip content="Collapse sidebar">
-            <button
-              type="button"
-              className="pressable inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
-              onClick={props.onCollapse}
-              aria-label="Collapse sidebar"
-            >
-              <PanelIcon />
-            </button>
-          </Tooltip>
-        )}
-      </div>
+      <SidebarBrand onCollapse={props.onCollapse} />
 
       <button
         type="button"
@@ -152,10 +159,7 @@ export function Sidebar(props: {
         <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
           No AI connection yet — conversations stay on this device.
         </p>
-        <ThemeButton
-          preference={props.preference}
-          onPreferenceChange={props.onPreferenceChange}
-        />
+        <UserMenu />
       </div>
     </div>
   );
