@@ -132,6 +132,9 @@ export function useChatGeneration(options: {
     (conversationId: string, history: WireMessage[], model?: string) => {
       if (busyRef.current) return false;
       busyRef.current = true;
+      // We send our own history to /api/chat; the SDK's internal copy is never
+      // transmitted, so clear it between runs instead of letting it grow.
+      chat.setMessages([]);
       activeIdRef.current = conversationId;
       requestRef.current = { history, model };
       textRef.current = "";
