@@ -1,5 +1,7 @@
+const frontendArgs = process.argv.slice(2).filter((arg) => arg !== "--");
+
 const children = ["dev:server", "dev:ui"].map((script) =>
-  Bun.spawn(["bun", "run", script], {
+  Bun.spawn(["bun", "run", script, ...(script === "dev:ui" ? frontendArgs : [])], {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",

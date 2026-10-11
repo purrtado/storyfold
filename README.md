@@ -11,9 +11,19 @@ bun install
 bun run dev
 ```
 
-`bun run dev` starts the API at `http://127.0.0.1:7834` and Vite at `http://127.0.0.1:5173`. Vite proxies `/api` to the API. Both bind to loopback; this app has no authentication and is not intended for LAN or public hosting.
+`bun run dev` starts the API at `http://127.0.0.1:7834` and Vite at `http://127.0.0.1:5173`. Vite proxies `/api` to the API. Both bind to loopback by default.
 
 To use another backend port, run `STORYFOLD_PORT=7835 bun run dev`. The server and Vite proxy share this override. Frontend ports are fixed at 5173 (development) and 4173 (preview).
+
+For testing from another machine on a trusted local network, run:
+
+```sh
+bun run dev --host
+```
+
+Open `http://<server-LAN-IP>:5173` on that machine. You can also bind Vite to a specific interface with `bun run dev --host <server-LAN-IP>`. The backend remains on loopback; Settings and chat go through Vite's proxy, and frontend origins on this machine's interface IP addresses are accepted on ports 5173 and 4173.
+
+LAN access is unauthenticated: anyone who can reach Vite can change provider settings or use the saved API key for inference. Use it only on a trusted network; do not expose the app publicly.
 
 Create a production build with:
 
@@ -43,7 +53,7 @@ Configuration belongs to this local installation, not a user account. The server
 
 The saved key is never returned to the browser or stored in browser localStorage. Leave the key field blank when changing the model to retain the existing key, enter a new key to replace it, or use **Remove configuration** to delete the saved setup. Saving validates configuration locally; sending a message exercises the provider.
 
-The API accepts only explicitly allowed local Host/Origin combinations, requires JSON for chat/configuration bodies, and bounds request sizes. These safeguards prevent cross-origin browser use and DNS rebinding; they are not authentication against other processes running as your OS user.
+The API accepts only loopback backend Host headers and frontend origins on localhost or this machine's interface IP addresses, requires JSON for chat/configuration bodies, and bounds request sizes. These safeguards reject unrelated browser origins and DNS rebinding; they do not authenticate LAN clients or other processes running as your OS user.
 
 ## Interface
 

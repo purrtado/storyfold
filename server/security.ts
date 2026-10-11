@@ -1,3 +1,4 @@
+import { networkInterfaces } from "node:os";
 import { SERVER_PORT } from "./runtime";
 
 const SERVER_HOSTS: Record<string, true> = {
@@ -13,6 +14,14 @@ const TRUSTED_ORIGINS: Record<string, true> = {
   "http://localhost:4173": true,
   "http://127.0.0.1:4173": true,
 };
+
+for (const interfaces of Object.values(networkInterfaces())) {
+  for (const address of interfaces ?? []) {
+    const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+    TRUSTED_ORIGINS[`http://${host}:5173`] = true;
+    TRUSTED_ORIGINS[`http://${host}:4173`] = true;
+  }
+}
 
 const JSON_BODY_MAX_BYTES = 64 * 1024;
 const CHAT_BODY_MAX_BYTES = 1024 * 1024;

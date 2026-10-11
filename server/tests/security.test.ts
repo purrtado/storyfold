@@ -1,9 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { networkInterfaces } from "node:os";
 import { headersWith, makeConfigDirectory, removeDirectory, startTestServer, type TestServer } from "./helpers";
 import { SERVER_PORT } from "../runtime";
 
 const TRUSTED_ORIGIN = "http://localhost:5173";
 const EVIL_ORIGIN = "http://evil.example";
+const lanAddress = Object.values(networkInterfaces())
+  .flatMap((interfaces) => interfaces ?? [])
+  .find((address) => !address.internal && address.family === "IPv4")?.address;
 
 let server: TestServer;
 let configDirectory: string;
@@ -102,6 +106,29 @@ describe("Origin protection", () => {
       // Past the origin gate, then rejected on validation.
       expect(response.status).toBe(400);
       expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+    }
+  });
+
+  test.skipIf(lanAddress === undefined)("accepts this machine's LAN frontend origin for settings and chat", async () => {
+    const origin = `http://${lanAddress}:5173`;
+    const settings = await putProvider(origin, JSON.stringify({ model: "bad model!" }));
+    expect(settings.status).toBe(400);
+    expect(settings.headers.get("access-control-allow-origin")).toBe(origin);
+
+    const chat = await fetch(`${server.url}/api/chat`, {
+      method: "POST",
+      headers: headersWith({ origin, "content-type": "application/json" }),
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(chat.status).toBe(400);
+    expect(chat.headers.get("access-control-allow-origin")).toBe(origin);
+  });
+
+  test.skipIf(lanAddress === undefined)("rejects other ports and lookalike LAN origins", async () => {
+    for (const origin of [`http://${lanAddress}:5180`, `http://${lanAddress}.evil.example:5173`]) {
+      const response = await putProvider(origin, JSON.stringify({ model: "bad model!" }));
+      expect(response.status).toBe(403);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
     }
   });
 
