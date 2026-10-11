@@ -157,7 +157,14 @@ export function Sidebar(props: {
 
       <div className="flex flex-col gap-2">
         <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
-          No AI connection yet — conversations stay on this device.
+          Conversations stay on this device.{" "}
+          <Link
+            to="/settings/providers"
+            className="font-medium text-accent underline underline-offset-2"
+          >
+            Set up Z.AI
+          </Link>{" "}
+          to start chatting.
         </p>
         <UserMenu />
       </div>

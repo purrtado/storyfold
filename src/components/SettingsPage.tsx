@@ -2,7 +2,7 @@ import { useId } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { SPRING_LAYOUT } from "../lib/ease";
 import { Link, NavLink } from "react-router-dom";
-import { ArrowLeft, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { ArrowLeft, KeyRound, Monitor, Moon, Settings, Sun } from "lucide-react";
 import type { ThemePreference } from "../lib/useTheme";
 import { AppHeader } from "./AppHeader";
 import { RailExpand, SidebarBrand } from "./Sidebar";
@@ -48,6 +48,18 @@ export function SettingsSidebar(props: {
           </NavLink>
         </Tooltip>
 
+        <Tooltip content="Providers" side="right">
+          <NavLink
+            to="/settings/providers"
+            className={({ isActive }) =>
+              isActive ? "rail-btn rail-btn--active" : "rail-btn"
+            }
+            aria-label="Providers"
+          >
+            <KeyRound className="size-4.5" aria-hidden="true" />
+          </NavLink>
+        </Tooltip>
+
         <div className="[margin-block-start:auto]">
           <UserMenu compact />
         </div>
@@ -66,12 +78,17 @@ export function SettingsSidebar(props: {
         </Link>
         <NavLink
           to="/settings/general"
-          className={({ isActive }) =>
-            isActive ? navRowActive : navRowInactive
-          }
+          className={({ isActive }) => (isActive ? navRowActive : navRowInactive)}
         >
           <Settings className="size-4 shrink-0" aria-hidden="true" />
           General
+        </NavLink>
+        <NavLink
+          to="/settings/providers"
+          className={({ isActive }) => (isActive ? navRowActive : navRowInactive)}
+        >
+          <KeyRound className="size-4 shrink-0" aria-hidden="true" />
+          Providers
         </NavLink>
       </nav>
 

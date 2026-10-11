@@ -261,3 +261,15 @@ button, [role="button"] {
 .md th { background: var(--surface); font-weight: 600; }
 .md a { color: var(--accent); text-underline-offset: 0.2em; }
 .md hr { border: none; border-block-start: 1px solid var(--border); }
+
+/* Growing reply: caret rides the last block until the stream ends. */
+.md[data-streaming] > :last-child::after {
+  content: "▍";
+  margin-inline-start: 0.125em;
+  color: var(--muted);
+  animation: md-caret 1.1s steps(1, end) infinite;
+}
+
+@keyframes md-caret {
+  50% { opacity: 0.15; }
+}

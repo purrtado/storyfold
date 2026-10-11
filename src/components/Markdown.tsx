@@ -1,9 +1,15 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export function Markdown({ content }: { content: string }) {
+export function Markdown({
+  content,
+  streaming = false,
+}: {
+  content: string;
+  streaming?: boolean;
+}) {
   return (
-    <div className="md">
+    <div className="md" data-streaming={streaming || undefined}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
