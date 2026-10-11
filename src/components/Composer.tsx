@@ -46,6 +46,9 @@ export function Composer({
       : modelCatalogState === "error"
         ? "Could not load models. Messages will use the provider default."
         : "";
+  const defaultModelName = defaultModel
+    ? (models.find((model) => model.id === defaultModel)?.name ?? defaultModel)
+    : "server setting";
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -103,15 +106,15 @@ export function Composer({
               aria-describedby={modelStatusText ? modelStatusId : undefined}
               className="min-w-0 max-w-full rounded-md border border-border bg-raised px-2 py-1 text-xs text-foreground active:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
             >
-              <option value="">
-                Default ({defaultModel ?? "server setting"})
-              </option>
+              <option value="">Default ({defaultModelName})</option>
               {modelCatalogState === "ready" &&
-                models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}
-                  </option>
-                ))}
+                models.map((model) =>
+                  model.id === defaultModel ? null : (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ),
+                )}
             </select>
             {modelStatusText && (
               <p

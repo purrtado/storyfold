@@ -177,10 +177,16 @@ export default function App() {
               selectedModel={active ? modelOverrides[active.id] ?? "" : ""}
               onModelChange={(model) => {
                 const conversation = ensureActive();
-                setModelOverrides((current) => ({
-                  ...current,
-                  [conversation.id]: model,
-                }));
+                setModelOverrides((current) => {
+                  if (model) {
+                    return { ...current, [conversation.id]: model };
+                  }
+                  // "" means inherit; drop the entry instead of storing it.
+                  if (!(conversation.id in current)) return current;
+                  const next = { ...current };
+                  delete next[conversation.id];
+                  return next;
+                });
               }}
               onStarter={handleStarter}
               onOpenSidebar={() => setMobileOpen(true)}

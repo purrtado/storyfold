@@ -176,9 +176,28 @@ export function ChatView(props: {
   const busy = props.generation?.phase === "streaming";
   const selectedModel =
     modelCatalogState === "ready" &&
+    props.selectedModel &&
+    props.selectedModel !== provider?.model &&
     provider?.models.some((model) => model.id === props.selectedModel)
       ? props.selectedModel
       : "";
+
+  // Clear a remembered override matching the configured default so a later
+  // default change follows the new default instead of resurrecting it.
+  useEffect(() => {
+    if (
+      modelCatalogState === "ready" &&
+      props.selectedModel &&
+      props.selectedModel === provider?.model
+    ) {
+      props.onModelChange("");
+    }
+  }, [
+    modelCatalogState,
+    provider?.model,
+    props.selectedModel,
+    props.onModelChange,
+  ]);
 
   const empty = props.conversation.messages.length === 0 && !live;
   const handleSend = (value: string) => {
