@@ -114,7 +114,7 @@ export class CredentialStore {
 
   // save() is read-modify-write and remove() is a plain unlink; one shared
   // instance serves every request, so mutations must not interleave.
-  private queue: Promise<unknown> = Promise.resolve();
+  protected queue: Promise<unknown> = Promise.resolve();
 
   constructor(configDirectory: string = defaultConfigDirectory()) {
     this.configDirectory = configDirectory;
