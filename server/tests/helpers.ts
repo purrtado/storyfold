@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp, type CreateAppOptions } from "../app";
+import { SERVER_PORT } from "../runtime";
 
 export interface TestServer {
   url: string;
@@ -37,7 +38,7 @@ export async function removeDirectory(path: string): Promise<void> {
  * this Bun sends 127.0.0.1:<ephemeral port>, which the app rightly rejects.
  */
 export function headersWith(extra: Record<string, string> = {}): Record<string, string> {
-  return { host: "127.0.0.1:3001", ...extra };
+  return { host: `127.0.0.1:${SERVER_PORT}`, ...extra };
 }
 
 /** Protocol-real OpenAI chat-completions SSE body for one streamed reply. */

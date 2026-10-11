@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { headersWith, makeConfigDirectory, removeDirectory, startTestServer, type TestServer } from "./helpers";
+import { SERVER_PORT } from "../runtime";
 
 const TRUSTED_ORIGIN = "http://localhost:5173";
 const EVIL_ORIGIN = "http://evil.example";
@@ -44,14 +45,20 @@ describe("Host header protection (DNS rebinding)", () => {
     // No host override: requests carry 127.0.0.1:<ephemeral>, outside the allowlist.
     const defaults = await fetch(`${server.url}/api/provider`);
     expect(defaults.status).toBe(403);
-    for (const host of ["LOCALHOST.:3001", "localhost.evil.com:3001", ".localhost:3001", "localhost:3001:", "localhost:3001."]) {
+    for (const host of [
+      `LOCALHOST.:${SERVER_PORT}`,
+      `localhost.evil.com:${SERVER_PORT}`,
+      `.localhost:${SERVER_PORT}`,
+      `localhost:${SERVER_PORT}:`,
+      `localhost:${SERVER_PORT}.`,
+    ]) {
       const response = await fetch(`${server.url}/api/provider`, { headers: { host } });
       expect(response.status).toBe(403);
     }
   });
 
   test("accepts canonical local hosts", async () => {
-    for (const host of ["localhost:3001", "127.0.0.1:3001"]) {
+    for (const host of [`localhost:${SERVER_PORT}`, `127.0.0.1:${SERVER_PORT}`]) {
       const response = await fetch(`${server.url}/api/provider`, { headers: { host } });
       expect(response.status).toBe(200);
     }
@@ -88,8 +95,8 @@ describe("Origin protection", () => {
       "http://127.0.0.1:5173",
       "http://localhost:4173",
       "http://127.0.0.1:4173",
-      "http://localhost:3001",
-      "http://127.0.0.1:3001",
+      `http://localhost:${SERVER_PORT}`,
+      `http://127.0.0.1:${SERVER_PORT}`,
     ]) {
       const response = await putProvider(origin, JSON.stringify({ model: "bad model!" }));
       // Past the origin gate, then rejected on validation.

@@ -11,9 +11,9 @@ bun install
 bun run dev
 ```
 
-`bun run dev` starts the API at `http://127.0.0.1:3001` and Vite at `http://127.0.0.1:5173`. Vite proxies `/api` to the API. Both bind to loopback; this app has no authentication and is not intended for LAN or public hosting.
+`bun run dev` starts the API at `http://127.0.0.1:7834` and Vite at `http://127.0.0.1:5173`. Vite proxies `/api` to the API. Both bind to loopback; this app has no authentication and is not intended for LAN or public hosting.
 
-If port 3001 is occupied, use `STORYFOLD_PORT=3002 bun run dev`. The server and Vite proxy share this override. Frontend ports are fixed at 5173 (development) and 4173 (preview).
+To use another backend port, run `STORYFOLD_PORT=7835 bun run dev`. The server and Vite proxy share this override. Frontend ports are fixed at 5173 (development) and 4173 (preview).
 
 Create a production build with:
 
