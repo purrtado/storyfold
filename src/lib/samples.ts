@@ -13,7 +13,8 @@ export function uid(): string {
 }
 
 // Clearly-marked sample content so the UI demonstrates markdown before any
-// real conversation exists. These are never sent anywhere.
+// real conversation exists. Reply inside one and it is sent like any other
+// conversation.
 export const sampleConversations = (): Conversation[] => [
   {
     id: uid(),
@@ -28,7 +29,7 @@ export const sampleConversations = (): Conversation[] => [
       {
         id: uid(),
         role: "assistant",
-        content: `This conversation is **sample content** so you can see how replies will render. No AI is connected yet.
+        content: `This conversation is **sample content** so you can see how replies will render. Real replies stream in from Z.AI once you add an API key under Settings → Providers.
 
 ## Lists and emphasis
 
@@ -54,7 +55,7 @@ Tables work too:
 | Feature | Status |
 | --- | --- |
 | Markdown replies | Sampled |
-| AI replies | Not connected |`,
+| Live AI replies | Set up Z.AI in Settings |`,
       },
     ],
   },

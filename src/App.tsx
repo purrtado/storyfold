@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Sheet } from "./components/Sheet";
 import { useTheme } from "./lib/useTheme";
 import { SettingsPage, SettingsSidebar } from "./components/SettingsPage";
+import { ProvidersPage } from "./components/ProvidersPage";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import {
   appendMessage,
@@ -13,6 +14,7 @@ import {
   STORAGE_KEY,
 } from "./lib/store";
 import { uid } from "./lib/samples";
+import { useChatGeneration } from "./lib/useChatGeneration";
 
 export default function App() {
   const [boot] = useState(() => {
@@ -28,12 +30,29 @@ export default function App() {
   const [conversations, setConversations] = useState(boot.list);
   const [activeId, setActiveId] = useState(boot.activeId);
   const [draft, setDraft] = useState("");
+  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>({});
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("storyfold-sidebar-collapsed") === "1",
   );
   const { preference, setPreference } = useTheme();
   const { pathname } = useLocation();
+
+  const handleAssistantReply = useCallback(
+    (conversationId: string, content: string) => {
+      setConversations((cs) =>
+        appendMessage(cs, conversationId, {
+          id: uid(),
+          role: "assistant",
+          content,
+        }),
+      );
+    },
+    [],
+  );
+  const { generation, send, stop, dismiss } = useChatGeneration({
+    onAssistantReply: handleAssistantReply,
+  });
 
   useEffect(() => setMobileOpen(false), [pathname]);
 
@@ -55,8 +74,13 @@ export default function App() {
     return fresh;
   };
 
-  const handleSend = (value: string) => {
+  const handleSend = (value: string, model?: string) => {
     const conversation = ensureActive();
+    const history = [
+      ...conversation.messages.map(({ role, content }) => ({ role, content })),
+      { role: "user" as const, content: value },
+    ];
+    if (!send(conversation.id, history, model)) return;
     setConversations((cs) =>
       appendMessage(cs, conversation.id, {
         id: uid(),
@@ -139,6 +163,10 @@ export default function App() {
           }
         />
         <Route
+          path="/settings/providers"
+          element={<ProvidersPage onOpenSidebar={() => setMobileOpen(true)} />}
+        />
+        <Route
           path="/"
           element={
             <ChatView
@@ -146,9 +174,26 @@ export default function App() {
               draft={draft}
               onDraftChange={setDraft}
               onSend={handleSend}
+              selectedModel={active ? modelOverrides[active.id] ?? "" : ""}
+              onModelChange={(model) => {
+                const conversation = ensureActive();
+                setModelOverrides((current) => {
+                  if (model) {
+                    return { ...current, [conversation.id]: model };
+                  }
+                  // "" means inherit; drop the entry instead of storing it.
+                  if (!(conversation.id in current)) return current;
+                  const next = { ...current };
+                  delete next[conversation.id];
+                  return next;
+                });
+              }}
               onStarter={handleStarter}
               onOpenSidebar={() => setMobileOpen(true)}
               onNew={handleNew}
+              generation={generation}
+              onStop={stop}
+              onDismissGeneration={dismiss}
             />
           }
         />

@@ -1,21 +1,54 @@
 // Adapted from beUI Prompt Input — https://beui.dev/components/agents/prompt-input
-// Model select, prompt actions, and loading/stop states omitted; this app has no backend.
 // Auto-grow uses the repo's field-sizing CSS instead of the registry's measurement mirror.
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { type FormEvent, type KeyboardEvent, useEffect, useRef } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef } from "react";
 import { SPRING_PRESS } from "../lib/ease";
+import type { ProviderModel } from "../lib/provider";
 
 export interface ComposerProps {
   value: string;
   onValueChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  onModelChange: (model: string) => void;
+  selectedModel: string;
+  defaultModel: string | null;
+  models: ProviderModel[];
+  modelCatalogState: "loading" | "ready" | "error";
+  /** A reply is being generated anywhere in the app; sends wait. */
+  busy?: boolean;
+  /** This conversation owns the running reply and shows the stop control. */
+  showStop?: boolean;
+  onStop?: () => void;
 }
 
-export function Composer({ value, onValueChange, onSubmit }: ComposerProps) {
+export function Composer({
+  value,
+  onValueChange,
+  onSubmit,
+  onModelChange,
+  selectedModel,
+  defaultModel,
+  models,
+  modelCatalogState,
+  busy = false,
+  showStop = false,
+  onStop,
+}: ComposerProps) {
   const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const canSubmit = Boolean(value.trim());
+  const modelSelectId = useId();
+  const modelStatusId = useId();
+  const canSubmit = Boolean(value.trim()) && !busy;
+  const modelStatusText =
+    modelCatalogState === "loading"
+      ? "Loading available models…"
+      : modelCatalogState === "error"
+        ? "Could not load models. Messages will use the provider default."
+        : "";
+  const defaultModelName = defaultModel
+    ? (models.find((model) => model.id === defaultModel)?.name ?? defaultModel)
+    : "server setting";
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -24,7 +57,7 @@ export function Composer({ value, onValueChange, onSubmit }: ComposerProps) {
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     const prompt = value.trim();
-    if (!prompt) return;
+    if (!prompt || busy) return;
 
     onSubmit(prompt);
     textareaRef.current?.focus({ preventScroll: true });
@@ -61,16 +94,61 @@ export function Composer({ value, onValueChange, onSubmit }: ComposerProps) {
         />
 
         <div className="flex min-h-8 items-center gap-1 [margin-block-start:0.25rem]">
-          <motion.button
-            type="submit"
-            disabled={!canSubmit}
-            aria-label="Send message"
-            whileTap={reduce ? undefined : { scale: 0.97 }}
-            transition={SPRING_PRESS}
-            className="hit-44 ms-auto inline-flex size-9 cursor-pointer select-none items-center justify-center rounded-full bg-accent text-accent-fg transition-colors [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
-          >
-            <ArrowUp className="size-4" />
-          </motion.button>
+          <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+            <label htmlFor={modelSelectId} className="sr-only">
+              Message model
+            </label>
+            <select
+              id={modelSelectId}
+              value={selectedModel}
+              onChange={(event) => onModelChange(event.target.value)}
+              disabled={busy || modelCatalogState !== "ready"}
+              aria-describedby={modelStatusText ? modelStatusId : undefined}
+              className="min-w-0 max-w-full rounded-md border border-border bg-raised px-2 py-1 text-xs text-foreground active:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+            >
+              <option value="">Default ({defaultModelName})</option>
+              {modelCatalogState === "ready" &&
+                models.map((model) =>
+                  model.id === defaultModel ? null : (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ),
+                )}
+            </select>
+            {modelStatusText && (
+              <p
+                id={modelStatusId}
+                role={modelCatalogState === "error" ? "alert" : "status"}
+                className="m-0 max-w-full text-xs text-muted"
+              >
+                {modelStatusText}
+              </p>
+            )}
+          </div>
+          {showStop ? (
+            <motion.button
+              type="button"
+              aria-label="Stop generating"
+              whileTap={reduce ? undefined : { scale: 0.97 }}
+              transition={SPRING_PRESS}
+              className="hit-44 ms-auto inline-flex size-9 cursor-pointer select-none items-center justify-center rounded-full border border-border bg-raised text-foreground transition-colors [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+              onClick={onStop}
+            >
+              <Square className="size-3" fill="currentColor" aria-hidden="true" />
+            </motion.button>
+          ) : (
+            <motion.button
+              type="submit"
+              disabled={!canSubmit}
+              aria-label="Send message"
+              whileTap={reduce ? undefined : { scale: 0.97 }}
+              transition={SPRING_PRESS}
+              className="hit-44 ms-auto inline-flex size-9 cursor-pointer select-none items-center justify-center rounded-full bg-accent text-accent-fg transition-colors [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <ArrowUp className="size-4" />
+            </motion.button>
+          )}
         </div>
       </form>
     </div>
