@@ -1,7 +1,13 @@
+export type ProviderModel = {
+  id: string;
+  name: string;
+};
+
 export type ProviderConfig = {
   provider: string;
   base_url: string;
   model: string;
+  models: ProviderModel[];
   has_api_key: boolean;
 };
 

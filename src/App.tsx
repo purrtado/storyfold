@@ -30,6 +30,7 @@ export default function App() {
   const [conversations, setConversations] = useState(boot.list);
   const [activeId, setActiveId] = useState(boot.activeId);
   const [draft, setDraft] = useState("");
+  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>({});
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("storyfold-sidebar-collapsed") === "1",
@@ -73,13 +74,13 @@ export default function App() {
     return fresh;
   };
 
-  const handleSend = (value: string) => {
+  const handleSend = (value: string, model?: string) => {
     const conversation = ensureActive();
     const history = [
       ...conversation.messages.map(({ role, content }) => ({ role, content })),
       { role: "user" as const, content: value },
     ];
-    if (!send(conversation.id, history)) return;
+    if (!send(conversation.id, history, model)) return;
     setConversations((cs) =>
       appendMessage(cs, conversation.id, {
         id: uid(),
@@ -173,6 +174,14 @@ export default function App() {
               draft={draft}
               onDraftChange={setDraft}
               onSend={handleSend}
+              selectedModel={active ? modelOverrides[active.id] ?? "" : ""}
+              onModelChange={(model) => {
+                const conversation = ensureActive();
+                setModelOverrides((current) => ({
+                  ...current,
+                  [conversation.id]: model,
+                }));
+              }}
               onStarter={handleStarter}
               onOpenSidebar={() => setMobileOpen(true)}
               onNew={handleNew}

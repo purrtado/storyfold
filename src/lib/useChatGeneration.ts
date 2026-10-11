@@ -17,13 +17,17 @@ export type Generation = {
 };
 
 type WireMessage = Pick<Message, "role" | "content">;
+type ChatRequest = {
+  history: WireMessage[];
+  model?: string;
+};
 
 export function useChatGeneration(options: {
   onAssistantReply: (conversationId: string, content: string) => void;
 }) {
   const [generation, setGeneration] = useState<Generation | null>(null);
   const activeIdRef = useRef<string | null>(null);
-  const historyRef = useRef<WireMessage[]>([]);
+  const requestRef = useRef<ChatRequest>({ history: [] });
   const textRef = useRef("");
   const busyRef = useRef(false);
   const onAssistantReplyRef = useRef(options.onAssistantReply);
@@ -49,7 +53,12 @@ export function useChatGeneration(options: {
         response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: historyRef.current }),
+          body: JSON.stringify({
+            messages: requestRef.current.history,
+            ...(requestRef.current.model
+              ? { model: requestRef.current.model }
+              : {}),
+          }),
           signal,
         });
       } catch (error) {
@@ -120,11 +129,11 @@ export function useChatGeneration(options: {
   });
 
   const send = useCallback(
-    (conversationId: string, history: WireMessage[]) => {
+    (conversationId: string, history: WireMessage[], model?: string) => {
       if (busyRef.current) return false;
       busyRef.current = true;
       activeIdRef.current = conversationId;
-      historyRef.current = history;
+      requestRef.current = { history, model };
       textRef.current = "";
       setGeneration({ conversationId, text: "", phase: "streaming" });
       void chat

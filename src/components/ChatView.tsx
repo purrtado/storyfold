@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { X } from "lucide-react";
+import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import type { Conversation } from "../lib/types";
 import type { Generation } from "../lib/useChatGeneration";
 import { Markdown } from "./Markdown";
@@ -128,7 +129,9 @@ export function ChatView(props: {
   conversation: Conversation;
   draft: string;
   onDraftChange: (value: string) => void;
-  onSend: (value: string) => void;
+  onSend: (value: string, model?: string) => void;
+  selectedModel: string;
+  onModelChange: (model: string) => void;
   onStarter: (text: string) => void;
   onOpenSidebar: () => void;
   onNew: () => void;
@@ -137,6 +140,27 @@ export function ChatView(props: {
   onDismissGeneration: () => void;
 }) {
   const [following, setFollowing] = useState(true);
+  const [provider, setProvider] = useState<ProviderConfig | null>(null);
+  const [modelCatalogState, setModelCatalogState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+
+  useEffect(() => {
+    let canceled = false;
+    fetchProvider().then(
+      (loaded) => {
+        if (canceled) return;
+        setProvider(loaded);
+        setModelCatalogState("ready");
+      },
+      () => {
+        if (!canceled) setModelCatalogState("error");
+      },
+    );
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   // A fresh scroller mounts per conversation; re-arm the live edge so the
   // switch lands on the newest message instead of the stale scroll position.
@@ -150,11 +174,16 @@ export function ChatView(props: {
       ? props.generation
       : null;
   const busy = props.generation?.phase === "streaming";
+  const selectedModel =
+    modelCatalogState === "ready" &&
+    provider?.models.some((model) => model.id === props.selectedModel)
+      ? props.selectedModel
+      : "";
 
   const empty = props.conversation.messages.length === 0 && !live;
   const handleSend = (value: string) => {
     setFollowing(true);
-    props.onSend(value);
+    props.onSend(value, selectedModel || undefined);
   };
   return (
     <div className="flex min-inline-size-0 flex-1 flex-col">
@@ -198,6 +227,11 @@ export function ChatView(props: {
         value={props.draft}
         onValueChange={props.onDraftChange}
         onSubmit={handleSend}
+        selectedModel={selectedModel}
+        onModelChange={props.onModelChange}
+        defaultModel={provider?.model ?? null}
+        models={provider?.models ?? []}
+        modelCatalogState={modelCatalogState}
         busy={busy}
         showStop={live?.phase === "streaming"}
         onStop={props.onStop}

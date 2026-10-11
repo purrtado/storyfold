@@ -30,7 +30,7 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
   const [apiKey, setApiKey] = useState("");
   const [pending, setPending] = useState<"idle" | "save" | "remove">("idle");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const modelRef = useRef<HTMLInputElement>(null);
+  const modelRef = useRef<HTMLSelectElement>(null);
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const modelId = useId();
   const apiKeyId = useId();
@@ -68,7 +68,7 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
     if (pending !== "idle" || !config) return;
     const nextModel = model.trim();
     const nextKey = apiKey.trim();
-    if (!nextModel) return invalidate("model", "Enter a model.");
+    if (!nextModel) return invalidate("model", "Choose a model.");
     if (!config.has_api_key && !nextKey) {
       return invalidate("apiKey", "An API key is required.");
     }
@@ -152,20 +152,30 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
 
                 <div className="flex flex-col gap-1">
                   <label htmlFor={modelId} className="theme-label">
-                    Model
+                    Default model
                   </label>
-                  <input
+                  <p className="theme-desc">
+                    Used unless a message-specific model is selected in the composer.
+                  </p>
+                  <select
                     ref={modelRef}
                     id={modelId}
-                    type="text"
                     className={inputClass}
                     value={model}
                     onChange={(event) => setModel(event.target.value)}
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
                     aria-invalid={feedback?.kind === "error" && !model.trim() ? true : undefined}
-                  />
+                  >
+                    {config.models.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                      </option>
+                    ))}
+                    {!config.models.some((option) => option.id === config.model) && (
+                      <option value={config.model}>
+                        {config.model} (saved model)
+                      </option>
+                    )}
+                  </select>
                 </div>
 
                 <div className="flex flex-col gap-1">
