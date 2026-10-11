@@ -18,10 +18,25 @@ export interface ProviderSettings {
   updated_at: string;
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+}
+
+/**
+ * Both ids are documented as supported by every GLM Coding Plan tier:
+ * https://docs.z.ai/devpack/overview
+ */
+export const MODEL_CATALOG: readonly ModelOption[] = [
+  { id: "glm-5.3", name: "GLM-5.3" },
+  { id: "glm-5.3-flash", name: "GLM-5.3 Flash" },
+];
+
 export interface PublicProviderConfig {
   provider: string;
   base_url: string;
   model: string;
+  models: readonly ModelOption[];
   has_api_key: boolean;
 }
 
@@ -54,6 +69,7 @@ export function publicConfig(settings: ProviderSettings | null): PublicProviderC
       provider: PROVIDER_NAME,
       base_url: ZAI_BASE_URL,
       model: DEFAULT_MODEL,
+      models: MODEL_CATALOG,
       has_api_key: false,
     };
   }
@@ -61,6 +77,7 @@ export function publicConfig(settings: ProviderSettings | null): PublicProviderC
     provider: PROVIDER_NAME,
     base_url: ZAI_BASE_URL,
     model: settings.model,
+    models: MODEL_CATALOG,
     has_api_key: true,
   };
 }

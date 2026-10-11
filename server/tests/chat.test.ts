@@ -33,11 +33,15 @@ afterAll(async () => {
   if (configDirectory) await removeDirectory(configDirectory);
 });
 
-function chatRequest(base: string, messages: Array<{ role: string; content: string }>): Promise<Response> {
+function chatRequest(
+  base: string,
+  messages: Array<{ role: string; content: string }>,
+  model?: string,
+): Promise<Response> {
   return fetch(`${base}/api/chat`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(model === undefined ? { messages } : { messages, model }),
   });
 }
 
@@ -158,6 +162,146 @@ describe("Z.AI chat-completions streaming", () => {
       await reader.cancel();
       await abortObserved.promise;
       expect(upstreamSignal?.aborted).toBe(true);
+    } finally {
+      await serverWithUpstream.stop();
+    }
+  });
+
+  test("per-request model override streams incrementally before upstream completes and never persists", async () => {
+    const calls: Array<{ input: string | URL | Request; init: RequestInit | undefined }> = [];
+    let upstreamFinished = false;
+    const gate = Promise.withResolvers<void>();
+    const firstContentSeen = Promise.withResolvers<void>();
+
+    const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ input: _input, init });
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          // Role frame plus the first content delta, then hold the upstream
+          // open: anything the client receives now proves incremental delivery.
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                id: "chatcmpl-override",
+                object: "chat.completion.chunk",
+                created: 1_700_000_000,
+                model: "glm-5.3-flash",
+                choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
+              })}\n\ndata: ${JSON.stringify({
+                id: "chatcmpl-override",
+                object: "chat.completion.chunk",
+                created: 1_700_000_000,
+                model: "glm-5.3-flash",
+                choices: [{ index: 0, delta: { content: "Hello" }, finish_reason: null }],
+              })}\n\n`,
+            ),
+          );
+          firstContentSeen.resolve();
+          await gate.promise;
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                id: "chatcmpl-override",
+                object: "chat.completion.chunk",
+                created: 1_700_000_000,
+                model: "glm-5.3-flash",
+                choices: [{ index: 0, delta: { content: " world" }, finish_reason: null }],
+              })}\n\ndata: ${JSON.stringify({
+                id: "chatcmpl-override",
+                object: "chat.completion.chunk",
+                created: 1_700_000_000,
+                model: "glm-5.3-flash",
+                choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              })}\n\ndata: [DONE]\n\n`,
+            ),
+          );
+          controller.close();
+          upstreamFinished = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const serverWithUpstream = await startTestServer({ configDirectory, upstreamFetch: upstream });
+    try {
+      const response = await chatRequest(serverWithUpstream.url, [{ role: "user", content: "hi" }], "glm-5.3-flash");
+      expect(response.status).toBe(200);
+      expect(calls.length).toBe(1);
+      const upstreamBody = JSON.parse(String(calls[0].init?.body)) as Record<string, unknown>;
+      expect(upstreamBody.model).toBe("glm-5.3-flash");
+
+      // Read from the client until the first content delta lands while the
+      // upstream stream is still open and unfinished.
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let seen = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        seen += decoder.decode(value, { stream: true });
+        if (seen.includes("Hello")) break;
+      }
+      await firstContentSeen.promise;
+      expect(upstreamFinished).toBe(false);
+
+      // Only now let the upstream finish and drain the remainder.
+      gate.resolve();
+      let rest = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rest += decoder.decode(value, { stream: true });
+      }
+
+      const events = parseSseEvents(seen + rest);
+      const text = events
+        .filter(
+          (event): event is Extract<StreamChunk, { type: "TEXT_MESSAGE_CONTENT" }> =>
+            event.type === "TEXT_MESSAGE_CONTENT",
+        )
+        .map((event) => event.delta)
+        .join("");
+      expect(text).toBe("Hello world");
+      expect(events[events.length - 1].type).toBe(EventType.RUN_FINISHED);
+
+      // The override was request-scoped: the saved default is untouched.
+      const provider = await fetch(`${serverWithUpstream.url}/api/provider`, { headers: headersWith() });
+      expect(((await provider.json()) as Record<string, unknown>).model).toBe("glm-5.3");
+
+      // A request without a model falls back to the saved default.
+      const fallback = await chatRequest(serverWithUpstream.url, [{ role: "user", content: "again" }]);
+      expect(fallback.status).toBe(200);
+      expect(calls.length).toBe(2);
+      const fallbackBody = JSON.parse(String(calls[1].init?.body)) as Record<string, unknown>;
+      expect(fallbackBody.model).toBe("glm-5.3");
+      await fallback.text();
+    } finally {
+      // Release a still-gated upstream so a failed assertion cannot hang stop().
+      gate.resolve();
+      await serverWithUpstream.stop();
+    }
+  });
+
+  test("invalid per-request model is rejected before any provider call", async () => {
+    const calls: Array<{ input: string | URL | Request; init: RequestInit | undefined }> = [];
+    const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ input, init });
+      return new Response(openAiChatCompletionSse("glm-5.3", ["never"]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    const serverWithUpstream = await startTestServer({ configDirectory, upstreamFetch: upstream });
+    try {
+      const response = await chatRequest(serverWithUpstream.url, [{ role: "user", content: "hi" }], "not a model!");
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain(API_KEY);
+      expect(calls.length).toBe(0);
+
+      const provider = await fetch(`${serverWithUpstream.url}/api/provider`, { headers: headersWith() });
+      expect(((await provider.json()) as Record<string, unknown>).model).toBe("glm-5.3");
     } finally {
       await serverWithUpstream.stop();
     }

@@ -80,13 +80,19 @@ async function handleChatPost(
   const messages = validateChatMessages(body.value);
   if (!messages.ok) return jsonError(400, messages.error);
 
+  const requestedModel = (body.value as Record<string, unknown>).model;
+  if (requestedModel !== undefined) {
+    const modelError = validateModel(requestedModel);
+    if (modelError) return jsonError(400, modelError);
+  }
+
   const settings = await store.load();
   if (settings === null) {
     return jsonError(400, "No provider API key configured");
   }
 
   return streamZaiChat({
-    model: settings.model,
+    model: typeof requestedModel === "string" ? requestedModel : settings.model,
     apiKey: settings.api_key,
     messages: messages.messages,
     disconnectSignal: request.signal,
