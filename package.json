@@ -4,15 +4,22 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "bun scripts/dev.ts",
+    "dev:ui": "vite",
+    "dev:server": "bun --watch server/index.ts",
+    "server": "bun server/index.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "test": "bun test server"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",
     "@radix-ui/react-dialog": "^1.2.0",
     "@radix-ui/react-dropdown-menu": "^2.1.25",
+    "@tanstack/ai": "^0.68.0",
+    "@tanstack/ai-openai": "^0.29.1",
+    "@tanstack/ai-react": "^0.30.3",
     "clsx": "^2.1.1",
     "lucide-react": "^1.54.0",
     "motion": "^14.1.0",
@@ -25,6 +32,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
+    "@types/bun": "^1.4.2",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",
     "@vitejs/plugin-react": "^5.0.4",
