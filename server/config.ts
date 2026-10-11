@@ -112,12 +112,22 @@ function parseStoredConfig(raw: string): ProviderSettings | null {
 export class CredentialStore {
   readonly configDirectory: string;
 
+  // save() is read-modify-write and remove() is a plain unlink; one shared
+  // instance serves every request, so mutations must not interleave.
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(configDirectory: string = defaultConfigDirectory()) {
     this.configDirectory = configDirectory;
   }
 
   private get configPath(): string {
     return join(this.configDirectory, CONFIG_FILE);
+  }
+
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation, operation);
+    this.queue = result.catch(() => {});
+    return result;
   }
 
   /** Returns the stored settings, or null when absent or invalid on disk. */
@@ -135,42 +145,46 @@ export class CredentialStore {
    * Atomically replaces the config file. Omitting api_key preserves the
    * previously stored key; a brand-new configuration must provide one.
    */
-  async save(input: { model: string; api_key?: string }): Promise<ProviderSettings> {
-    if (validateModel(input.model) !== null) {
-      throw new Error("invalid model");
-    }
-    let apiKey = input.api_key !== undefined ? input.api_key.trim() : undefined;
-    if (apiKey === undefined) {
-      apiKey = (await this.load())?.api_key;
-    }
-    if (apiKey === undefined || validateApiKey(apiKey) !== null) {
-      throw new Error("API key required");
-    }
+  save(input: { model: string; api_key?: string }): Promise<ProviderSettings> {
+    return this.runExclusive(async () => {
+      if (validateModel(input.model) !== null) {
+        throw new Error("invalid model");
+      }
+      let apiKey = input.api_key !== undefined ? input.api_key.trim() : undefined;
+      if (apiKey === undefined) {
+        apiKey = (await this.load())?.api_key;
+      }
+      if (apiKey === undefined || validateApiKey(apiKey) !== null) {
+        throw new Error("API key required");
+      }
 
-    await mkdir(this.configDirectory, { recursive: true });
-    await chmod(this.configDirectory, 0o700);
+      await mkdir(this.configDirectory, { recursive: true });
+      await chmod(this.configDirectory, 0o700);
 
-    const settings: ProviderSettings = {
-      base_url: ZAI_BASE_URL,
-      model: input.model,
-      api_key: apiKey,
-      updated_at: new Date().toISOString(),
-    };
-    const tempPath = join(this.configDirectory, `.${CONFIG_FILE}.${randomUUID()}.tmp`);
-    try {
-      await writeFile(tempPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-      await chmod(tempPath, 0o600);
-      await rename(tempPath, this.configPath);
-    } finally {
-      await unlink(tempPath).catch(() => {});
-    }
-    return settings;
+      const settings: ProviderSettings = {
+        base_url: ZAI_BASE_URL,
+        model: input.model,
+        api_key: apiKey,
+        updated_at: new Date().toISOString(),
+      };
+      const tempPath = join(this.configDirectory, `.${CONFIG_FILE}.${randomUUID()}.tmp`);
+      try {
+        await writeFile(tempPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+        await chmod(tempPath, 0o600);
+        await rename(tempPath, this.configPath);
+      } finally {
+        await unlink(tempPath).catch(() => {});
+      }
+      return settings;
+    });
   }
 
   /** Removes the stored configuration. Idempotent. */
-  async remove(): Promise<void> {
-    await unlink(this.configPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
+  remove(): Promise<void> {
+    return this.runExclusive(async () => {
+      await unlink(this.configPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
     });
   }
 }

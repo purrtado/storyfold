@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CredentialStore, ZAI_BASE_URL } from "../config";
+import type { ProviderSettings } from "../config";
 import { headersWith, makeConfigDirectory, removeDirectory, startTestServer } from "./helpers";
 
 const API_KEY = "sk-zai-test-key-1234567890";
@@ -71,7 +72,71 @@ describe("CredentialStore", () => {
       await removeDirectory(dir);
     }
   });
+
+  // Regression: a model-only save reads the stored key before writing. When it
+  // overlaps a concurrent mutation on the same shared store instance, the stale
+  // key used to win on disk after the other mutation had already resolved.
+  test("overlapping model-only save cannot undo a completed key rotation", async () => {
+    const dir = await makeConfigDirectory();
+    try {
+      const NEW_KEY = "sk-zai-test-key-0987654321";
+      const store = new GatedCredentialStore(dir);
+      await store.save({ model: "glm-5.3", api_key: API_KEY });
+
+      store.gated = true;
+      const staleSave = store.save({ model: "glm-5.4" });
+      const rotation = store.save({ model: "glm-5.3", api_key: NEW_KEY });
+      store.release();
+      await Promise.all([staleSave, rotation]);
+
+      expect((await store.load())?.api_key).toBe(NEW_KEY);
+    } finally {
+      await removeDirectory(dir);
+    }
+  });
+
+  test("overlapping model-only save cannot resurrect a removed key", async () => {
+    const dir = await makeConfigDirectory();
+    try {
+      const store = new GatedCredentialStore(dir);
+      await store.save({ model: "glm-5.3", api_key: API_KEY });
+
+      store.gated = true;
+      const staleSave = store.save({ model: "glm-5.4" });
+      const removal = store.remove();
+      store.release();
+      await Promise.all([staleSave, removal]);
+
+      expect(await store.load()).toBeNull();
+    } finally {
+      await removeDirectory(dir);
+    }
+  });
 });
+
+// Parks load() after reading the old key, freezing a model-only save inside
+// the window where it holds a stale credential, without sleeps.
+class GatedCredentialStore extends CredentialStore {
+  gated = false;
+  private gate: Promise<void> | null = null;
+  private openGate: (() => void) | null = null;
+
+  async load(): Promise<ProviderSettings | null> {
+    const settings = await super.load();
+    if (this.gated) {
+      this.gate ??= new Promise<void>((resolve) => {
+        this.openGate = resolve;
+      });
+      await this.gate;
+    }
+    return settings;
+  }
+
+  release(): void {
+    this.gated = false;
+    this.openGate?.();
+  }
+}
 
 describe("Provider settings API", () => {
   test("full key lifecycle over HTTP, surviving an app restart", async () => {
