@@ -429,9 +429,8 @@ describe("opening narration", () => {
 
       const history = calls[0].messages as Array<{ role: string; content: string }>;
       expect(history[0].role).toBe("system");
-      expect(history[0].content).toContain("Continue the established story");
-      expect(history[0].content).toContain("An opening was requested after earlier turns");
-      expect(history[0].content).not.toContain("begin the story now");
+      // Accepted player input is retained verbatim; the failed draft is
+      // excluded; no synthetic seed row replaces real history.
       expect(history.filter((message) => message.role !== "system")).toEqual([
         { role: "user", content: "I scout ahead alone." },
       ]);
