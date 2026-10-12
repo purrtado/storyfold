@@ -68,6 +68,14 @@ The API accepts only loopback backend Host headers and frontend origins on local
 
 Settings uses browser-history routes. Production hosting must serve `index.html` for application URLs such as `/settings/general` so direct links and refreshes work (Vite dev/preview already handle this).
 
+## Worlds, campaigns, and server-owned play (M1)
+
+Worlds, personas, campaigns, sessions, and messages persist in a local SQLite database (Bun's `bun:sqlite`, no ORM) at `<data dir>/storyfold.db`. The data dir defaults to the configuration directory (`~/.config/storyfold`); override it with `STORYFOLD_DATA_DIR` (a directory) and the credentials directory with `STORYFOLD_CONFIG_DIR`. The startup sweep settles any reply still `pending` from a previous process as `interrupted`; generation never auto-resumes.
+
+Creating a campaign captures the selected world and persona into immutable snapshots, creates its opening session, and links it as the campaign's active session in one committed transaction — later library edits affect new campaigns only. Messages get server-assigned `position` order; `speaker_name` labels are captured at send time and never re-derived from the library.
+
+The browser never owns play history. It sends a session id plus either new input (`POST /api/sessions/:id/messages`) or an explicit opening request (`POST /api/sessions/:id/opening`); both return a TanStack AI SSE stream and carry `x-storyfold-accepted` plus `x-storyfold-player-message-id` / `x-storyfold-pending-message-id` headers identifying the saved rows. The player's turn commits before the model is invoked; only one `pending` assistant reply may exist per session (concurrent submissions get `409 {code:"busy"}` with nothing saved). The server owns the reply lifecycle: completion requires normal-stop evidence from the provider, Stop (`POST /api/sessions/:id/stop`, works from any browser) or a disconnect settles the reply `interrupted` with its partial text preserved, and provider failures settle it `failed` — accepted player input always survives, and only completed narration plus accepted input feed later model calls, in position order, under fixed narrator instructions built from the campaign snapshots. Nothing is compacted or truncated; a context-limit failure surfaces as a `context_limit` error. Browse the domain via `GET/POST/PATCH /api/worlds`, `/api/personas`, `GET/POST /api/campaigns`, and `GET /api/sessions/:id` (+ `/messages`). A missing provider key answers `400 {code:"no_provider", accepted:true, ...ids}` with the input saved and the draft marked failed.
+
 ## UI components
 
 The composer, transcript scroller, tooltips, and theme indicator are adapted from [beUI](https://beui.dev) registry sources (installed by copying and trimming the component code, not via the shadcn CLI):
