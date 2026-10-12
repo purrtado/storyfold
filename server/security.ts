@@ -50,8 +50,13 @@ export function hasTrustedOrigin(request: Request): boolean {
   return request.headers.get("origin") !== null && trustedOrigin(request) !== null;
 }
 
-export function jsonError(status: number, message: string, extraHeaders?: Record<string, string>): Response {
-  return new Response(JSON.stringify({ error: message }), {
+export function jsonError(
+  status: number,
+  message: string,
+  extraHeaders?: Record<string, string>,
+  extraBody?: Record<string, unknown>,
+): Response {
+  return new Response(JSON.stringify({ error: message, ...extraBody }), {
     status,
     headers: { ...NO_STORE_HEADERS, ...extraHeaders },
   });
@@ -77,13 +82,17 @@ export function preflightResponse(request: Request): Response {
     status: 204,
     headers: {
       "access-control-allow-origin": origin,
-      "access-control-allow-methods": "GET, PUT, DELETE, POST",
+      "access-control-allow-methods": "GET, PUT, PATCH, DELETE, POST",
       "access-control-allow-headers": "content-type",
       "access-control-max-age": "600",
       vary: "Origin",
     },
   });
 }
+
+/** Response headers the browser may read cross-origin on play endpoints. */
+export const EXPOSED_PLAY_HEADERS =
+  "x-storyfold-accepted, x-storyfold-player-message-id, x-storyfold-pending-message-id";
 
 export function withCors(response: Response, request: Request): Response {
   const cors = corsHeadersFor(request);
@@ -154,4 +163,9 @@ export async function readJsonBody(request: Request, limitBytes: number): Promis
   }
 }
 
-export const BODY_LIMITS = { provider: JSON_BODY_MAX_BYTES, chat: CHAT_BODY_MAX_BYTES };
+export const BODY_LIMITS = {
+  provider: JSON_BODY_MAX_BYTES,
+  chat: CHAT_BODY_MAX_BYTES,
+  /** Domain text fields (worlds, personas, campaigns, play input) allow 100k chars. */
+  text: CHAT_BODY_MAX_BYTES,
+};
