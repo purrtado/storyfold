@@ -15,9 +15,12 @@ export interface ComposerProps {
   defaultModel: string | null;
   models: ProviderModel[];
   modelCatalogState: "loading" | "ready" | "error";
+  placeholder?: string;
+  inputLabel?: string;
+  sendLabel?: string;
   /** A reply is being generated anywhere in the app; sends wait. */
   busy?: boolean;
-  /** This conversation owns the running reply and shows the stop control. */
+  /** This session owns the running reply and shows the stop control. */
   showStop?: boolean;
   onStop?: () => void;
 }
@@ -31,6 +34,9 @@ export function Composer({
   defaultModel,
   models,
   modelCatalogState,
+  placeholder = "Write a message…",
+  inputLabel = "Message",
+  sendLabel = "Send message",
   busy = false,
   showStop = false,
   onStop,
@@ -77,16 +83,15 @@ export function Composer({
   };
 
   return (
-    <div className="flex-none border-t border-border bg-background px-4 pbs-3 pbe-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+    <div className="flex-none border-bs border-border bg-background px-4 pbs-3 pbe-[calc(1rem+env(safe-area-inset-bottom,0px))]">
       <form
         onSubmit={submit}
         className="relative mx-auto w-full max-w-3xl rounded-2xl border border-border/80 bg-raised p-2 transition-colors focus-within:border-foreground/25"
       >
         <textarea
-          ref={textareaRef}
           value={value}
-          placeholder="Write a message…"
-          aria-label="Message"
+          placeholder={placeholder}
+          aria-label={inputLabel}
           rows={2}
           onChange={(event) => onValueChange(event.target.value)}
           onKeyDown={handleKeyDown}
@@ -139,10 +144,8 @@ export function Composer({
             </motion.button>
           ) : (
             <motion.button
-              type="submit"
               disabled={!canSubmit}
-              aria-label="Send message"
-              whileTap={reduce ? undefined : { scale: 0.97 }}
+              aria-label={sendLabel}
               transition={SPRING_PRESS}
               className="hit-44 ms-auto inline-flex size-9 cursor-pointer select-none items-center justify-center rounded-full bg-accent text-accent-fg transition-colors [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
             >

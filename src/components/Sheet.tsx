@@ -2,15 +2,15 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useRef, type ReactNode } from "react";
 import { CloseIcon } from "./icons";
 
-// shadcn-style sheet primitive backed by Radix Dialog, scoped to the one
-// variant Storyfold needs: a drawer sliding in from the start edge.
-// Without a Dialog.Trigger, Radix does not know the opener, so focus
-// restore to it is handled here.
+// Radix sheet for the navigation and campaign-details drawers. Without a
+// Dialog.Trigger, focus restoration to the opener is handled here.
 export function Sheet(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: ReactNode;
+  closeLabel?: string;
+  className?: string;
 }) {
   const openerRef = useRef<HTMLElement | null>(null);
   if (props.open && openerRef.current === null) {
@@ -23,7 +23,7 @@ export function Sheet(props: {
         <DialogPrimitive.Portal>
           <DialogPrimitive.Overlay className="backdrop fixed inset-0 z-30 bg-black/40" />
           <DialogPrimitive.Content
-            className="drawer fixed inset-bs-0 inset-be-0 start-0 z-40 w-72 border-e border-border bg-surface"
+            className={props.className ?? "drawer fixed inset-bs-0 inset-be-0 start-0 z-40 w-72 border-e border-border bg-surface"}
             aria-describedby={undefined}
             onCloseAutoFocus={(e) => {
               e.preventDefault();
@@ -35,8 +35,8 @@ export function Sheet(props: {
               {props.title}
             </DialogPrimitive.Title>
             <DialogPrimitive.Close
-              className="pressable absolute end-2 top-2 inline-flex size-9 cursor-pointer items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-foreground"
-              aria-label="Close sidebar"
+              aria-label={props.closeLabel ?? "Close sidebar"}
+              className="pressable absolute inset-bs-2 end-2 z-10 inline-flex size-11 items-center justify-center rounded-lg text-muted transition-colors active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <CloseIcon />
             </DialogPrimitive.Close>
