@@ -34,7 +34,7 @@ describe("Host header protection (DNS rebinding)", () => {
       ["GET", "/api/provider", undefined],
       ["PUT", "/api/provider", "{}"],
       ["DELETE", "/api/provider", undefined],
-      ["POST", "/api/chat", "{}"],
+      ["POST", "/api/worlds", "{}"],
     ] as const) {
       const response = await fetch(`${server.url}${path}`, {
         method,
@@ -77,12 +77,12 @@ describe("Origin protection", () => {
       headers: headersWith(),
     });
     expect(deleted.status).toBe(403);
-    const chat = await fetch(`${server.url}/api/chat`, {
+    const world = await fetch(`${server.url}/api/worlds`, {
       method: "POST",
       headers: headersWith({ "content-type": "application/json" }),
-      body: JSON.stringify({ messages: [] }),
+      body: JSON.stringify({}),
     });
-    expect(chat.status).toBe(403);
+    expect(world.status).toBe(403);
   });
 
   test("mutations from untrusted origins are rejected without echoing input", async () => {
@@ -115,13 +115,13 @@ describe("Origin protection", () => {
     expect(settings.status).toBe(400);
     expect(settings.headers.get("access-control-allow-origin")).toBe(origin);
 
-    const chat = await fetch(`${server.url}/api/chat`, {
+    const world = await fetch(`${server.url}/api/worlds`, {
       method: "POST",
       headers: headersWith({ origin, "content-type": "application/json" }),
-      body: JSON.stringify({ messages: [] }),
+      body: JSON.stringify({}),
     });
-    expect(chat.status).toBe(400);
-    expect(chat.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(world.status).toBe(400);
+    expect(world.headers.get("access-control-allow-origin")).toBe(origin);
   });
 
   test.skipIf(lanAddress === undefined)("rejects other ports and lookalike LAN origins", async () => {
@@ -152,13 +152,14 @@ describe("Origin protection", () => {
     });
     expect(evil.status).toBe(403);
 
-    const trusted = await fetch(`${server.url}/api/chat`, {
+    const trusted = await fetch(`${server.url}/api/worlds`, {
       method: "OPTIONS",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "access-control-request-method": "POST" }),
     });
     expect(trusted.status).toBe(204);
     expect(trusted.headers.get("access-control-allow-origin")).toBe(TRUSTED_ORIGIN);
     expect(trusted.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(trusted.headers.get("access-control-allow-methods")).toContain("PATCH");
     expect(trusted.headers.get("access-control-allow-headers")).toContain("content-type");
 
     const crossRead = await fetch(`${server.url}/api/provider`, { headers: headersWith({ origin: EVIL_ORIGIN }) });
@@ -238,46 +239,51 @@ describe("Routing", () => {
       headers: headersWith({ origin: TRUSTED_ORIGIN }),
     });
     expect(patched.status).toBe(405);
-    expect((await fetch(`${server.url}/api/chat`, { headers: headersWith() })).status).toBe(405);
-    const deletedChat = await fetch(`${server.url}/api/chat`, {
+    const deletedWorld = await fetch(`${server.url}/api/worlds`, {
       method: "DELETE",
       headers: headersWith({ origin: TRUSTED_ORIGIN }),
     });
-    expect(deletedChat.status).toBe(405);
+    expect(deletedWorld.status).toBe(405);
+    const putWorld = await fetch(`${server.url}/api/worlds`, {
+      method: "PUT",
+      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(putWorld.status).toBe(405);
   });
 });
 
-describe("Chat input validation", () => {
-  test("rejects malformed message payloads before touching the provider", async () => {
+describe("Play input validation", () => {
+  test("rejects malformed player payloads before touching the provider or session", async () => {
     const cases: unknown[] = [
       {},
-      { messages: [] },
-      { messages: "hello" },
-      { messages: [{ role: "system", content: "hi" }] },
-      { messages: [{ role: "user", content: "" }] },
-      { messages: [{ role: "user", content: 5 }] },
-      { messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }] },
-      { messages: [{ role: "user", content: "x".repeat(100_001) }] },
-      { messages: Array.from({ length: 257 }, () => ({ role: "user", content: "hi" })) },
+      { content: "" },
+      { content: "   " },
+      { content: 5 },
+      { content: "x".repeat(100_001) },
+      { content: "hi", model: "bad model!" },
     ];
     for (const body of cases) {
-      const response = await fetch(`${server.url}/api/chat`, {
+      const response = await fetch(`${server.url}/api/sessions/no-such-id/messages`, {
         method: "POST",
         headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
         body: JSON.stringify(body),
       });
       expect(response.status).toBe(400);
-      const payload = (await response.json()) as { error: string };
-      expect(typeof payload.error).toBe("string");
+      const payload = (await response.json()) as { error: string; code: string; accepted: boolean };
+      expect(payload.code).toBe("invalid_input");
+      expect(payload.accepted).toBe(false);
     }
   });
 
-  test("chat without a configured key fails safely before contacting upstream", async () => {
-    const response = await fetch(`${server.url}/api/chat`, {
+  test("valid player input on an unknown session is a plain 404", async () => {
+    const response = await fetch(`${server.url}/api/sessions/no-such-id/messages`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      body: JSON.stringify({ content: "I look around." }),
     });
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(404);
+    const payload = (await response.json()) as { code: string };
+    expect(payload.code).toBe("not_found");
   });
 });
