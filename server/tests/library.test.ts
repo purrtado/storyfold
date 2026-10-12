@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Campaign, Persona, World } from "../../shared/domain";
+import type { Campaign, Persona, Session, World } from "../../shared/domain";
 import {
   headersWith,
   makeConfigDirectory,
@@ -109,25 +109,33 @@ describe("personas API", () => {
 });
 
 describe("campaigns API", () => {
-  test("creates campaigns with an explicit or default name and lists newest first", async () => {
-    const world = (await createWorld({ name: "Named World", setting_brief: "b", suggested_starting_situation: "" })).world!;
-    const persona = (await createPersona({ name: "Named Persona", description: "d" })).persona!;
+  test("campaigns create distinctly with or without an explicit name and reopen by id", async () => {
+    const world = (await createWorld({ name: "Two Seat World", setting_brief: "b", suggested_starting_situation: "" })).world!;
+    const persona = (await createPersona({ name: "Two Seat Persona", description: "d" })).persona!;
     const named = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "s", name: "Custom Name" }),
     });
-    expect(((await named.json()) as { campaign: Campaign }).campaign.name).toBe("Custom Name");
-    const defaulted = await fetch(`${base.url}/api/campaigns`, {
+    expect(named.status).toBe(201);
+    const namedBody = (await named.json()) as { campaign: Campaign; session: Session };
+    expect(namedBody.campaign.name).toBe("Custom Name");
+    const unnamed = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "" }),
+      body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "s2" }),
     });
-    expect(((await defaulted.json()) as { campaign: Campaign }).campaign.name).toBe("Named World");
-    const list = (await (await fetch(`${base.url}/api/campaigns`, { headers: headersWith() })).json()) as {
-      campaigns: Campaign[];
-    };
-    expect(list.campaigns[0].name).toBe("Named World");
+    expect(unnamed.status).toBe(201);
+    const unnamedBody = (await unnamed.json()) as { campaign: Campaign; session: Session };
+    expect(unnamedBody.campaign.id).not.toBe(namedBody.campaign.id);
+    expect(unnamedBody.session.id).not.toBe(namedBody.session.id);
+
+    for (const created of [namedBody, unnamedBody]) {
+      const detail = await fetch(`${base.url}/api/campaigns/${created.campaign.id}`, { headers: headersWith() });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as { campaign: Campaign };
+      expect(body.campaign.active_session_id).toBe(created.session.id);
+    }
   });
 
   test("campaign detail exposes parsed snapshots and unknown ids 404", async () => {

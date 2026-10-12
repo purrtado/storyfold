@@ -344,7 +344,11 @@ describe("opening narration", () => {
       upstreamFetch: sseStub(replyFrames("glm-5.3", ["The bells."])),
     });
     try {
-      expect((await postOpening(server.url, session.id)).status).toBe(200);
+      const first = await postOpening(server.url, session.id);
+      const events = await readSse(first);
+      // Drain to completion so the second attempt sees settled state, not a
+      // still-pending reply.
+      expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
       const second = await postOpening(server.url, session.id);
       expect(second.status).toBe(409);
       expect(((await second.json()) as { code: string }).code).toBe("already_opened");
