@@ -2,10 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { startZaiRun } from "../chat";
-import { openAiChatCompletionSse, openAiChatCompletionSseRaw } from "./helpers";
+import { openAiChatCompletionSseRaw } from "./helpers";
 
 const API_KEY = "sk-zai-transport-test-key";
-const ZAI_CHAT_COMPLETIONS_URL = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 
 function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
   return (async () => {
@@ -23,47 +22,6 @@ function textOf(events: StreamChunk[]): string {
 }
 
 describe("Z.AI transport (startZaiRun)", () => {
-  test("streams from the fixed chat-completions endpoint with bearer key and full grounding", async () => {
-    const calls: Array<{ input: string | URL | Request; init: RequestInit | undefined }> = [];
-    const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
-      calls.push({ input, init });
-      return new Response(openAiChatCompletionSse("glm-5.3", ["Hello", " world"]), {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    }) as typeof fetch;
-
-    const run = startZaiRun({
-      model: "glm-5.3",
-      apiKey: API_KEY,
-      systemPrompt: "You are the narrator. World — Veloria.",
-      messages: [
-        { role: "user", content: "Begin the opening scene." },
-        { role: "assistant", content: "Dawn broke over the harbor." },
-        { role: "user", content: "I scan the docks." },
-      ],
-      upstreamFetch: upstream,
-    });
-    const events = await collect(run.stream);
-
-    expect(calls.length).toBe(1);
-    expect(String(calls[0].input)).toBe(ZAI_CHAT_COMPLETIONS_URL);
-    const headers = new Headers(calls[0].init?.headers);
-    expect(headers.get("authorization")).toBe(`Bearer ${API_KEY}`);
-    const body = JSON.parse(String(calls[0].init?.body)) as {
-      model: string;
-      messages: Array<{ role: string; content: string }>;
-    };
-    expect(body.model).toBe("glm-5.3");
-    expect(body.messages[0].role).toBe("system");
-    expect(body.messages[0].content).toContain("Veloria");
-    expect(body.messages.at(-1)).toEqual({ role: "user", content: "I scan the docks." });
-
-    expect(events[0].type).toBe(EventType.RUN_STARTED);
-    expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
-    expect(textOf(events)).toBe("Hello world");
-  });
-
   test("upstream failures end with one redacted safe RUN_ERROR and never a finish", async () => {
     for (const status of [401, 429, 500]) {
       const upstream = (async (

@@ -1,18 +1,19 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { Database } from "bun:sqlite";
 import { createCampaign, createPersona, createWorld } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
-import { makeConfigDirectory, removeDirectory } from "./helpers";
-
-const configDirectory = await makeConfigDirectory();
-const db = openDatabase(join(configDirectory, "invariants.db"));
-
-afterAll(async () => {
-  db.close();
-  await removeDirectory(configDirectory);
-});
 
 const NOW = "2026-01-01T00:00:00Z";
+
+let db: Database;
+
+beforeEach(() => {
+  db = openDatabase(":memory:");
+});
+
+afterEach(() => {
+  db.close();
+});
 
 function seedLibrary(): { worldId: string; personaId: string } {
   const world = createWorld(db, {
@@ -24,11 +25,17 @@ function seedLibrary(): { worldId: string; personaId: string } {
   return { worldId: world.id, personaId: persona.id };
 }
 
-function insertMessage(sessionId: string, position: number, role: string, status: string): void {
+function insertMessage(sessionId: string, position: number, role: string, status: string, content = "x"): string {
+  const id = crypto.randomUUID();
   db.query(
     `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'Narrator', 'x', ?, ?, ?)`,
-  ).run(crypto.randomUUID(), sessionId, position, role, status, NOW, NOW);
+     VALUES (?, ?, ?, ?, 'Narrator', ?, ?, ?, ?)`,
+  ).run(id, sessionId, position, role, content, status, NOW, NOW);
+  return id;
+}
+
+function campaignRows(): Array<Record<string, unknown>> {
+  return db.query<Record<string, unknown>, []>("SELECT * FROM campaigns").all();
 }
 
 describe("schema invariants", () => {
@@ -53,20 +60,34 @@ describe("schema invariants", () => {
       ).run(worldId, personaId, session.id, NOW, NOW);
     });
     expect(() => steal.immediate()).toThrow(/FOREIGN KEY/);
-    const stolen = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM campaigns WHERE id = 'c2'").get();
-    expect(stolen?.n).toBe(0);
+    expect(campaignRows().map((row) => row.id)).toEqual([campaign.id]);
+    const survived = db
+      .query<{ id: string; active_session_id: string }, [string]>(
+        "SELECT id, active_session_id FROM campaigns WHERE id = ?",
+      )
+      .get(campaign.id)!;
+    expect(survived.active_session_id).toBe(session.id);
   });
 
-  test("message positions are unique per session and server-assigned sequentially", () => {
+  test("message positions are unique per session and persist in order", () => {
     const { worldId, personaId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
       persona_id: personaId,
       starting_situation: "Order.",
     });
-    insertMessage(session.id, 1, "user", "complete");
+    const first = insertMessage(session.id, 1, "user", "complete");
     expect(() => insertMessage(session.id, 1, "user", "complete")).toThrow(/UNIQUE/);
-    insertMessage(session.id, 2, "user", "complete");
+    const second = insertMessage(session.id, 2, "user", "complete");
+    const rows = db
+      .query<{ id: string; position: number }, [string]>(
+        "SELECT id, position FROM messages WHERE session_id = ? ORDER BY position",
+      )
+      .all(session.id);
+    expect(rows).toEqual([
+      { id: first, position: 1 },
+      { id: second, position: 2 },
+    ]);
   });
 
   test("only one pending assistant reply may exist per session, and settlement frees the slot", () => {
@@ -76,11 +97,22 @@ describe("schema invariants", () => {
       persona_id: personaId,
       starting_situation: "Excl.",
     });
-    insertMessage(session.id, 1, "assistant", "pending");
+    const first = insertMessage(session.id, 1, "assistant", "pending");
     expect(() => insertMessage(session.id, 2, "assistant", "pending")).toThrow();
     // Settling the first reply releases the exclusivity slot.
-    db.query("UPDATE messages SET status = 'interrupted' WHERE session_id = ? AND status = 'pending'").run(session.id);
-    expect(() => insertMessage(session.id, 2, "assistant", "pending")).not.toThrow();
+    db.query(
+      "UPDATE messages SET status = 'interrupted' WHERE id = ? AND status = 'pending'",
+    ).run(first);
+    const second = insertMessage(session.id, 2, "assistant", "pending");
+    const rows = db
+      .query<{ id: string; status: string }, [string]>(
+        "SELECT id, status FROM messages WHERE session_id = ? ORDER BY position",
+      )
+      .all(session.id);
+    expect(rows).toEqual([
+      { id: first, status: "interrupted" },
+      { id: second, status: "pending" },
+    ]);
   });
 
   test("multiple sessions may share one campaign", () => {
@@ -90,17 +122,17 @@ describe("schema invariants", () => {
       persona_id: personaId,
       starting_situation: "Multi.",
     });
-    const now = new Date().toISOString();
-    expect(() =>
-      db
-        .query(
-          "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'Second', ?, ?)",
-        )
-        .run(crypto.randomUUID(), campaign.id, now, now),
-    ).not.toThrow();
+    const extra = crypto.randomUUID();
+    db.query(
+      "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'Second', ?, ?)",
+    ).run(extra, campaign.id, NOW, NOW);
+    const sessions = db
+      .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE campaign_id = ?")
+      .all(campaign.id);
+    expect(sessions.map((row) => row.id).sort()).toEqual([campaign.active_session_id, extra].sort());
   });
 
-  test("roles, statuses and user completion are constrained", () => {
+  test("roles, statuses and user completion are constrained and persisted", () => {
     const { worldId, personaId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
@@ -109,7 +141,13 @@ describe("schema invariants", () => {
     });
     expect(() => insertMessage(session.id, 1, "narrator", "complete")).toThrow();
     expect(() => insertMessage(session.id, 2, "user", "pending")).toThrow();
-    expect(() => insertMessage(session.id, 3, "assistant", "complete")).not.toThrow();
+    const kept = insertMessage(session.id, 3, "assistant", "complete");
+    const row = db
+      .query<{ id: string; role: string; status: string }, [string]>(
+        "SELECT id, role, status FROM messages WHERE id = ?",
+      )
+      .get(kept)!;
+    expect(row).toEqual({ id: kept, role: "assistant", status: "complete" });
   });
 
   test("snapshot columns refuse non-JSON text", () => {
@@ -127,27 +165,34 @@ describe("schema invariants", () => {
       ).run(sessionId, db.query<{ id: string }, []>("SELECT id FROM campaigns WHERE name = 'Broken'").get()!.id, NOW, NOW);
     });
     expect(() => broken.immediate()).toThrow();
+    expect(campaignRows()).toEqual([]);
   });
 });
 
 describe("startup sweep", () => {
-  test("settles abandoned pending replies interrupted and leaves settled rows alone", () => {
+  test("settles only the pending draft interrupted and preserves partial, input and identity", () => {
     const { worldId, personaId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
       persona_id: personaId,
       starting_situation: "Crash.",
     });
-    insertMessage(session.id, 1, "assistant", "pending");
-    insertMessage(session.id, 2, "user", "complete");
+    const draftId = insertMessage(session.id, 1, "assistant", "pending", "partial text");
+    const inputId = insertMessage(session.id, 2, "user", "complete", "accepted input");
 
-    // The sweep is workspace-global: earlier tests may leave their own pending
-    // rows behind, so assert at least this session's row was settled.
-    expect(sweepAbandonedPending(db)).toBeGreaterThanOrEqual(1);
+    expect(sweepAbandonedPending(db)).toBe(1);
     const rows = db
-      .query<{ status: string }, [string]>("SELECT status FROM messages WHERE session_id = ? ORDER BY position")
+      .query<
+        { id: string; position: number; role: string; speaker_name: string; content: string; status: string },
+        [string]
+      >(
+        "SELECT id, position, role, speaker_name, content, status FROM messages WHERE session_id = ? ORDER BY position",
+      )
       .all(session.id);
-    expect(rows.map((row) => row.status)).toEqual(["interrupted", "complete"]);
+    expect(rows).toEqual([
+      { id: draftId, position: 1, role: "assistant", speaker_name: "Narrator", content: "partial text", status: "interrupted" },
+      { id: inputId, position: 2, role: "user", speaker_name: "Narrator", content: "accepted input", status: "complete" },
+    ]);
     // Sweeping again is a no-op.
     expect(sweepAbandonedPending(db)).toBe(0);
   });

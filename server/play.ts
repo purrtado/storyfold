@@ -153,10 +153,10 @@ export class PlayService {
    * Fixed narrator grounding, built only from the campaign's captured
    * snapshots. The campaign's starting situation is used as written — a
    * deliberately blank one stays blank; the world's suggestion is never
-   * reapplied. Only an opening run asks the model to start a scene; later
-   * turns continue the established story.
+   * reapplied. Only a story without prior narration asks the model to start a
+   * scene; an opening retried after accepted player turns continues the story.
    */
-  narratorSystemPrompt(campaign: Campaign, opening: boolean): string {
+  narratorSystemPrompt(campaign: Campaign, opening: boolean, hasHistory: boolean): string {
     const world = campaign.world_snapshot;
     const persona = campaign.persona_snapshot;
     const situation =
@@ -176,9 +176,12 @@ export class PlayService {
       "Narrate the world and every other character yourself; never narrate",
       `${persona.name}'s decisions, words, or thoughts.`,
       "",
-      opening
-        ? "There is no prior narration: begin the story now with an opening scene."
-        : "Continue the established story from the player's latest input; do not restart or retell earlier events.",
+      hasHistory
+        ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
+        : "There is no prior narration: begin the story now with an opening scene.",
+      ...(opening && hasHistory
+        ? ["An opening was requested after earlier turns: continue, do not restart."]
+        : []),
     ].join("\n");
   }
 
@@ -207,49 +210,55 @@ export class PlayService {
     disconnectSignal?: AbortSignal;
     upstreamFetch?: typeof fetch;
   }): Response {
+    const service = this;
+    const sessionId = options.sessionId;
+
+    // First terminal settlement wins and releases the exclusivity slot, so a
+    // stalled upstream can never hold a session hostage.
+    function onDisconnect(): void {
+      run.settle("interrupted");
+      run.controller.abort(options.disconnectSignal?.reason);
+    }
+    function detachDisconnect(): void {
+      options.disconnectSignal?.removeEventListener("abort", onDisconnect);
+    }
     const run: ActiveRun = {
       controller: new AbortController(),
       messageId: options.pendingId,
       partial: "",
       settled: false,
-      settle: () => {},
+      settle(status) {
+        if (run.settled) return;
+        run.settled = true;
+        service.settlePending(run.messageId, status, run.partial);
+        detachDisconnect();
+        service.unregister(sessionId, run);
+      },
     };
-    this.runs.set(options.sessionId, run);
+    this.runs.set(sessionId, run);
 
-    // First terminal settlement wins and releases the exclusivity slot, so a
-    // stalled upstream can never hold a session hostage.
-    const detachDisconnect = () =>
-      options.disconnectSignal?.removeEventListener("abort", onDisconnect);
-    const settleRun = (status: "complete" | "interrupted" | "failed"): void => {
-      if (run.settled) return;
-      run.settled = true;
-      this.settlePending(run.messageId, status, run.partial);
-      detachDisconnect();
-      this.unregister(options.sessionId, run);
-    };
-    run.settle = settleRun;
     // Disconnect must settle synchronously and abort the shared controller:
     // it cannot depend on a stalled upstream noticing the abort.
-    const onDisconnect = () => {
-      settleRun("interrupted");
-      run.controller.abort(options.disconnectSignal?.reason);
-    };
     if (options.disconnectSignal?.aborted) {
       onDisconnect();
     } else {
       options.disconnectSignal?.addEventListener("abort", onDisconnect, { once: true });
     }
 
-    const history = this.modelHistory(options.sessionId);
-    const opening = history.length === 0;
+    // An opening request (no player row) is the protocol kind; whether the
+    // story actually starts fresh depends on the history: an opening retried
+    // after accepted player turns must continue, never restart.
+    const opening = options.playerId === null;
+    const history = this.modelHistory(sessionId);
 
     const { stream: upstream } = startZaiRun({
       model: options.settings.model,
       apiKey: options.settings.apiKey,
-      systemPrompt: this.narratorSystemPrompt(options.campaign, opening),
-      messages: opening
-        ? [{ role: "user", content: "Begin the opening scene." }]
-        : history,
+      systemPrompt: this.narratorSystemPrompt(options.campaign, opening, history.length > 0),
+      messages:
+        history.length > 0
+          ? history
+          : [{ role: "user", content: "Begin the opening scene." }],
       abortController: run.controller,
       upstreamFetch: options.upstreamFetch,
     });
@@ -262,7 +271,7 @@ export class PlayService {
     };
     if (options.playerId !== null) headers["x-storyfold-player-message-id"] = options.playerId;
 
-    return toServerSentEventsResponse(this.lifecycle(run, upstream, settleRun), {
+    return toServerSentEventsResponse(this.lifecycle(run, upstream), {
       headers,
       abortController: run.controller,
       debug: false,
@@ -278,7 +287,6 @@ export class PlayService {
   private lifecycle(
     run: ActiveRun,
     upstream: AsyncIterable<StreamChunk>,
-    settleRun: (status: "complete" | "interrupted" | "failed") => void,
   ): AsyncGenerator<StreamChunk> {
     const persist = this.db.query(
       "UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
@@ -296,12 +304,12 @@ export class PlayService {
           if (chunk.type === EventType.RUN_FINISHED) {
             if (run.partial.trim().length > 0) {
               // Normal-stop evidence with real narration: complete.
-              settleRun("complete");
+              run.settle("complete");
               yield chunk;
               return;
             }
             // An empty reply is a failure, never a silent success.
-            settleRun("failed");
+            run.settle("failed");
             yield {
               type: EventType.RUN_ERROR,
               message: "The narrator returned an empty reply. Try again.",
@@ -311,19 +319,19 @@ export class PlayService {
             return;
           }
           if (chunk.type === EventType.RUN_ERROR) {
-            settleRun("failed");
+            run.settle("failed");
             yield chunk;
             return;
           }
           yield chunk;
         }
         // Ended without any terminal event and not aborted: a failed draft.
-        if (!run.controller.signal.aborted) settleRun("failed");
+        if (!run.controller.signal.aborted) run.settle("failed");
       } catch {
         // Abort from Stop or disconnect; those paths settle synchronously.
-        settleRun("interrupted");
+        run.settle("interrupted");
       } finally {
-        settleRun("interrupted");
+        run.settle("interrupted");
       }
     }
     return generate();

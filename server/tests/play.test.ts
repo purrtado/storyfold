@@ -385,6 +385,65 @@ describe("opening narration", () => {
     }
   });
 
+  test("an opening retried after accepted player input continues with full history", async () => {
+    const { session } = await seedStory(base.url);
+    const draftText = "A doomed distinct narration, cut off mid-sentence";
+    const { fetch: failing, releaseError } = failingUpstream("glm-5.3", [draftText]);
+    const failServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
+    try {
+      const turn = await postMessage(failServer.url, session.id, { content: "I scout ahead alone." });
+      const playerId = turn.headers.get("x-storyfold-player-message-id");
+      if (!playerId) throw new Error("missing player id header");
+      await waitFor(
+        async () => (await transcript(failServer.url, session.id)).at(-1)?.content === draftText,
+        "distinct partial to persist",
+      );
+      releaseError();
+      await waitFor(
+        async () => (await transcript(failServer.url, session.id)).at(-1)?.status === "failed",
+        "draft to settle failed",
+      );
+    } finally {
+      releaseError();
+      await failServer.stop();
+    }
+
+    const calls: Array<Record<string, unknown>> = [];
+    const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(openAiChatCompletionSse("glm-5.3", ["Recovered."]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      const retry = await postOpening(server.url, session.id);
+      expect(retry.status).toBe(200);
+      const events = await readSse(retry);
+      expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+
+      const history = calls[0].messages as Array<{ role: string; content: string }>;
+      expect(history[0].role).toBe("system");
+      expect(history[0].content).toContain("Continue the established story");
+      expect(history[0].content).toContain("An opening was requested after earlier turns");
+      expect(history[0].content).not.toContain("begin the story now");
+      expect(history.filter((message) => message.role !== "system")).toEqual([
+        { role: "user", content: "I scout ahead alone." },
+      ]);
+      expect(JSON.stringify(history)).not.toContain("Begin the opening scene.");
+
+      const rows = await transcript(server.url, session.id);
+      expect(rows.map((row) => [row.role, row.status])).toEqual([
+        ["user", "complete"],
+        ["assistant", "failed"],
+        ["assistant", "complete"],
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   test("openings accept a per-run model override", async () => {
     const { session } = await seedStory(base.url);
     const calls: Array<Record<string, unknown>> = [];
