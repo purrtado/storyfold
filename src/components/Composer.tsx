@@ -89,6 +89,7 @@ export function Composer({
         className="relative mx-auto w-full max-w-3xl rounded-2xl border border-border/80 bg-raised p-2 transition-colors focus-within:border-foreground/25"
       >
         <textarea
+          ref={textareaRef}
           value={value}
           placeholder={placeholder}
           aria-label={inputLabel}
