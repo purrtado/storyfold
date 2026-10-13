@@ -1,5 +1,5 @@
-import { describe, expect, mock, test } from "bun:test";
-import type { LibrarySnapshot } from "./libraryCache";
+import { describe, expect, test } from "bun:test";
+import { createLibrary, type Library, type LibrarySnapshot } from "./libraryCache";
 import type { Persona, World } from "../../shared/domain";
 
 type Deferred<T> = {
@@ -19,49 +19,40 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-const worldReads: Array<Deferred<World[]>> = [];
-const personaReads: Array<Deferred<Persona[]>> = [];
-
-mock.module("./storyApi", () => ({
-  fetchWorlds: () => {
-    const read = deferred<World[]>();
-    worldReads.push(read);
-    return read.promise;
-  },
-  fetchPersonas: () => {
-    const read = deferred<Persona[]>();
-    personaReads.push(read);
-    return read.promise;
-  },
-}));
-
-// Static import would evaluate libraryCache before mock.module registers, so the
-// reads below must intercept storyApi first.
-const { personasLibrary, refreshWorlds, warmLibraries, worldsLibrary } = await import("./libraryCache");
-
-function world(id: string): World {
+function world(id: string, name: string): World {
   return {
     id,
-    name: `World ${id}`,
-    setting_brief: "",
-    suggested_starting_situation: "",
+    name,
+    setting_brief: `${name} stretches between a drowned harbor and stubborn hill farms.`,
+    suggested_starting_situation: `The caravan reaches ${name} at dusk with one wagon axle cracked.`,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   };
 }
 
-function persona(id: string): Persona {
+function persona(id: string, name: string): Persona {
   return {
     id,
-    name: `Persona ${id}`,
-    description: "",
+    name,
+    description: `${name} is a cautious cartographer who trusts neither maps nor their makers.`,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   };
 }
 
-function latestRead<T>(queue: Array<Deferred<T>>): Deferred<T> {
-  const read = queue[queue.length - 1];
+function trackedLibrary<T extends { id: string }>(
+  reads: Array<Deferred<T[]>>,
+  unavailableMessage: string,
+): Library<T> {
+  return createLibrary<T>(() => {
+    const read = deferred<T[]>();
+    reads.push(read);
+    return read.promise;
+  }, unavailableMessage);
+}
+
+function latestRead<T>(reads: Array<Deferred<T>>): Deferred<T> {
+  const read = reads[reads.length - 1];
   if (!read) throw new Error("expected a pending read");
   return read;
 }
@@ -70,146 +61,166 @@ function itemIds<T extends { id: string }>(snapshot: LibrarySnapshot<T>): string
   return (snapshot.items ?? []).map((item) => item.id);
 }
 
-function waitFor<T>(
-  library: { getSnapshot: () => LibrarySnapshot<T>; subscribe: (listener: () => void) => () => void },
-  predicate: (snapshot: LibrarySnapshot<T>) => boolean,
-): Promise<void> {
-  let resolve!: () => void;
-  const done = new Promise<void>((res) => {
-    resolve = res;
-  });
-  let unsubscribe: (() => void) | undefined;
-  const check = () => {
-    if (!predicate(library.getSnapshot())) return;
-    unsubscribe?.();
-    resolve();
-  };
-  unsubscribe = library.subscribe(check);
-  check();
-  return done;
-}
+describe("library cache", () => {
+  test("moves from unloaded through a loaded empty library to loaded records", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
+    expect(library.getSnapshot().items).toBeUndefined();
 
-describe("worlds library", () => {
-  test("starts unloaded, distinct from a loaded empty library", () => {
-    const snapshot = worldsLibrary.getSnapshot();
-    expect(snapshot.items).toBeUndefined();
-    expect(snapshot.loading).toBeFalse();
-    expect(snapshot.loadError).toBeUndefined();
-    expect(snapshot.refreshError).toBeUndefined();
+    const emptyLoad = library.load();
+    latestRead(reads).resolve([]);
+    await emptyLoad;
+    const empty = library.getSnapshot();
+    expect(empty.items).toEqual([]);
+    expect(empty.loading).toBeFalse();
+
+    const fullLoad = library.load();
+    latestRead(reads).resolve([world("w1", "Midgard")]);
+    await fullLoad;
+    expect(itemIds(library.getSnapshot())).toEqual(["w1"]);
   });
 
-  test("initial failure stays explicit; retry goes back to a pending read then succeeds", async () => {
-    refreshWorlds();
-    expect(worldsLibrary.getSnapshot().loading).toBeTrue();
-    const failed = latestRead(worldReads);
-    failed.reject(new Error("offline"));
-    await waitFor(worldsLibrary, (snapshot) => snapshot.loadError === "offline");
-    expect(worldsLibrary.getSnapshot().items).toBeUndefined();
+  test("keeps an initial failure explicit until a retry succeeds", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
 
-    refreshWorlds();
-    expect(worldsLibrary.getSnapshot().loadError).toBeUndefined();
-    const retry = latestRead(worldReads);
-    retry.resolve([world("w1")]);
-    await retry.promise;
-    await waitFor(worldsLibrary, (snapshot) => snapshot.items !== undefined);
-    const snapshot = worldsLibrary.getSnapshot();
-    expect(itemIds(snapshot)).toEqual(["w1"]);
-    expect(snapshot.loadError).toBeUndefined();
-    expect(snapshot.loading).toBeFalse();
+    const failedLoad = library.load();
+    latestRead(reads).reject(new Error("offline"));
+    await failedLoad;
+    const failed = library.getSnapshot();
+    expect(failed.items).toBeUndefined();
+    expect(failed.loadError).not.toBeUndefined();
+    expect(failed.loading).toBeFalse();
+
+    const retryLoad = library.load();
+    expect(library.getSnapshot().loadError).toBeUndefined();
+    latestRead(reads).resolve([world("w1", "Midgard")]);
+    await retryLoad;
+    const recovered = library.getSnapshot();
+    expect(itemIds(recovered)).toEqual(["w1"]);
+    expect(recovered.loadError).toBeUndefined();
+    expect(recovered.loading).toBeFalse();
   });
 
-  test("failed revalidation keeps records; the notice holds until a successful full read", async () => {
-    refreshWorlds();
-    latestRead(worldReads).reject(new Error("still offline"));
-    await waitFor(worldsLibrary, (snapshot) => snapshot.refreshError === "still offline");
-    expect(itemIds(worldsLibrary.getSnapshot())).toEqual(["w1"]);
+  test("keeps records through a failed revalidation and holds the notice until a read succeeds", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
+    const midgard = world("w1", "Midgard");
+    const seedLoad = library.load();
+    latestRead(reads).resolve([midgard]);
+    await seedLoad;
 
-    refreshWorlds();
-    const pending = worldsLibrary.getSnapshot();
+    const failedLoad = library.load();
+    latestRead(reads).reject(new Error("still offline"));
+    await failedLoad;
+    const failed = library.getSnapshot();
+    expect(itemIds(failed)).toEqual(["w1"]);
+    expect(failed.refreshError).not.toBeUndefined();
+    expect(failed.loading).toBeFalse();
+
+    const retryLoad = library.load();
+    const pending = library.getSnapshot();
     expect(pending.loading).toBeTrue();
-    expect(pending.refreshError).toBe("still offline");
-    const recovery = latestRead(worldReads);
-    recovery.resolve([world("w1"), world("w2")]);
-    await recovery.promise;
-    await waitFor(worldsLibrary, (snapshot) => !snapshot.loading);
-    const snapshot = worldsLibrary.getSnapshot();
-    expect(snapshot.refreshError).toBeUndefined();
-    expect(itemIds(snapshot)).toEqual(["w1", "w2"]);
+    expect(pending.refreshError).not.toBeUndefined();
+    latestRead(reads).resolve([midgard, world("w2", "Umbra")]);
+    await retryLoad;
+    const settled = library.getSnapshot();
+    expect(settled.refreshError).toBeUndefined();
+    expect(itemIds(settled)).toEqual(["w1", "w2"]);
   });
 
-  test("overlapping reads apply only the latest response", async () => {
-    refreshWorlds();
-    refreshWorlds();
-    const superseded = worldReads[worldReads.length - 2];
-    const authoritative = latestRead(worldReads);
-    authoritative.resolve([world("w2")]);
-    await authoritative.promise;
-    superseded.resolve([world("w-old")]);
-    await superseded.promise;
-    await waitFor(worldsLibrary, (snapshot) => !snapshot.loading);
-    const snapshot = worldsLibrary.getSnapshot();
+  test("applies only the latest read when reads overlap", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
+    const firstLoad = library.load();
+    const secondLoad = library.load();
+
+    latestRead(reads).resolve([world("w2", "Umbra")]);
+    await secondLoad;
+    reads[reads.length - 2].resolve([world("w-old", "Ruins")]);
+    await firstLoad;
+
+    const snapshot = library.getSnapshot();
     expect(itemIds(snapshot)).toEqual(["w2"]);
     expect(snapshot.loading).toBeFalse();
   });
 
-  test("save during a held read survives the stale response and reconciles the full list", async () => {
-    refreshWorlds();
-    const held = latestRead(worldReads);
-    const saved = world("w-saved");
-    worldsLibrary.applySaved(saved, undefined);
-    expect(itemIds(worldsLibrary.getSnapshot())).toEqual(["w-saved", "w2"]);
+  test("a save during a held read survives the older response and reconciles the full list", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
+    const midgard = world("w1", "Midgard");
+    const seedLoad = library.load();
+    latestRead(reads).resolve([midgard]);
+    await seedLoad;
 
-    held.resolve([world("w-old")]);
-    await held.promise;
-    expect(itemIds(worldsLibrary.getSnapshot())).toContain("w-saved");
+    const heldLoad = library.load();
+    const heldRead = latestRead(reads);
+    const created = world("w9", "Vashkel");
+    library.applySaved(created, undefined);
+    expect(itemIds(library.getSnapshot())).toEqual(["w9", "w1"]);
 
-    const reconcile = latestRead(worldReads);
-    expect(reconcile).not.toBe(held);
-    reconcile.resolve([world("w2"), saved, world("w3")]);
-    await reconcile.promise;
-    await waitFor(worldsLibrary, (snapshot) => !snapshot.loading);
-    expect(itemIds(worldsLibrary.getSnapshot())).toEqual(["w2", "w-saved", "w3"]);
+    heldRead.resolve([midgard]);
+    await heldLoad;
+    expect(itemIds(library.getSnapshot())).toContain("w9");
+
+    const reconcileRead = latestRead(reads);
+    expect(reconcileRead).not.toBe(heldRead);
+    reconcileRead.resolve([midgard, created, world("w3", "Umbra")]);
+    await reconcileRead.promise;
+    expect(itemIds(library.getSnapshot())).toEqual(["w1", "w9", "w3"]);
+    expect(library.getSnapshot().loading).toBeFalse();
   });
 
-  test("edit replaces the cached record from the returned server record", () => {
-    worldsLibrary.applySaved({ ...world("w2"), name: "Renamed" }, "w2");
-    const snapshot = worldsLibrary.getSnapshot();
-    expect(itemIds(snapshot)).toEqual(["w2", "w-saved", "w3"]);
-    expect(snapshot.items?.[0]?.name).toBe("Renamed");
-  });
-});
+  test("an edit during a held read lands in place and beats the pre-edit response", async () => {
+    const reads: Array<Deferred<World[]>> = [];
+    const library = trackedLibrary<World>(reads, "Could not load worlds.");
+    const midgard = world("w1", "Midgard");
+    const umbra = world("w2", "Umbra");
+    const seedLoad = library.load();
+    latestRead(reads).resolve([midgard, umbra]);
+    await seedLoad;
 
-describe("personas library", () => {
-  test("warm loads unloaded libraries once and skips loaded or in-flight ones", () => {
-    const worldsBefore = worldReads.length;
-    warmLibraries();
-    expect(worldReads.length).toBe(worldsBefore);
-    expect(personaReads.length).toBe(1);
-    warmLibraries();
-    expect(personaReads.length).toBe(1);
-  });
+    const heldLoad = library.load();
+    const heldRead = latestRead(reads);
+    const renamed = { ...midgard, name: "Midgard Reach" };
+    library.applySaved(renamed, midgard.id);
+    const edited = library.getSnapshot();
+    expect(itemIds(edited)).toEqual(["w1", "w2"]);
+    expect(edited.items?.[0]?.name).toBe("Midgard Reach");
 
-  test("save during the cold read survives the pre-save response and reconciles", async () => {
-    const cold = latestRead(personaReads);
-    const saved = persona("p-saved");
-    personasLibrary.applySaved(saved, undefined);
-    expect(itemIds(personasLibrary.getSnapshot())).toEqual(["p-saved"]);
-    expect(personaReads.length).toBe(2);
+    heldRead.resolve([midgard, umbra]);
+    await heldLoad;
+    expect(library.getSnapshot().items?.[0]?.name).toBe("Midgard Reach");
 
-    cold.resolve([]);
-    await cold.promise;
-    expect(itemIds(personasLibrary.getSnapshot())).toEqual(["p-saved"]);
-
-    const reconcile = latestRead(personaReads);
-    reconcile.resolve([persona("p0"), saved]);
-    await reconcile.promise;
-    await waitFor(personasLibrary, (snapshot) => !snapshot.loading);
-    expect(itemIds(personasLibrary.getSnapshot())).toEqual(["p0", "p-saved"]);
+    const reconcileRead = latestRead(reads);
+    expect(reconcileRead).not.toBe(heldRead);
+    reconcileRead.resolve([renamed, umbra]);
+    await reconcileRead.promise;
+    const settled = library.getSnapshot();
+    expect(itemIds(settled)).toEqual(["w1", "w2"]);
+    expect(settled.items?.[0]?.name).toBe("Midgard Reach");
+    expect(settled.loading).toBeFalse();
   });
 
-  test("warm skips libraries that already loaded", () => {
-    const before = personaReads.length;
-    warmLibraries();
-    expect(personaReads.length).toBe(before);
+  test("a save during the cold read keeps the record and reconciles the full list", async () => {
+    const reads: Array<Deferred<Persona[]>> = [];
+    const library = trackedLibrary<Persona>(reads, "Could not load personas.");
+
+    const coldLoad = library.load();
+    const coldRead = latestRead(reads);
+    const created = persona("p9", "Ilse");
+    library.applySaved(created, undefined);
+    expect(itemIds(library.getSnapshot())).toEqual(["p9"]);
+
+    coldRead.resolve([]);
+    await coldLoad;
+    expect(itemIds(library.getSnapshot())).toEqual(["p9"]);
+
+    const reconcileRead = latestRead(reads);
+    expect(reconcileRead).not.toBe(coldRead);
+    reconcileRead.resolve([persona("p1", "Nils"), created]);
+    await reconcileRead.promise;
+    expect(itemIds(library.getSnapshot())).toEqual(["p1", "p9"]);
+    expect(library.getSnapshot().loading).toBeFalse();
   });
 });

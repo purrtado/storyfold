@@ -10,14 +10,14 @@ export type LibrarySnapshot<T> = {
   refreshError: string | undefined;
 };
 
-type Library<T extends { id: string }> = {
+export type Library<T extends { id: string }> = {
   getSnapshot: () => LibrarySnapshot<T>;
   subscribe: (listener: () => void) => () => void;
   load: () => Promise<void>;
   applySaved: (saved: T, previousId: string | undefined) => void;
 };
 
-function createLibrary<T extends { id: string }>(
+export function createLibrary<T extends { id: string }>(
   fetchItems: () => Promise<T[]>,
   unavailableMessage: string,
 ): Library<T> {
