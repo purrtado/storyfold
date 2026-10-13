@@ -10,6 +10,7 @@ import { Sheet } from "./components/Sheet";
 import { Sidebar } from "./components/Sidebar";
 import { WorldsPage } from "./components/WorldsPage";
 import { fetchCampaigns, fetchSession, fetchSessionMessages } from "./lib/storyApi";
+import { refreshLibraries, warmLibraries } from "./lib/libraryCache";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
 
@@ -110,11 +111,13 @@ export default function App() {
 
   useEffect(() => {
     void refreshCampaigns();
+    warmLibraries();
   }, [refreshCampaigns]);
 
   useEffect(() => {
     const onFocus = () => {
       void refreshCampaigns();
+      refreshLibraries();
       if (activeSessionId) {
         void refreshSession(activeSessionId);
         void refreshSessionMessages(activeSessionId);

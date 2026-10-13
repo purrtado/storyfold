@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Globe2, Pencil, Plus, Search } from "lucide-react";
 import type { World } from "../../shared/domain";
-import { createWorld, fetchWorlds, updateWorld, type WorldInput } from "../lib/storyApi";
+import { createWorld, updateWorld, type WorldInput } from "../lib/storyApi";
+import { refreshWorlds, useWorlds, worldsLibrary } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
 
 const emptyWorld: WorldInput = {
@@ -14,36 +15,30 @@ export function WorldsPage(props: {
   onOpenSidebar: () => void;
   onSelect: (world: World) => void;
 }) {
-  const [worlds, setWorlds] = useState<World[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
+  const library = useWorlds();
+  const worlds = library.items;
+  const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<{ id: string | null; value: WorldInput } | null>(null);
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setLoadError("");
-    fetchWorlds().then(
-      (items) => {
-        if (active) setWorlds(items);
-      },
-      (error: unknown) => {
-        if (active) setLoadError(error instanceof Error ? error.message : "Could not load worlds.");
-      },
-    ).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
-  }, [reloadKey]);
+    refreshWorlds();
+  }, []);
+
+  const coldLoading = worlds === undefined && library.loadError === undefined;
+  useEffect(() => {
+    if (!coldLoading) return;
+    const timer = window.setTimeout(() => setShowSkeleton(true), 200);
+    return () => window.clearTimeout(timer);
+  }, [coldLoading]);
 
   const visibleWorlds = useMemo(() => {
+    const current = worlds ?? [];
     const needle = query.trim().toLocaleLowerCase();
-    if (!needle) return worlds;
-    return worlds.filter((world) =>
+    if (!needle) return current;
+    return current.filter((world) =>
       [world.name, world.setting_brief, world.suggested_starting_situation]
         .some((value) => value.toLocaleLowerCase().includes(needle)),
     );
@@ -80,10 +75,7 @@ export function WorldsPage(props: {
       const saved = editor.id
         ? await updateWorld(editor.id, input)
         : await createWorld(input);
-      setWorlds((current) => editor.id
-        ? current.map((world) => world.id === saved.id ? saved : world)
-        : [saved, ...current],
-      );
+      worldsLibrary.applySaved(saved, editor.id ?? undefined);
       setEditor(null);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Could not save this world.");
@@ -178,15 +170,51 @@ export function WorldsPage(props: {
                 className="min-w-0 flex-1 bg-transparent py-2 text-base text-foreground outline-hidden placeholder:text-muted/70"
               />
             </label>
-            {!loading && !loadError && <p className="text-sm text-muted" role="status">{visibleWorlds.length} {visibleWorlds.length === 1 ? "world" : "worlds"}</p>}
+            {worlds !== undefined && <p className="text-sm text-muted" role="status">{visibleWorlds.length} {visibleWorlds.length === 1 ? "world" : "worlds"}</p>}
+            {worlds !== undefined && library.refreshError && (
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+                {library.refreshError}
+                <button
+                  type="button"
+                  className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                  onClick={() => refreshWorlds()}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
           </div>
 
-          {loading ? (
-            <p className="py-8 text-sm text-muted" role="status">Loading worlds…</p>
-          ) : loadError ? (
+          {coldLoading ? (
+            showSkeleton ? (
+              <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4 p-0" aria-hidden="true">
+                {[0, 1, 2, 3].map((key) => (
+                  <li key={key}>
+                    <div className="flex h-full flex-col gap-4 rounded-xl border border-border bg-raised p-5 motion-safe:animate-pulse">
+                      <div className="flex items-start gap-3">
+                        <div className="mbs-1 size-5 shrink-0 rounded-full bg-muted" />
+                        <div className="min-w-0 flex-1">
+                          <div className="h-5 w-1/2 rounded bg-muted" />
+                          <div className="mbs-3 h-4 w-full rounded bg-muted" />
+                          <div className="mbs-2 h-4 w-5/6 rounded bg-muted" />
+                          <div className="mbs-2 h-4 w-2/3 rounded bg-muted" />
+                        </div>
+                      </div>
+                      <div className="[margin-block-start:auto] flex gap-2 border-bs border-border pbs-3">
+                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
+                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="sr-only" role="status">Loading worlds…</p>
+            )
+          ) : worlds === undefined ? (
             <section className="grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
-              <p className="text-sm text-muted">{loadError}</p>
-              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setReloadKey((key) => key + 1)}>Try again</button>
+              <p className="text-sm text-muted">{library.loadError}</p>
+              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => refreshWorlds()}>Try again</button>
             </section>
           ) : visibleWorlds.length === 0 ? (
             <section className="grid justify-items-center gap-3 rounded-xl border border-dashed border-border px-5 py-12 text-center">

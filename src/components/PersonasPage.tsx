@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Pencil, Plus, Search, UserRound } from "lucide-react";
 import type { Persona } from "../../shared/domain";
-import { createPersona, fetchPersonas, updatePersona, type PersonaInput } from "../lib/storyApi";
+import { createPersona, updatePersona, type PersonaInput } from "../lib/storyApi";
+import { refreshPersonas, personasLibrary, usePersonas } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
 
 const emptyPersona: PersonaInput = { name: "", description: "" };
@@ -10,36 +11,30 @@ export function PersonasPage(props: {
   onOpenSidebar: () => void;
   onSelect: (persona: Persona) => void;
 }) {
-  const [personas, setPersonas] = useState<Persona[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
+  const library = usePersonas();
+  const personas = library.items;
+  const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<{ id: string | null; value: PersonaInput } | null>(null);
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setLoadError("");
-    fetchPersonas().then(
-      (items) => {
-        if (active) setPersonas(items);
-      },
-      (error: unknown) => {
-        if (active) setLoadError(error instanceof Error ? error.message : "Could not load personas.");
-      },
-    ).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
-  }, [reloadKey]);
+    refreshPersonas();
+  }, []);
+
+  const coldLoading = personas === undefined && library.loadError === undefined;
+  useEffect(() => {
+    if (!coldLoading) return;
+    const timer = window.setTimeout(() => setShowSkeleton(true), 200);
+    return () => window.clearTimeout(timer);
+  }, [coldLoading]);
 
   const visiblePersonas = useMemo(() => {
+    const current = personas ?? [];
     const needle = query.trim().toLocaleLowerCase();
-    if (!needle) return personas;
-    return personas.filter((persona) =>
+    if (!needle) return current;
+    return current.filter((persona) =>
       [persona.name, persona.description]
         .some((value) => value.toLocaleLowerCase().includes(needle)),
     );
@@ -71,10 +66,7 @@ export function PersonasPage(props: {
       const saved = editor.id
         ? await updatePersona(editor.id, input)
         : await createPersona(input);
-      setPersonas((current) => editor.id
-        ? current.map((persona) => persona.id === saved.id ? saved : persona)
-        : [saved, ...current],
-      );
+      personasLibrary.applySaved(saved, editor.id ?? undefined);
       setEditor(null);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Could not save this persona.");
@@ -160,15 +152,52 @@ export function PersonasPage(props: {
                 className="min-w-0 flex-1 bg-transparent py-2 text-base text-foreground outline-hidden placeholder:text-muted/70"
               />
             </label>
-            {!loading && !loadError && <p className="text-sm text-muted" role="status">{visiblePersonas.length} {visiblePersonas.length === 1 ? "persona" : "personas"}</p>}
+            {personas !== undefined && <p className="text-sm text-muted" role="status">{visiblePersonas.length} {visiblePersonas.length === 1 ? "persona" : "personas"}</p>}
+            {personas !== undefined && library.refreshError && (
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+                {library.refreshError}
+                <button
+                  type="button"
+                  className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                  onClick={() => refreshPersonas()}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
           </div>
 
-          {loading ? (
-            <p className="py-8 text-sm text-muted" role="status">Loading personas…</p>
-          ) : loadError ? (
+          {coldLoading ? (
+            showSkeleton ? (
+              <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4 p-0" aria-hidden="true">
+                {[0, 1, 2, 3].map((key) => (
+                  <li key={key}>
+                    <div className="flex h-full flex-col gap-4 rounded-xl border border-border bg-raised p-5 motion-safe:animate-pulse">
+                      <div className="flex items-start gap-3">
+                        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-muted" />
+                        <div className="min-w-0 flex-1">
+                          <div className="h-5 w-1/2 rounded bg-muted" />
+                          <div className="mbs-3 h-4 w-full rounded bg-muted" />
+                          <div className="mbs-2 h-4 w-5/6 rounded bg-muted" />
+                          <div className="mbs-2 h-4 w-2/3 rounded bg-muted" />
+                          <div className="mbs-2 h-4 w-1/2 rounded bg-muted" />
+                        </div>
+                      </div>
+                      <div className="[margin-block-start:auto] flex gap-2 border-bs border-border pbs-3">
+                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
+                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="sr-only" role="status">Loading personas…</p>
+            )
+          ) : personas === undefined ? (
             <section className="grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
-              <p className="text-sm text-muted">{loadError}</p>
-              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setReloadKey((key) => key + 1)}>Try again</button>
+              <p className="text-sm text-muted">{library.loadError}</p>
+              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => refreshPersonas()}>Try again</button>
             </section>
           ) : visiblePersonas.length === 0 ? (
             <section className="grid justify-items-center gap-3 rounded-xl border border-dashed border-border px-5 py-12 text-center">

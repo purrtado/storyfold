@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
-import type { Campaign, Persona, Session, World } from "../../shared/domain";
-import { createCampaign, fetchPersonas, fetchWorlds } from "../lib/storyApi";
+import type { Campaign, Session } from "../../shared/domain";
+import { createCampaign } from "../lib/storyApi";
+import { refreshPersonas, refreshWorlds, usePersonas, useWorlds } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
 
 type Draft = {
@@ -19,11 +20,10 @@ export function NewCampaignPage(props: {
   selectedPersonaId: string | null;
   onStarted: (campaign: Campaign, session: Session) => void;
 }) {
-  const [worlds, setWorlds] = useState<World[]>([]);
-  const [personas, setPersonas] = useState<Persona[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
+  const worldsState = useWorlds();
+  const personasState = usePersonas();
+  const worlds = worldsState.items;
+  const personas = personasState.items;
   const [draft, setDraft] = useState<Draft>({
     worldId: props.selectedWorldId ?? "",
     personaId: props.selectedPersonaId ?? "",
@@ -33,48 +33,50 @@ export function NewCampaignPage(props: {
   });
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
+  const seededWorldId = useRef<string | null | undefined>(undefined);
+  const seededPersonaId = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setLoadError("");
-    Promise.all([fetchWorlds(), fetchPersonas()]).then(
-      ([loadedWorlds, loadedPersonas]) => {
-        if (!active) return;
-        setWorlds(loadedWorlds);
-        setPersonas(loadedPersonas);
-        setDraft((current) => {
-          const world = loadedWorlds.find((item) => item.id === props.selectedWorldId)
-            ?? loadedWorlds.find((item) => item.id === current.worldId)
-            ?? loadedWorlds[0];
-          const persona = loadedPersonas.find((item) => item.id === props.selectedPersonaId)
-            ?? loadedPersonas.find((item) => item.id === current.personaId)
-            ?? loadedPersonas[0];
-          return {
-            ...current,
-            worldId: world?.id ?? "",
-            personaId: persona?.id ?? "",
-            startingSituation: current.situationEdited
-              ? current.startingSituation
-              : world?.suggested_starting_situation ?? "",
-          };
-        });
-      },
-      (error: unknown) => {
-        if (active) setLoadError(error instanceof Error ? error.message : "Could not load campaign choices.");
-      },
-    ).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
-  }, [props.selectedPersonaId, props.selectedWorldId, reloadKey]);
+    refreshWorlds();
+    refreshPersonas();
+  }, []);
 
-  const world = worlds.find((item) => item.id === draft.worldId);
-  const persona = personas.find((item) => item.id === draft.personaId);
-  const canBegin = Boolean(world && persona && !loading && !starting);
+  useEffect(() => {
+    if (worlds === undefined || personas === undefined) return;
+    const worldSeedChanged = props.selectedWorldId !== seededWorldId.current;
+    const personaSeedChanged = props.selectedPersonaId !== seededPersonaId.current;
+    seededWorldId.current = props.selectedWorldId;
+    seededPersonaId.current = props.selectedPersonaId;
+    setDraft((current) => {
+      const nextWorldId = worldSeedChanged && worlds.some((item) => item.id === props.selectedWorldId)
+        ? props.selectedWorldId!
+        : worlds.some((item) => item.id === current.worldId)
+          ? current.worldId
+          : worlds[0]?.id ?? "";
+      const nextPersonaId = personaSeedChanged && personas.some((item) => item.id === props.selectedPersonaId)
+        ? props.selectedPersonaId!
+        : personas.some((item) => item.id === current.personaId)
+          ? current.personaId
+          : personas[0]?.id ?? "";
+      const situationChanged = (worldSeedChanged || nextWorldId !== current.worldId) && !current.situationEdited;
+      return {
+        ...current,
+        worldId: nextWorldId,
+        personaId: nextPersonaId,
+        startingSituation: situationChanged
+          ? worlds.find((item) => item.id === nextWorldId)?.suggested_starting_situation ?? ""
+          : current.startingSituation,
+      };
+    });
+  }, [worlds, personas, props.selectedPersonaId, props.selectedWorldId]);
+
+  const world = worlds?.find((item) => item.id === draft.worldId);
+  const persona = personas?.find((item) => item.id === draft.personaId);
+  const canBegin = Boolean(world && persona && !starting);
+  const loadError = worldsState.loadError ?? personasState.loadError;
 
   const chooseWorld = (id: string) => {
-    const next = worlds.find((item) => item.id === id);
+    const next = worlds?.find((item) => item.id === id);
     setDraft((current) => ({
       ...current,
       worldId: id,
@@ -115,12 +117,21 @@ export function NewCampaignPage(props: {
             <p className="mbs-2 text-sm leading-6 text-muted">Choose a world and persona. Your campaign captures both definitions and starts an independent timeline.</p>
           </header>
 
-          {loading ? (
+          {worlds === undefined || personas === undefined ? (
             <p className="py-8 text-sm text-muted" role="status">Loading your library…</p>
           ) : loadError ? (
             <section className="grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
               <p className="text-sm text-muted">{loadError}</p>
-              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setReloadKey((key) => key + 1)}>Try again</button>
+              <button
+                type="button"
+                className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                onClick={() => {
+                  refreshWorlds();
+                  refreshPersonas();
+                }}
+              >
+                Try again
+              </button>
             </section>
           ) : worlds.length === 0 || personas.length === 0 ? (
             <section className="grid justify-items-start gap-4 rounded-xl border border-dashed border-border p-6">
