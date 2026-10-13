@@ -25,7 +25,10 @@ export function PersonasPage(props: {
 
   const coldLoading = personas === undefined && library.loadError === undefined;
   useEffect(() => {
-    if (!coldLoading) return;
+    if (!coldLoading) {
+      setShowSkeleton(false);
+      return;
+    }
     const timer = window.setTimeout(() => setShowSkeleton(true), 200);
     return () => window.clearTimeout(timer);
   }, [coldLoading]);
@@ -158,7 +161,7 @@ export function PersonasPage(props: {
                 {library.refreshError}
                 <button
                   type="button"
-                  className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                  className="pressable min-h-11 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
                   onClick={() => refreshPersonas()}
                 >
                   Retry
@@ -168,32 +171,33 @@ export function PersonasPage(props: {
           </div>
 
           {coldLoading ? (
-            showSkeleton ? (
-              <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4 p-0" aria-hidden="true">
-                {[0, 1, 2, 3].map((key) => (
-                  <li key={key}>
-                    <div className="flex h-full flex-col gap-4 rounded-xl border border-border bg-raised p-5 motion-safe:animate-pulse">
-                      <div className="flex items-start gap-3">
-                        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-muted" />
-                        <div className="min-w-0 flex-1">
-                          <div className="h-5 w-1/2 rounded bg-muted" />
-                          <div className="mbs-3 h-4 w-full rounded bg-muted" />
-                          <div className="mbs-2 h-4 w-5/6 rounded bg-muted" />
-                          <div className="mbs-2 h-4 w-2/3 rounded bg-muted" />
-                          <div className="mbs-2 h-4 w-1/2 rounded bg-muted" />
+            <div className="[min-block-size:14rem]">
+              <p className="sr-only" role="status">Loading personas…</p>
+              {showSkeleton && (
+                <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4 p-0" aria-hidden="true">
+                  {[0, 1, 2, 3].map((key) => (
+                    <li key={key}>
+                      <div className="flex h-full flex-col gap-4 rounded-xl border border-border bg-raised p-5 motion-safe:animate-pulse">
+                        <div className="flex items-start gap-3">
+                          <span className="grid size-11 shrink-0 place-items-center rounded-full bg-muted" />
+                          <div className="min-w-0 flex-1">
+                            <div className="h-5 w-1/2 rounded bg-muted" />
+                            <div className="mbs-3 h-4 w-full rounded bg-muted" />
+                            <div className="mbs-2 h-4 w-5/6 rounded bg-muted" />
+                            <div className="mbs-2 h-4 w-2/3 rounded bg-muted" />
+                            <div className="mbs-2 h-4 w-1/2 rounded bg-muted" />
+                          </div>
+                        </div>
+                        <div className="[margin-block-start:auto] flex gap-2 border-bs border-border pbs-3">
+                          <div className="min-h-10 flex-1 rounded-lg bg-muted" />
+                          <div className="min-h-10 flex-1 rounded-lg bg-muted" />
                         </div>
                       </div>
-                      <div className="[margin-block-start:auto] flex gap-2 border-bs border-border pbs-3">
-                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
-                        <div className="min-h-10 flex-1 rounded-lg bg-muted" />
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="sr-only" role="status">Loading personas…</p>
-            )
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : personas === undefined ? (
             <section className="grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
               <p className="text-sm text-muted">{library.loadError}</p>

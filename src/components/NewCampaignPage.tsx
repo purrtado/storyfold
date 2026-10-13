@@ -73,7 +73,9 @@ export function NewCampaignPage(props: {
   const world = worlds?.find((item) => item.id === draft.worldId);
   const persona = personas?.find((item) => item.id === draft.personaId);
   const canBegin = Boolean(world && persona && !starting);
-  const loadError = worldsState.loadError ?? personasState.loadError;
+  const coldLoadError = (worlds === undefined ? worldsState.loadError : undefined)
+    ?? (personas === undefined ? personasState.loadError : undefined);
+  const refreshError = worldsState.refreshError ?? personasState.refreshError;
 
   const chooseWorld = (id: string) => {
     const next = worlds?.find((item) => item.id === id);
@@ -117,11 +119,9 @@ export function NewCampaignPage(props: {
             <p className="mbs-2 text-sm leading-6 text-muted">Choose a world and persona. Your campaign captures both definitions and starts an independent timeline.</p>
           </header>
 
-          {worlds === undefined || personas === undefined ? (
-            <p className="py-8 text-sm text-muted" role="status">Loading your library…</p>
-          ) : loadError ? (
+          {coldLoadError ? (
             <section className="grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
-              <p className="text-sm text-muted">{loadError}</p>
+              <p className="text-sm text-muted">{coldLoadError}</p>
               <button
                 type="button"
                 className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
@@ -133,7 +133,26 @@ export function NewCampaignPage(props: {
                 Try again
               </button>
             </section>
-          ) : worlds.length === 0 || personas.length === 0 ? (
+          ) : worlds === undefined || personas === undefined ? (
+            <p className="py-8 text-sm text-muted" role="status">Loading your library…</p>
+          ) : (
+            <>
+              {refreshError && (
+                <p className="mbe-5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+                  {refreshError}
+                  <button
+                    type="button"
+                    className="pressable min-h-11 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                    onClick={() => {
+                      refreshWorlds();
+                      refreshPersonas();
+                    }}
+                  >
+                    Retry
+                  </button>
+                </p>
+              )}
+              {worlds.length === 0 || personas.length === 0 ? (
             <section className="grid justify-items-start gap-4 rounded-xl border border-dashed border-border p-6">
               <h2 className="text-lg font-semibold">Your story needs a world and a persona</h2>
               <p className="text-sm text-muted">Create both definitions before starting a campaign.</p>
@@ -183,6 +202,8 @@ export function NewCampaignPage(props: {
                 </button>
               </footer>
             </form>
+              )}
+            </>
           )}
         </main>
       </div>
