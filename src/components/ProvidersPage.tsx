@@ -231,9 +231,9 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
 
           <p className="theme-desc [margin-block-start:1rem] max-w-prose">
             Storyfold is a local, single-user install. The API key and model are
-            stored by the Storyfold server on this machine, which streams replies
-            from Z.AI; conversations never leave your device beyond those
-            requests.
+            stored by the Storyfold server on this machine. Worlds, personas,
+            campaigns, and transcripts are saved on that server; replies stream
+            from Z.AI.
           </p>
         </main>
       </div>

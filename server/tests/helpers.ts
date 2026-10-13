@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { StreamChunk } from "@tanstack/ai";
 import { createApp, type CreateAppOptions } from "../app";
 import { SERVER_PORT } from "../runtime";
 
@@ -10,10 +11,26 @@ export interface TestServer {
 }
 
 export async function startTestServer(options: CreateAppOptions = {}): Promise<TestServer> {
+  // No test may touch the real workspace: when the caller provides no database
+  // placement at all, the server gets a throwaway file that stop() removes.
+  let ownedDirectory: string | null = null;
+  const placement = {
+    ...(options.database ? { database: options.database } : {}),
+    ...(options.databasePath ? { databasePath: options.databasePath } : {}),
+    ...(options.dataDirectory ? { dataDirectory: options.dataDirectory } : {}),
+  };
+  if (Object.keys(placement).length === 0) {
+    ownedDirectory = await makeConfigDirectory();
+    placement.databasePath = join(ownedDirectory, "test.db");
+  }
+
+  const app = createApp({ ...options, ...placement });
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: createApp(options),
+    // Match the production server: SSE responses may sit unconsumed or pause.
+    idleTimeout: 0,
+    fetch: app.fetch,
   });
   return {
     // Bun exposes Server.url as a URL with a trailing slash; the origin keeps
@@ -21,6 +38,8 @@ export async function startTestServer(options: CreateAppOptions = {}): Promise<T
     url: server.url.origin,
     stop: async () => {
       await server.stop(true);
+      app.close();
+      if (ownedDirectory) await removeDirectory(ownedDirectory);
     },
   };
 }
@@ -69,5 +88,59 @@ export function openAiChatCompletionSse(model: string, deltas: string[]): string
   ];
   const sse = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
   return `${sse}data: [DONE]\n\n`;
+}
+
+/** Parses a TanStack AI SSE response body back into its chunk objects. */
+export function parseSseEvents(raw: string): StreamChunk[] {
+  return raw
+    .split("\n\n")
+    .flatMap((frame) => frame.split("\n").filter((line) => line.startsWith("data: ")))
+    .map((line) => line.slice("data: ".length))
+    .filter((data) => data.length > 0 && data !== "[DONE]")
+    .map((data) => JSON.parse(data) as StreamChunk);
+}
+
+/**
+ * Raw chat-completions SSE with an explicit terminal shape: finish "stop" or
+ * "length" ends with a finish_reason frame plus [DONE]; null ends the stream
+ * cleanly with neither, simulating a truncated upstream.
+ */
+export function openAiChatCompletionSseRaw(
+  model: string,
+  deltas: string[],
+  finish: "stop" | "length" | null,
+): string {
+  const frame = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`;
+  const parts = [
+    frame({
+      id: "chatcmpl-raw",
+      object: "chat.completion.chunk",
+      created: 1_700_000_000,
+      model,
+      choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
+    }),
+    ...deltas.map((content) =>
+      frame({
+        id: "chatcmpl-raw",
+        object: "chat.completion.chunk",
+        created: 1_700_000_000,
+        model,
+        choices: [{ index: 0, delta: { content }, finish_reason: null }],
+      }),
+    ),
+  ];
+  if (finish !== null) {
+    parts.push(
+      frame({
+        id: "chatcmpl-raw",
+        object: "chat.completion.chunk",
+        created: 1_700_000_000,
+        model,
+        choices: [{ index: 0, delta: {}, finish_reason: finish }],
+      }),
+      "data: [DONE]\n\n",
+    );
+  }
+  return parts.join("");
 }
 

@@ -192,7 +192,7 @@ button, [role="button"] {
   inset: min(0px, (100% - 44px) / 2);
 }
 
-/* Sidebar conversation list scrolls between header and footer */
+/* Scrollable flex panels fill the space between surrounding content */
 .chat-scroll {
   flex: 1;
   min-block-size: 0;

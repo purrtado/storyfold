@@ -1,22 +1,10 @@
-import type { Conversation } from "../lib/types";
+import type { Campaign } from "../../shared/domain";
+import { BookOpen, Globe2, Users } from "lucide-react";
+import { NavLink, Link } from "react-router-dom";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
-import { UserMenu } from "./UserMenu";
-import { Link } from "react-router-dom";
 import { Tooltip } from "./Tooltip";
+import { UserMenu } from "./UserMenu";
 
-function conversationGroup(createdAt: number): string {
-  const days = (Date.now() - createdAt) / 86_400_000;
-  if (days < 1) return "Today";
-  if (days < 7) return "Previous 7 days";
-  return "Older";
-}
-
-function relativeDate(createdAt: number): string {
-  return new Date(createdAt).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
 
 export function RailExpand({ onCollapse }: { onCollapse?: () => void }) {
   return (
@@ -63,31 +51,34 @@ export function SidebarBrand({ onCollapse }: { onCollapse?: () => void }) {
 }
 
 export function Sidebar(props: {
-  conversations: Conversation[];
-  activeId: string;
-  onSelect: (id: string) => void;
-  onNew: () => void;
+  campaigns: Campaign[];
+  campaignsLoading: boolean;
+  campaignsError: string;
+  activeSessionId?: string | null;
+  onNewCampaign: () => void;
+  onRefreshCampaigns: () => void;
   onCollapse?: () => void;
   variant?: "full" | "rail";
 }) {
-  const rail = props.variant === "rail";
-
-  if (rail) {
+  if (props.variant === "rail") {
     return (
       <div className="flex h-full [inline-size:3.5rem] flex-col items-center gap-1 py-3">
         <RailExpand onCollapse={props.onCollapse} />
-
-        <Tooltip content="New conversation" side="right">
-          <button
-            type="button"
-            className="rail-btn rail-btn--primary"
-            onClick={props.onNew}
-            aria-label="New conversation"
-          >
+        <Tooltip content="New campaign" side="right">
+          <button type="button" className="rail-btn rail-btn--primary" onClick={props.onNewCampaign} aria-label="New campaign">
             <PlusIcon />
           </button>
         </Tooltip>
-
+        <Tooltip content="Worlds" side="right">
+          <NavLink to="/worlds" className={({ isActive }) => isActive ? "rail-btn rail-btn--active" : "rail-btn"} aria-label="Worlds">
+            <Globe2 className="size-4.5" aria-hidden="true" />
+          </NavLink>
+        </Tooltip>
+        <Tooltip content="Personas" side="right">
+          <NavLink to="/personas" className={({ isActive }) => isActive ? "rail-btn rail-btn--active" : "rail-btn"} aria-label="Personas">
+            <Users className="size-4.5" aria-hidden="true" />
+          </NavLink>
+        </Tooltip>
         <div className="[margin-block-start:auto]">
           <UserMenu compact />
         </div>
@@ -95,76 +86,71 @@ export function Sidebar(props: {
     );
   }
 
-  const groups = ["Today", "Previous 7 days", "Older"].map((label) => ({
-    label,
-    items: props.conversations.filter(
-      (c) => conversationGroup(c.createdAt) === label,
-    ),
-  }));
-
   return (
     <div className="flex h-full flex-col gap-2 p-3">
       <SidebarBrand onCollapse={props.onCollapse} />
-
       <button
         type="button"
-        className="pressable inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg"
-        onClick={props.onNew}
+        className="pressable inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90"
+        onClick={props.onNewCampaign}
       >
         <PlusIcon className="size-4" />
-        New conversation
+        New campaign
       </button>
-
-      <nav
-        aria-label="Recent conversations"
-        className="chat-scroll -mx-1 flex min-block-size-0 flex-col gap-3 px-1"
-      >
-        {groups.map(
-          (group) =>
-            group.items.length > 0 && (
-              <section key={group.label}>
-                <h2 className="px-2 pbe-1 text-xs font-medium tracking-wide text-muted uppercase">
-                  {group.label}
-                </h2>
-                <ul className="flex flex-col gap-0.5">
-                  {group.items.map((c) => {
-                    const active = c.id === props.activeId;
-                    return (
-                      <li key={c.id}>
-                        <button
-                          type="button"
-                          aria-current={active || undefined}
-                          className={`w-full cursor-pointer rounded-lg px-2 py-1.5 text-start text-sm ${
-                            active
-                              ? "bg-accent-soft font-medium text-foreground"
-                              : "text-muted hover:bg-raised hover:text-foreground"
-                          }`}
-                          onClick={() => props.onSelect(c.id)}
-                        >
-                          <span className="line-clamp-1">{c.title}</span>
-                          <span className="block text-xs opacity-70">
-                            {relativeDate(c.createdAt)}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ),
-        )}
+      <nav aria-label="Library" className="flex flex-col gap-0.5">
+        <NavLink
+          to="/worlds"
+          className={({ isActive }) => `pressable flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm no-underline ${isActive ? "bg-accent-soft font-medium text-foreground" : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
+        >
+          <Globe2 className="size-4 shrink-0" aria-hidden="true" />
+          Worlds
+        </NavLink>
+        <NavLink
+          to="/personas"
+          className={({ isActive }) => `pressable flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm no-underline ${isActive ? "bg-accent-soft font-medium text-foreground" : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
+        >
+          <Users className="size-4 shrink-0" aria-hidden="true" />
+          Personas
+        </NavLink>
       </nav>
-
+      <section className="flex min-block-size-0 flex-1 flex-col border-bs border-border pbs-3" aria-labelledby="campaign-list-heading">
+        <h2 id="campaign-list-heading" className="px-2 pbe-1 text-xs font-medium tracking-wide text-muted uppercase">Campaigns</h2>
+        {props.campaignsError ? (
+          <div className="grid justify-items-start gap-2 px-2 py-3" role="alert">
+            <p className="text-xs text-muted">{props.campaignsError}</p>
+            <button type="button" className="pressable min-h-9 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={props.onRefreshCampaigns}>Try again</button>
+          </div>
+        ) : props.campaignsLoading ? (
+          <p className="px-2 py-3 text-sm text-muted" role="status">Loading campaigns…</p>
+        ) : props.campaigns.length === 0 ? (
+          <p className="px-2 py-3 text-sm text-muted">Your saved campaigns will appear here.</p>
+        ) : (
+          <nav aria-label="Campaigns" className="chat-scroll -mx-1 flex min-block-size-0 flex-col gap-0.5 px-1">
+            {props.campaigns.map((campaign) => (
+              <NavLink
+                key={campaign.id}
+                to={`/sessions/${campaign.active_session_id}`}
+                className={({ isActive }) => `pressable w-full rounded-lg px-2 py-2 text-start text-sm no-underline ${isActive || campaign.active_session_id === props.activeSessionId ? "bg-accent-soft font-medium text-foreground" : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
+              >
+                <span className="flex items-start gap-2">
+                  <BookOpen className="mbs-0.5 size-4 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block line-clamp-2 leading-5">{campaign.name}</span>
+                    <span className="mbs-0.5 block line-clamp-1 text-xs font-normal opacity-75">
+                      {campaign.world_snapshot.name} · {campaign.persona_snapshot.name}
+                    </span>
+                  </span>
+                </span>
+              </NavLink>
+            ))}
+          </nav>
+        )}
+      </section>
       <div className="flex flex-col gap-2">
         <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
-          Conversations stay on this device.{" "}
-          <Link
-            to="/settings/providers"
-            className="font-medium text-accent underline underline-offset-2"
-          >
-            Set up Z.AI
-          </Link>{" "}
-          to start chatting.
+          Campaigns stay on this Storyfold server.{" "}
+          <Link to="/settings/providers" className="font-medium text-accent underline underline-offset-2">Set up Z.AI</Link>
+          {" "}to begin a story.
         </p>
         <UserMenu />
       </div>

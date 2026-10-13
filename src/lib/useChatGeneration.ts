@@ -1,165 +1,236 @@
 import { useCallback, useRef, useState } from "react";
 import { useChat } from "@tanstack/ai-react";
-import { fetchProvider } from "./provider";
-import type { Message } from "./types";
+import { ApiError, requestSessionGeneration, stopSessionGeneration } from "./storyApi";
 
-type GenerationPhase = "streaming" | "stopped" | "error";
+type GenerationPhase = "streaming" | "stopping" | "error";
 
-/** The single in-flight reply, attached to the conversation that started it. */
 export type Generation = {
-  conversationId: string;
+  id: number;
+  sessionId: string;
+  pendingMessageId?: string;
   text: string;
   phase: GenerationPhase;
-  /** Safe error text, present once the phase is "error". */
   error?: string;
-  /** The server reports no provider configured. */
-  missingProvider?: boolean;
+  code?: string;
 };
 
-type WireMessage = Pick<Message, "role" | "content">;
-type ChatRequest = {
-  history: WireMessage[];
+export type AcceptedMessageIds = {
+  playerMessageId?: string;
+  pendingMessageId?: string;
+};
+
+type GenerationRequest = {
+  id: number;
+  sessionId: string;
+  kind: "opening" | "message";
+  content: string;
   model?: string;
 };
 
+type ErrorEnvelope = {
+  error?: unknown;
+  code?: unknown;
+  accepted?: unknown;
+  player_message_id?: unknown;
+  pending_message_id?: unknown;
+};
+
 export function useChatGeneration(options: {
-  onAssistantReply: (conversationId: string, content: string) => void;
+  onAccepted: (sessionId: string, ids: AcceptedMessageIds, content: string) => void;
+  onSettled: (sessionId: string) => void | Promise<void>;
 }) {
   const [generation, setGeneration] = useState<Generation | null>(null);
-  const activeIdRef = useRef<string | null>(null);
-  const requestRef = useRef<ChatRequest>({ history: [] });
+  const requestRef = useRef<GenerationRequest | null>(null);
+  const activeRequestRef = useRef<GenerationRequest | null>(null);
   const textRef = useRef("");
   const busyRef = useRef(false);
-  const onAssistantReplyRef = useRef(options.onAssistantReply);
-  onAssistantReplyRef.current = options.onAssistantReply;
-
-  // Ends the run exactly once: commits whatever text exists (partial on
-  // stop/failure, final on finish) and releases the single generation slot.
-  const settle = useCallback((text: string): string | null => {
-    const conversationId = activeIdRef.current;
-    activeIdRef.current = null;
-    busyRef.current = false;
-    const content = text.trim() ? text : textRef.current;
-    if (conversationId && content.trim()) {
-      onAssistantReplyRef.current(conversationId, content);
-    }
-    return conversationId;
-  }, []);
+  const requestSequence = useRef(0);
+  const onAcceptedRef = useRef(options.onAccepted);
+  const onSettledRef = useRef(options.onSettled);
+  onAcceptedRef.current = options.onAccepted;
+  onSettledRef.current = options.onSettled;
 
   const chat = useChat({
     fetcher: async (_input, { signal }) => {
+      const request = requestRef.current;
+      if (!request) throw new Error("No session request was prepared.");
+
       let response: Response;
       try {
-        response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: requestRef.current.history,
-            ...(requestRef.current.model
-              ? { model: requestRef.current.model }
-              : {}),
-          }),
+        response = await requestSessionGeneration(
+          request.sessionId,
+          request.kind,
+          request.content,
+          request.model,
           signal,
-        });
+        );
       } catch (error) {
         if (signal.aborted) throw error;
-        throw new Error(
-          "Could not reach the Storyfold server. Start it with bun run dev.",
+        throw new Error("Could not reach the Storyfold server. Start it with bun run dev.");
+      }
+
+      const headerAccepted = response.headers.get("x-storyfold-accepted") === "true";
+      let envelope: ErrorEnvelope = {};
+      if (!response.ok || !response.body) {
+        try {
+          envelope = (await response.json()) as ErrorEnvelope;
+        } catch {
+          envelope = {};
+        }
+      }
+      const accepted = headerAccepted || envelope.accepted === true;
+      const playerMessageId = response.headers.get("x-storyfold-player-message-id")
+        ?? (typeof envelope.player_message_id === "string" ? envelope.player_message_id : undefined);
+      const pendingMessageId = response.headers.get("x-storyfold-pending-message-id")
+        ?? (typeof envelope.pending_message_id === "string" ? envelope.pending_message_id : undefined);
+      const ids: AcceptedMessageIds = {
+        ...(playerMessageId ? { playerMessageId } : {}),
+        ...(pendingMessageId ? { pendingMessageId } : {}),
+      };
+
+      if (accepted) {
+        setGeneration((current) => current?.id === request.id ? { ...current, ...ids } : current);
+        onAcceptedRef.current(request.sessionId, ids, request.content);
+      }
+
+      if (!response.ok || !response.body) {
+        throw new ApiError(
+          typeof envelope.error === "string" && envelope.error.trim()
+            ? envelope.error
+            : `The reply failed (HTTP ${response.status}).`,
+          response.status,
+          typeof envelope.code === "string" ? envelope.code : undefined,
+          accepted,
+          playerMessageId,
+          pendingMessageId,
         );
       }
-      if (!response.ok || !response.body) {
-        let message = `The reply failed (HTTP ${response.status}).`;
-        try {
-          const data = (await response.json()) as { error?: unknown };
-          if (typeof data.error === "string" && data.error.trim()) {
-            message = data.error;
-          }
-        } catch {
-          // Non-JSON failure body keeps the generic message.
-        }
-        throw new Error(message);
+      if (!accepted) {
+        throw new Error("The server did not confirm that this turn was accepted.");
       }
       return response;
     },
     onChunk: (chunk) => {
-      if (!busyRef.current || chunk.type !== "TEXT_MESSAGE_CONTENT") return;
-      textRef.current += chunk.delta;
-      setGeneration((current) =>
-        current ? { ...current, text: textRef.current } : current,
-      );
+      const request = activeRequestRef.current;
+      if (!busyRef.current || !request) return;
+      if (chunk.type === "TEXT_MESSAGE_CONTENT") {
+        textRef.current += chunk.delta;
+        setGeneration((current) => current?.id === request.id
+          ? { ...current, text: textRef.current }
+          : current,
+        );
+      } else if (chunk.type === "RUN_ERROR") {
+        setGeneration((current) => current?.id === request.id
+          ? { ...current, error: chunk.message, code: chunk.code }
+          : current,
+        );
+      }
     },
-    onFinish: (message) => {
-      if (!busyRef.current) return;
-      const text = message.parts
-        .filter((part) => part.type === "text")
-        .map((part) => part.content)
-        .join("");
-      const conversationId = settle(text);
-      setGeneration((current) =>
-        current?.conversationId === conversationId ? null : current,
-      );
+    onFinish: () => {
+      const request = activeRequestRef.current;
+      if (!busyRef.current || !request) return;
+      busyRef.current = false;
+      activeRequestRef.current = null;
+      requestRef.current = null;
+      void Promise.resolve(onSettledRef.current(request.sessionId)).finally(() => {
+        setGeneration((current) => current?.id === request.id ? null : current);
+      });
     },
     onError: (error) => {
-      if (!busyRef.current) return;
-      const conversationId = settle(textRef.current);
-      setGeneration((current) =>
-        current?.conversationId === conversationId
-          ? {
-              ...current,
-              text: textRef.current,
-              phase: "error",
-              error:
-                error instanceof Error && error.message.trim()
-                  ? error.message
-                  : "The reply failed. Try again.",
-            }
-          : current,
+      const request = activeRequestRef.current;
+      if (!busyRef.current || !request) return;
+      busyRef.current = false;
+      activeRequestRef.current = null;
+      requestRef.current = null;
+      setGeneration((current) => current?.id === request.id
+        ? {
+            ...current,
+            phase: "error",
+            error: error instanceof Error && error.message.trim()
+              ? error.message
+              : "The reply failed. Try again.",
+            ...(error instanceof ApiError && error.code ? { code: error.code } : {}),
+          }
+        : current,
       );
-      fetchProvider().then(
-        (config) =>
-          setGeneration((current) =>
-            current?.conversationId === conversationId &&
-            current.phase === "error"
-              ? { ...current, missingProvider: !config.has_api_key }
-              : current,
-          ),
-        () => {},
-      );
+      void onSettledRef.current(request.sessionId);
     },
   });
 
-  const send = useCallback(
-    (conversationId: string, history: WireMessage[], model?: string) => {
-      if (busyRef.current) return false;
-      busyRef.current = true;
-      // We send our own history to /api/chat; the SDK's internal copy is never
-      // transmitted, so clear it between runs instead of letting it grow.
-      chat.setMessages([]);
-      activeIdRef.current = conversationId;
-      requestRef.current = { history, model };
-      textRef.current = "";
-      setGeneration({ conversationId, text: "", phase: "streaming" });
-      void chat
-        .sendMessage(history[history.length - 1]?.content ?? "")
-        .catch(() => {});
-      return true;
-    },
-    [chat],
-  );
+  const start = useCallback((
+    sessionId: string,
+    kind: "opening" | "message",
+    content: string,
+    model?: string,
+  ) => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    const request = { id: ++requestSequence.current, sessionId, kind, content, ...(model ? { model } : {}) };
+    requestRef.current = request;
+    activeRequestRef.current = request;
+    textRef.current = "";
+    chat.setMessages([]);
+    setGeneration({ id: request.id, sessionId, text: "", phase: "streaming" });
+    void chat.sendMessage(kind === "message" ? content : "Opening narration").catch(() => {});
+    return true;
+  }, [chat]);
 
-  const stop = useCallback(() => {
-    if (!busyRef.current) return;
-    chat.stop();
-    const partial = textRef.current;
-    const conversationId = settle(partial);
-    setGeneration((current) =>
-      current?.conversationId === conversationId && partial.trim()
-        ? { ...current, text: partial, phase: "stopped" }
-        : null,
-    );
-  }, [chat, settle]);
+  const send = useCallback((sessionId: string, content: string, model?: string) => {
+    if (!content.trim()) return false;
+    return start(sessionId, "message", content, model);
+  }, [start]);
 
-  const dismiss = useCallback(() => setGeneration(null), []);
+  const open = useCallback((sessionId: string, model?: string) => {
+    return start(sessionId, "opening", "", model);
+  }, [start]);
 
-  return { generation, send, stop, dismiss };
+  const stop = useCallback(async (sessionId: string) => {
+    const localRequest = activeRequestRef.current?.sessionId === sessionId
+      ? activeRequestRef.current
+      : null;
+    if (localRequest) {
+      setGeneration((current) => current?.id === localRequest.id
+        ? { ...current, phase: "stopping" }
+        : current,
+      );
+    }
+
+    try {
+      await stopSessionGeneration(sessionId);
+      if (localRequest && activeRequestRef.current === localRequest) {
+        busyRef.current = false;
+        activeRequestRef.current = null;
+        requestRef.current = null;
+        chat.stop();
+      }
+      await onSettledRef.current(sessionId);
+      if (localRequest) {
+        setGeneration((current) => current?.id === localRequest.id ? null : current);
+      }
+    } catch (error) {
+      const message = error instanceof Error && error.message.trim()
+        ? error.message
+        : "Could not stop generation.";
+      setGeneration((current) => {
+        if (localRequest) {
+          return current?.id === localRequest.id
+            ? { ...current, phase: "streaming", error: message }
+            : current;
+        }
+        return current ?? {
+          id: ++requestSequence.current,
+          sessionId,
+          text: "",
+          phase: "error",
+          error: message,
+        };
+      });
+    }
+  }, [chat]);
+
+  const dismiss = useCallback(() => {
+    setGeneration((current) => current?.phase === "error" ? null : current);
+  }, []);
+
+  return { generation, send, open, stop, dismiss };
 }

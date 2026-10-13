@@ -1,6 +1,6 @@
 # Storyfold
 
-Storyfold is a local, single-user chat app built with React, TypeScript, Vite, Tailwind CSS, and Bun. A local Bun server stores Z.AI provider configuration and streams assistant replies using TanStack AI.
+Storyfold is a local, single-user interactive roleplay app built with React, TypeScript, Vite, Tailwind CSS, and Bun. A local Bun server persists worlds, personas, campaigns, and transcripts, and streams narrator replies from Z.AI using TanStack AI.
 
 ## Getting started
 
@@ -45,7 +45,7 @@ Open **Settings → Providers** (`/settings/providers`):
 
 1. Enter your Z.AI API key.
 2. Choose a **Default model** from the curated dropdown: `GLM-5.3` (default) or `GLM-5.3 Flash` — the two models documented for every GLM Coding Plan tier ([model overview](https://docs.z.ai/devpack/overview)).
-3. Save, return to chat, and send a message.
+3. Save, return to the app, and start or resume a campaign.
 
 Requests use the fixed Coding Plan endpoint `https://api.z.ai/api/coding/paas/v4/chat/completions`; there is no fallback to the separately billed general API. Z.AI's [Coding Plan usage policy](https://docs.z.ai/devpack/usage-policy) restricts subscription use to officially supported tools and products; verify eligibility for your use.
 
@@ -57,16 +57,24 @@ The API accepts only loopback backend Host headers and frontend origins on local
 
 ## Interface
 
-- Start new conversations, switch between existing ones, and browse sample conversations with clearly-marked sample replies rendered as Markdown (headings, lists, code blocks, tables).
-- On first visit you land on an empty conversation with starter prompts that fill the composer; their concise labels are centered, and samples stay in the sidebar.
-- Conversations are saved in browser localStorage. Sending a message forwards the active conversation history through the local server to Z.AI, including sample messages if continuing a sample conversation.
-- Open Settings from the User menu at the bottom of the sidebar or compact rail. General lives at `/settings/general`, with System / Light / Dark theme choices; Providers lives at `/settings/providers`. Back to app returns to your conversation without clearing its draft.
+- **Worlds** and **Personas** pages let you create, edit, browse, and select library entries. The app keeps both libraries in shared in-memory state for Worlds, Personas, and **New campaign**; page visits and window focus revalidate in the background, and saves update the cache immediately. On **Worlds** and **Personas**, slow cold reads show card skeletons after about 200ms; cold failures offer retry, while failed refreshes preserve the last state (including an empty library) and show a retry notice. Campaigns capture selected definitions as immutable snapshots at creation time, so later library edits never change an existing campaign's grounding.
+- **New campaign** pairs a world and persona, shows the starting situation for review (seeded from the world's suggestion, editable, may be blank), and optionally takes a name. Creating it commits the campaign, its snapshots, and its opening session in one transaction; you land in the play screen and the narrator's opening streams in.
+- **Play** shows the campaign breadcrumb, current session title, the streamed narration, and a composer labelled with your persona. Sending an action commits it server-side before the narrator replies; only one reply may be pending per session, so a second submission while one is streaming is rejected as busy without saving the extra input. **Stop** (from any browser tab) settles the reply as an interrupted draft and keeps the partial text; failures settle as failed drafts. Accepted actions are never lost and never resent automatically. The composer's model picker offers the Settings Default model; an explicit choice applies to that run, is kept in memory for the session, and never rewrites the saved Default.
+- **Details** shows the captured campaign context (world and persona snapshots, starting situation) and the current session. The **sidebar** lists persisted campaigns; reopening one resumes its active session with the full transcript — the same from a reload, a server restart, or another browser. Non-complete narration renders as labelled drafts, with a retry for failed or interrupted openings.
+- Open Settings from the User menu at the bottom of the sidebar or compact rail. General lives at `/settings/general`, with System / Light / Dark theme choices; Providers lives at `/settings/providers`. Back to app returns to your campaign without clearing its draft.
 - Theme defaults to System and follows browser/OS light/dark changes live; explicitly picking Light or Dark overrides System until you switch back (saved in browser localStorage). The User avatar is a display-only placeholder, not an account.
-- Collapse the sidebar on desktop to a narrow icon rail (preference saved); its logo toggles expansion, with the sidebar icon revealed on hover or keyboard focus. The rail adapts per page: chat shows new-conversation, settings shows Back to app, General, and Providers. On mobile it remains a slide-in drawer. Expanding lays the full sidebar out at its resting width inside the clipped shell and reveals it, so its labels never re-wrap mid-animation.
-- Press Enter to send a message or Shift+Enter for a newline. The composer's model picker offers the Settings Default model; an explicit choice applies to that message, is kept in memory for the conversation, and never rewrites the saved Default — a sending message captures its model, so later picker changes cannot alter an in-flight reply. The configured default is listed once, as `Default (display name)`; an explicit choice that ends up matching a newly configured default returns to inheriting the default and follows later default changes. Replies stream from the provider through TanStack AI into the transcript. Stop cancels generation and keeps partial text; failures preserve your message and any partial reply. One response can generate at a time, and it remains attached to its originating conversation when switching chats or opening Settings.
-- The transcript keeps new messages in view while you are near the bottom and hands scrolling back to you the moment you scroll up to read.
+- Collapse the sidebar on desktop to a narrow icon rail (preference saved); its logo toggles expansion, with the sidebar icon revealed on hover or keyboard focus. The route-agnostic rail always offers New campaign, Worlds, and Personas (the full layout also lists campaigns); on mobile it remains a slide-in drawer. Expanding lays the full sidebar out at its resting width inside the clipped shell and reveals it, so its labels never re-wrap mid-animation.
+- Press Enter to send an action or Shift+Enter for a newline. The transcript keeps new messages in view while you are near the bottom and hands scrolling back to you the moment you scroll up to read.
 
 Settings uses browser-history routes. Production hosting must serve `index.html` for application URLs such as `/settings/general` so direct links and refreshes work (Vite dev/preview already handle this).
+
+## Worlds, campaigns, and server-owned play (M1)
+
+Worlds, personas, campaigns, sessions, and messages persist in a local SQLite database (Bun's `bun:sqlite`, no ORM) at `<data dir>/storyfold.db`. The data dir defaults to the configuration directory (`~/.config/storyfold`); override it with `STORYFOLD_DATA_DIR` (a directory) and the credentials directory with `STORYFOLD_CONFIG_DIR`. The startup sweep settles any reply still `pending` from a previous process as `interrupted`; generation never auto-resumes.
+
+Creating a campaign captures the selected world and persona into immutable snapshots, creates its opening session, and links it as the campaign's active session in one committed transaction — later library edits affect new campaigns only. Messages get server-assigned `position` order; `speaker_name` labels are captured at send time and never re-derived from the library.
+
+The browser never owns play history. It sends a session id plus either new input (`POST /api/sessions/:id/messages`) or an explicit opening request (`POST /api/sessions/:id/opening`); both return a TanStack AI SSE stream and carry `x-storyfold-accepted` plus `x-storyfold-player-message-id` / `x-storyfold-pending-message-id` headers identifying the saved rows. The player's turn commits before the model is invoked; only one `pending` assistant reply may exist per session (concurrent submissions get `409 {code:"busy"}` with nothing saved). The server owns the reply lifecycle: completion requires normal-stop evidence from the provider, Stop (`POST /api/sessions/:id/stop`, works from any browser) or a disconnect settles the reply `interrupted` with its partial text preserved, and provider failures settle it `failed` — accepted player input always survives, and only completed narration plus accepted input feed later model calls, in position order, under fixed narrator instructions built from the campaign snapshots. Nothing is compacted or truncated; a context-limit failure surfaces as a `context_limit` error. Browse the domain via `GET/POST /api/worlds` and `GET/PATCH /api/worlds/:id`, `GET/POST /api/personas` and `GET/PATCH /api/personas/:id`, `GET/POST /api/campaigns` and `GET /api/campaigns/:id`, and `GET /api/sessions/:id` (+ `/messages`). A missing provider key answers `400 {code:"no_provider", accepted:true, ...ids}` with the input saved and the draft marked failed.
 
 ## UI components
 
