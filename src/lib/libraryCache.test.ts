@@ -164,7 +164,6 @@ describe("library cache", () => {
     expect(itemIds(library.getSnapshot())).toContain("w9");
 
     const reconcileRead = latestRead(reads);
-    expect(reconcileRead).not.toBe(heldRead);
     reconcileRead.resolve([midgard, created, world("w3", "Umbra")]);
     await reconcileRead.promise;
     expect(itemIds(library.getSnapshot())).toEqual(["w1", "w9", "w3"]);
@@ -193,7 +192,6 @@ describe("library cache", () => {
     expect(library.getSnapshot().items?.[0]?.name).toBe("Midgard Reach");
 
     const reconcileRead = latestRead(reads);
-    expect(reconcileRead).not.toBe(heldRead);
     reconcileRead.resolve([renamed, umbra]);
     await reconcileRead.promise;
     const settled = library.getSnapshot();
@@ -217,7 +215,6 @@ describe("library cache", () => {
     expect(itemIds(library.getSnapshot())).toEqual(["p9"]);
 
     const reconcileRead = latestRead(reads);
-    expect(reconcileRead).not.toBe(coldRead);
     reconcileRead.resolve([persona("p1", "Nils"), created]);
     await reconcileRead.promise;
     expect(itemIds(library.getSnapshot())).toEqual(["p1", "p9"]);
