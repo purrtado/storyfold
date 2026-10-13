@@ -378,6 +378,7 @@ describe("opening narration", () => {
       try {
         const retry = await postOpening(retryServer.url, session.id);
         expect(retry.status).toBe(200);
+        await readSse(retry);
         const messages = await transcript(retryServer.url, session.id);
         expect(messages.map((message) => message.status)).toEqual(["failed", "complete"]);
         expect(messages.every((message) => message.speaker_name === "Narrator")).toBe(true);
@@ -459,7 +460,8 @@ describe("opening narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      expect((await postOpening(server.url, session.id, { model: "glm-5.3-flash" })).status).toBe(200);
+      const opened = await postOpening(server.url, session.id, { model: "glm-5.3-flash" });
+      await readSse(opened);
       expect(calls[0].model).toBe("glm-5.3-flash");
       expect((await transcript(server.url, session.id))[0].status).toBe("complete");
     } finally {
