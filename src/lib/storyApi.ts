@@ -1,10 +1,12 @@
-import type { Campaign, Message, Persona, Session, World, WorldEntry } from "../../shared/domain";
+import type { Campaign, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
 
 export type WorldInput = Pick<
   World,
   "name" | "setting_brief" | "suggested_starting_situation"
 >;
-export type PersonaInput = Pick<Persona, "name" | "description">;
+export type CharacterInput = Pick<Character, "name" | "description">
+  & Partial<Pick<Character, "appearance" | "personality" | "background" | "baseline_motivations" | "speaking_style">>;
+export type CharacterPatch = Partial<CharacterInput>;
 
 export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description">;
 export type WorldEntryPatch = Partial<WorldEntryInput>;
@@ -92,26 +94,67 @@ export async function updateWorld(id: string, input: WorldInput): Promise<World>
   ).world;
 }
 
-export async function fetchPersonas(): Promise<Persona[]> {
-  return (await request<{ personas: Persona[] }>("/api/personas")).personas;
+export async function fetchCharacters(): Promise<Character[]> {
+  return (await request<{ characters: Character[] }>("/api/characters")).characters;
 }
 
-export async function createPersona(input: PersonaInput): Promise<Persona> {
+export async function createCharacter(input: CharacterInput): Promise<Character> {
   return (
-    await request<{ persona: Persona }>("/api/personas", {
+    await request<{ character: Character }>("/api/characters", {
       method: "POST",
       body: JSON.stringify(input),
     })
-  ).persona;
+  ).character;
 }
 
-export async function updatePersona(id: string, input: PersonaInput): Promise<Persona> {
+export async function updateCharacter(id: string, input: CharacterPatch): Promise<Character> {
   return (
-    await request<{ persona: Persona }>(`/api/personas/${encodeURIComponent(id)}`, {
+    await request<{ character: Character }>(`/api/characters/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(input),
     })
-  ).persona;
+  ).character;
+}
+
+export async function listWorldCharacters(worldId: string): Promise<WorldCharacter[]> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters`;
+  return (await request<{ characters: WorldCharacter[] }>(path)).characters;
+}
+
+export async function createWorldCharacter(
+  worldId: string,
+  characterId: string,
+  context: string,
+): Promise<WorldCharacter> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters`;
+  return (
+    await request<{ character: WorldCharacter }>(path, {
+      method: "POST",
+      body: JSON.stringify({ character_id: characterId, context }),
+    })
+  ).character;
+}
+
+export async function updateWorldCharacterContext(
+  worldId: string,
+  characterId: string,
+  context: string,
+): Promise<WorldCharacter> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters/${encodeURIComponent(characterId)}`;
+  return (
+    await request<{ character: WorldCharacter }>(path, {
+      method: "PATCH",
+      body: JSON.stringify({ context }),
+    })
+  ).character;
+}
+
+export async function deleteWorldCharacter(
+  worldId: string,
+  characterId: string,
+): Promise<{ ok: true }> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters/${encodeURIComponent(characterId)}`;
+  return request<{ ok: true }>(path, { method: "DELETE" });
 }
 
 export async function listWorldEntries(worldId: string): Promise<WorldEntry[]> {
@@ -150,8 +193,9 @@ export async function deleteWorldEntry(worldId: string, entryId: string): Promis
 
 export type CampaignInput = {
   world_id: string;
-  persona_id: string;
-  starting_situation: string;
+  protagonist_id: string;
+  cast_character_ids?: string[];
+  starting_situation?: string;
   name?: string;
   entry_ids?: string[];
 };
