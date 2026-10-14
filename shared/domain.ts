@@ -3,10 +3,33 @@
  * JSON APIs are snake_case with ISO timestamps; ids are server-generated text.
  */
 
+export const WORLD_ENTRY_KINDS = ["character", "location", "lore", "scene"] as const;
+
+export type WorldEntryKind = (typeof WORLD_ENTRY_KINDS)[number];
+
+export interface WorldEntry {
+  id: string;
+  world_id: string;
+  kind: WorldEntryKind;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A compendium entry captured into a campaign at creation; never re-resolved. */
+export interface WorldEntrySnapshot {
+  id: string;
+  kind: WorldEntryKind;
+  name: string;
+  description: string;
+}
+
 export interface WorldSnapshot {
   name: string;
   setting_brief: string;
   suggested_starting_situation: string;
+  entries: WorldEntrySnapshot[];
 }
 
 export interface PersonaSnapshot {

@@ -2,7 +2,14 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Campaign, PersonaSnapshot, WorldSnapshot } from "../shared/domain";
+import type {
+  Campaign,
+  PersonaSnapshot,
+  WorldEntryKind,
+  WorldEntrySnapshot,
+  WorldSnapshot,
+} from "../shared/domain";
+import { WORLD_ENTRY_KINDS } from "../shared/domain";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worlds (
@@ -21,6 +28,18 @@ CREATE TABLE IF NOT EXISTS personas (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS world_entries (
+  id TEXT PRIMARY KEY,
+  world_id TEXT NOT NULL REFERENCES worlds(id),
+  kind TEXT NOT NULL CHECK (kind IN ('character', 'location', 'lore', 'scene')),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS world_entries_world ON world_entries(world_id);
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id TEXT PRIMARY KEY,
@@ -115,7 +134,8 @@ export interface CampaignRecord {
  * Snapshot columns are written only by campaign creation from API-validated
  * fields; on read we re-check the shape so a corrupt workspace can never reach
  * prompts as undefined. name/setting_brief stay non-empty;
- * suggested_starting_situation may be blank.
+ * suggested_starting_situation may be blank; entries must be present — there
+ * is no pre-M2 snapshot compatibility.
  */
 function parseWorldSnapshot(text: string): WorldSnapshot {
   let value: unknown;
@@ -132,7 +152,22 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   if ((snapshot.name as string).length === 0 || (snapshot.setting_brief as string).length === 0) {
     throw new Error("corrupt campaign snapshot");
   }
-  return value as WorldSnapshot;
+  const entries = snapshot.entries;
+  if (!Array.isArray(entries)) throw new Error("corrupt campaign snapshot");
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) throw new Error("corrupt campaign snapshot");
+    const captured = entry as Record<string, unknown>;
+    if (
+      typeof captured.id !== "string" ||
+      typeof captured.name !== "string" ||
+      typeof captured.description !== "string" ||
+      !WORLD_ENTRY_KINDS.includes(captured.kind as WorldEntryKind) ||
+      captured.name.length === 0
+    ) {
+      throw new Error("corrupt campaign snapshot");
+    }
+  }
+  return { ...(value as WorldSnapshot), entries: entries as WorldEntrySnapshot[] };
 }
 
 function parsePersonaSnapshot(text: string): PersonaSnapshot {

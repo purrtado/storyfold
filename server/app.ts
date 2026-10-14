@@ -22,20 +22,26 @@ import {
   createCampaign,
   createPersona,
   createWorld,
+  createWorldEntry,
+  deleteWorldEntry,
   getCampaign,
   getPersona,
   getSession,
   getWorld,
   listCampaigns,
   listPersonas,
+  listWorldEntries,
   listWorlds,
   parseCampaignInput,
   parsePersonaInput,
   parsePersonaPatch,
+  parseWorldEntryInput,
+  parseWorldEntryPatch,
   parseWorldInput,
   parseWorldPatch,
   updatePersona,
   updateWorld,
+  updateWorldEntry,
 } from "./library";
 import {
   BODY_LIMITS,
@@ -220,6 +226,52 @@ async function handlePersonas(request: Request, id: string | undefined, db: Data
   return jsonError(405, "Method not allowed");
 }
 
+/**
+ * Entries are world-owned: every route carries the world id, and an entry id
+ * is only ever resolved inside that scope, so another world's entry is
+ * indistinguishable from a missing one.
+ */
+async function handleWorldEntries(
+  request: Request,
+  worldId: string | undefined,
+  entryId: string | undefined,
+  db: Database,
+): Promise<Response> {
+  if (worldId === undefined) return notFound("Unknown world");
+  if (!getWorld(db, worldId)) return notFound("Unknown world");
+
+  if (entryId === undefined) {
+    if (request.method === "GET") return jsonResponse({ entries: listWorldEntries(db, worldId) });
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const entry = createWorldEntry(db, worldId, parseWorldEntryInput(body));
+        return entry ? jsonResponse({ entry }, 201) : notFound("Unknown world");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const entry = updateWorldEntry(db, worldId, entryId, parseWorldEntryPatch(body));
+      return entry ? jsonResponse({ entry }) : notFound("Unknown entry");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    if (!deleteWorldEntry(db, worldId, entryId)) return notFound("Unknown entry");
+    return jsonResponse({ ok: true });
+  }
+  return jsonError(405, "Method not allowed");
+}
+
 async function handleCampaigns(request: Request, id: string | undefined, db: Database): Promise<Response> {
   if (id === undefined) {
     if (request.method === "GET") return jsonResponse({ campaigns: listCampaigns(db) });
@@ -338,7 +390,12 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   const mutating = request.method === "POST" || request.method === "PATCH";
   if (mutating && origin === null) return jsonError(403, "Origin not allowed");
 
-  if (resource === "worlds") return handleWorlds(request, segments[2], ctx.db);
+  if (resource === "worlds") {
+    if (segments[3] === "entries") {
+      return handleWorldEntries(request, segments[2], segments[4], ctx.db);
+    }
+    return handleWorlds(request, segments[2], ctx.db);
+  }
   if (resource === "personas") return handlePersonas(request, segments[2], ctx.db);
   if (resource === "campaigns") return handleCampaigns(request, segments[2], ctx.db);
 

@@ -1,5 +1,15 @@
 import type { Database } from "bun:sqlite";
-import type { Campaign, Persona, Session, World } from "../shared/domain";
+import type {
+  Campaign,
+  Persona,
+  Session,
+  World,
+  WorldEntry,
+  WorldEntryKind,
+  WorldEntrySnapshot,
+} from "../shared/domain";
+import { WORLD_ENTRY_KINDS } from "../shared/domain";
+import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
 
 /** Request rejected before any state changed; the message is client-safe. */
@@ -152,10 +162,99 @@ export function updatePersona(db: Database, id: string, patch: Partial<PersonaIn
   return next;
 }
 
+export interface WorldEntryInput {
+  kind: WorldEntryKind;
+  name: string;
+  description: string;
+}
+
+function parseEntryKind(value: unknown): WorldEntryKind {
+  if (typeof value !== "string") {
+    throw new ValidationError(`kind must be one of: ${WORLD_ENTRY_KINDS.join(", ")}`);
+  }
+  const kind = value.trim() as WorldEntryKind;
+  if (!WORLD_ENTRY_KINDS.includes(kind)) {
+    throw new ValidationError(`kind must be one of: ${WORLD_ENTRY_KINDS.join(", ")}`);
+  }
+  return kind;
+}
+
+export function parseWorldEntryInput(body: Record<string, unknown>): WorldEntryInput {
+  return {
+    kind: parseEntryKind(body.kind),
+    name: requiredText(body.name, "name"),
+    description: requiredText(body.description, "description"),
+  };
+}
+
+/** PATCH applies only the provided fields; at least one must be present. */
+export function parseWorldEntryPatch(body: Record<string, unknown>): Partial<WorldEntryInput> {
+  const patch: Partial<WorldEntryInput> = {};
+  if (body.kind !== undefined) patch.kind = parseEntryKind(body.kind);
+  if (body.name !== undefined) patch.name = requiredText(body.name, "name");
+  if (body.description !== undefined) patch.description = requiredText(body.description, "description");
+  if (Object.keys(patch).length === 0) {
+    throw new ValidationError("at least one of kind, name, description is required");
+  }
+  return patch;
+}
+
+export function listWorldEntries(db: Database, worldId: string): WorldEntry[] {
+  return db
+    .query<WorldEntry, [string]>("SELECT * FROM world_entries WHERE world_id = ? ORDER BY created_at, id")
+    .all(worldId);
+}
+
+export function createWorldEntry(db: Database, worldId: string, input: WorldEntryInput): WorldEntry | null {
+  if (!getWorld(db, worldId)) return null;
+  const now = nowIso();
+  const entry: WorldEntry = { id: newId(), world_id: worldId, ...input, created_at: now, updated_at: now };
+  db.query(
+    `INSERT INTO world_entries (id, world_id, kind, name, description, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(entry.id, entry.world_id, entry.kind, entry.name, entry.description, entry.created_at, entry.updated_at);
+  return entry;
+}
+
+/** Null covers both an unknown world and an entry living in another world. */
+function getWorldEntryScoped(db: Database, worldId: string, entryId: string): WorldEntry | null {
+  return (
+    db
+      .query<WorldEntry, [string, string]>("SELECT * FROM world_entries WHERE id = ? AND world_id = ?")
+      .get(entryId, worldId) ?? null
+  );
+}
+
+export function updateWorldEntry(
+  db: Database,
+  worldId: string,
+  entryId: string,
+  patch: Partial<WorldEntryInput>,
+): WorldEntry | null {
+  const existing = getWorldEntryScoped(db, worldId, entryId);
+  if (!existing) return null;
+  const next: WorldEntry = { ...existing, ...patch, updated_at: nowIso() };
+  db.query("UPDATE world_entries SET kind = ?, name = ?, description = ?, updated_at = ? WHERE id = ?").run(
+    next.kind,
+    next.name,
+    next.description,
+    next.updated_at,
+    entryId,
+  );
+  return next;
+}
+
+export function deleteWorldEntry(db: Database, worldId: string, entryId: string): boolean {
+  return (
+    db.query("DELETE FROM world_entries WHERE id = ? AND world_id = ?").run(entryId, worldId).changes > 0
+  );
+}
+
 export interface CampaignInput {
   world_id: string;
   persona_id: string;
   starting_situation: string;
+  entry_ids?: string[];
   name?: string;
 }
 
@@ -170,10 +269,24 @@ export function parseCampaignInput(body: Record<string, unknown>): CampaignInput
   if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim().length === 0)) {
     throw new ValidationError("name must be a non-empty string when provided");
   }
+  let entry_ids: string[] | undefined;
+  if (body.entry_ids !== undefined) {
+    if (
+      !Array.isArray(body.entry_ids) ||
+      body.entry_ids.some((id) => typeof id !== "string" || id.length === 0)
+    ) {
+      throw new ValidationError("entry_ids must be an array of non-empty strings");
+    }
+    entry_ids = body.entry_ids;
+    if (new Set(entry_ids).size !== entry_ids.length) {
+      throw new ValidationError("entry_ids must not contain duplicates");
+    }
+  }
   return {
     world_id,
     persona_id,
     starting_situation: optionalText(body.starting_situation, "starting_situation"),
+    ...(entry_ids !== undefined ? { entry_ids } : {}),
     ...(body.name !== undefined ? { name: body.name.trim() } : {}),
   };
 }
@@ -184,11 +297,13 @@ export interface CreatedCampaign {
 }
 
 /**
- * Creates the campaign, its captured world/persona snapshots, and the opening
- * session in one transaction: the deferred (active_session_id, id) foreign key
- * only needs to hold at commit, so the campaign row may reference the
- * preallocated session id before the session row exists. COMMIT happens before
- * any model call — a crash mid-creation leaves no half-created campaign.
+ * Creates the campaign, its captured world/persona snapshots (including the
+ * selected compendium entries), and the opening session in one transaction:
+ * the deferred (active_session_id, id) foreign key only needs to hold at
+ * commit, so the campaign row may reference the preallocated session id before
+ * the session row exists. COMMIT happens before any model call — a crash
+ * mid-creation leaves no half-created campaign. Captured entries are copied by
+ * value; later library edits and deletes never rewrite a campaign snapshot.
  */
 export function createCampaign(db: Database, input: CampaignInput): CreatedCampaign {
   const create = db.transaction(() => {
@@ -196,6 +311,46 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     if (!world) throw new UnknownEntityError("world_id does not match an existing world");
     const persona = getPersona(db, input.persona_id);
     if (!persona) throw new UnknownEntityError("persona_id does not match an existing persona");
+
+    const captured: WorldEntrySnapshot[] = [];
+    if ((input.entry_ids ?? []).length > 0) {
+      const placeholders = input.entry_ids!.map(() => "?").join(", ");
+      const byId = new Map<string, WorldEntry>();
+      for (const row of db
+        .query<WorldEntry, string[]>(`SELECT * FROM world_entries WHERE id IN (${placeholders})`)
+        .all(...input.entry_ids!)) {
+        byId.set(row.id, row);
+      }
+      for (const id of input.entry_ids!) {
+        const entry = byId.get(id);
+        if (!entry) throw new UnknownEntityError("entry_id does not match an existing entry");
+        if (entry.world_id !== world.id) {
+          throw new UnknownEntityError("entry_id belongs to a different world");
+        }
+        if (entry.kind === "scene") {
+          throw new ValidationError(
+            "scene entries cannot ground a campaign; a scene only supplies starting text",
+          );
+        }
+        captured.push({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description });
+      }
+    }
+
+    // The limit binds every campaign: world, persona and situation alone can
+    // exceed it even when no entries are selected.
+    const total = groundingCharacterCount({
+      world_name: world.name,
+      world_setting_brief: world.setting_brief,
+      persona_name: persona.name,
+      persona_description: persona.description,
+      starting_situation: input.starting_situation,
+      entries: captured,
+    });
+    if (total > GROUNDING_CHARACTER_LIMIT) {
+      throw new ValidationError(
+        `combined grounding is ${total} characters; the limit is ${GROUNDING_CHARACTER_LIMIT}`,
+      );
+    }
 
     const now = nowIso();
     const campaignId = newId();
@@ -215,6 +370,7 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
         name: world.name,
         setting_brief: world.setting_brief,
         suggested_starting_situation: world.suggested_starting_situation,
+        entries: captured,
       }),
       JSON.stringify({ name: persona.name, description: persona.description }),
       input.starting_situation,

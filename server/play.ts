@@ -151,10 +151,13 @@ export class PlayService {
 
   /**
    * Fixed narrator grounding, built only from the campaign's captured
-   * snapshots. The campaign's starting situation is used as written — a
-   * deliberately blank one stays blank; the world's suggestion is never
-   * reapplied. Only a story without prior narration asks the model to start a
-   * scene; an opening retried after accepted player turns continues the story.
+   * snapshots. The compendium section uses exclusively the entries captured at
+   * creation — the live library is never consulted, so edits and deletes to
+   * world entries cannot rewrite an existing campaign's grounding. The
+   * campaign's starting situation is used as written — a deliberately blank
+   * one stays blank; the world's suggestion is never reapplied. Only a story
+   * without prior narration asks the model to start a scene; an opening
+   * retried after accepted player turns continues the story.
    */
   narratorSystemPrompt(campaign: Campaign, opening: boolean, hasHistory: boolean): string {
     const world = campaign.world_snapshot;
@@ -163,6 +166,14 @@ export class PlayService {
       campaign.starting_situation.trim().length > 0
         ? campaign.starting_situation
         : "No starting situation was given; open with a scene that fits the world.";
+    const compendium =
+      world.entries.length > 0
+        ? [
+            "Captured world compendium (captured at campaign creation):",
+            ...world.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`),
+            "Respect these definitions as written.",
+          ]
+        : [];
     return [
       "You are the narrator of an ongoing interactive story.",
       "",
@@ -172,6 +183,8 @@ export class PlayService {
       "",
       `The player controls their persona, ${persona.name}: ${persona.description}`,
       `Whenever the player speaks or acts, it is ${persona.name} acting.`,
+      "",
+      ...compendium,
       "",
       "Narrate the world and every other character yourself; never narrate",
       `${persona.name}'s decisions, words, or thoughts.`,

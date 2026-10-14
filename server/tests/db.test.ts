@@ -56,7 +56,7 @@ describe("schema invariants", () => {
         `INSERT INTO campaigns
            (id, name, world_id, persona_id, world_snapshot, persona_snapshot,
             starting_situation, active_session_id, created_at, updated_at)
-         VALUES ('c2', 'Thief', ?, ?, '{}', '{}', 'Two.', ?, ?, ?)`,
+         VALUES ('c2', 'Thief', ?, ?, '{"entries":[]}', '{}', 'Two.', ?, ?, ?)`,
       ).run(worldId, personaId, session.id, NOW, NOW);
     });
     expect(() => steal.immediate()).toThrow(/FOREIGN KEY/);
@@ -158,7 +158,7 @@ describe("schema invariants", () => {
         `INSERT INTO campaigns
            (id, name, world_id, persona_id, world_snapshot, persona_snapshot,
             starting_situation, active_session_id, created_at, updated_at)
-         VALUES (?, 'Broken', ?, ?, 'not json', '{}', 'x', ?, ?, ?)`,
+         VALUES (?, 'Broken', ?, ?, 'not json', '{"name":"P","description":"d"}', 'x', ?, ?, ?)`,
       ).run(crypto.randomUUID(), worldId, personaId, sessionId, NOW, NOW);
       db.query(
         "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'T', ?, ?)",
