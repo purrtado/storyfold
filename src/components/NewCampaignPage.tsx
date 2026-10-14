@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
-import type { Campaign, Session } from "../../shared/domain";
+import type { Campaign, Session, WorldEntry, WorldEntryKind } from "../../shared/domain";
+import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../../shared/grounding";
 import { createCampaign } from "../lib/storyApi";
-import { refreshPersonas, refreshWorlds, usePersonas, useWorlds } from "../lib/libraryCache";
+import { ensureWorldEntries, refreshPersonas, refreshWorldEntries, refreshWorlds, usePersonas, useWorldEntries, useWorlds } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
+import { worldEntryGroups } from "../lib/worldEntryGroups";
 
 type Draft = {
   worldId: string;
@@ -12,6 +14,7 @@ type Draft = {
   name: string;
   startingSituation: string;
   situationEdited: boolean;
+  selectedEntryIds: string[];
 };
 
 export function NewCampaignPage(props: {
@@ -30,6 +33,7 @@ export function NewCampaignPage(props: {
     name: "",
     startingSituation: "",
     situationEdited: false,
+    selectedEntryIds: [],
   });
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
@@ -58,7 +62,8 @@ export function NewCampaignPage(props: {
         : personas.some((item) => item.id === current.personaId)
           ? current.personaId
           : personas[0]?.id ?? "";
-      const situationChanged = (worldSeedChanged || nextWorldId !== current.worldId) && !current.situationEdited;
+      const worldChanged = worldSeedChanged || nextWorldId !== current.worldId;
+      const situationChanged = worldChanged && !current.situationEdited;
       return {
         ...current,
         worldId: nextWorldId,
@@ -66,13 +71,38 @@ export function NewCampaignPage(props: {
         startingSituation: situationChanged
           ? worlds.find((item) => item.id === nextWorldId)?.suggested_starting_situation ?? ""
           : current.startingSituation,
+        selectedEntryIds: worldChanged ? [] : current.selectedEntryIds,
       };
     });
   }, [worlds, personas, props.selectedPersonaId, props.selectedWorldId]);
 
   const world = worlds?.find((item) => item.id === draft.worldId);
   const persona = personas?.find((item) => item.id === draft.personaId);
-  const canBegin = Boolean(world && persona && !starting);
+  const worldEntriesState = useWorldEntries(draft.worldId);
+  useEffect(() => {
+    if (draft.worldId) ensureWorldEntries(draft.worldId);
+  }, [draft.worldId]);
+
+  const worldEntries = useMemo(
+    () => [...(worldEntriesState.items ?? [])].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
+    [worldEntriesState.items],
+  );
+  const selectedEntries = worldEntries.filter((entry) =>
+    entry.kind !== "scene" && draft.selectedEntryIds.includes(entry.id),
+  );
+  const groundingCount = world && persona
+    ? groundingCharacterCount({
+      world_name: world.name,
+      world_setting_brief: world.setting_brief,
+      persona_name: persona.name,
+      persona_description: persona.description,
+      starting_situation: draft.startingSituation.trim(),
+      entries: selectedEntries,
+    })
+    : 0;
+  const overLimit = groundingCount > GROUNDING_CHARACTER_LIMIT;
+  const canBegin = Boolean(world && persona && !starting && !overLimit);
   const coldLoadError = (worlds === undefined ? worldsState.loadError : undefined)
     ?? (personas === undefined ? personasState.loadError : undefined);
   const refreshError = worldsState.refreshError ?? personasState.refreshError;
@@ -82,9 +112,40 @@ export function NewCampaignPage(props: {
     setDraft((current) => ({
       ...current,
       worldId: id,
+      selectedEntryIds: [],
       startingSituation: current.situationEdited
         ? current.startingSituation
         : next?.suggested_starting_situation ?? "",
+    }));
+  };
+
+  const chooseScene = (scene: WorldEntry) => {
+    if (
+      draft.situationEdited
+      && draft.startingSituation !== scene.description
+      && !window.confirm("Replace your manually edited starting situation with this scene?")
+    ) return;
+    setDraft((current) => ({
+      ...current,
+      startingSituation: scene.description,
+      situationEdited: false,
+    }));
+  };
+
+  const toggleEntry = (entryId: string) => {
+    setDraft((current) => ({
+      ...current,
+      selectedEntryIds: current.selectedEntryIds.includes(entryId)
+        ? current.selectedEntryIds.filter((id) => id !== entryId)
+        : [...current.selectedEntryIds, entryId],
+    }));
+  };
+
+  const selectAll = (kind: Exclude<WorldEntryKind, "scene">) => {
+    const ids = worldEntries.filter((entry) => entry.kind === kind).map((entry) => entry.id);
+    setDraft((current) => ({
+      ...current,
+      selectedEntryIds: [...new Set([...current.selectedEntryIds, ...ids])],
     }));
   };
 
@@ -98,6 +159,7 @@ export function NewCampaignPage(props: {
         world_id: world.id,
         persona_id: persona.id,
         starting_situation: draft.startingSituation.trim(),
+        entry_ids: draft.selectedEntryIds,
         ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
       });
       props.onStarted(result.campaign, result.session);
@@ -182,6 +244,135 @@ export function NewCampaignPage(props: {
                 </section>
               </div>
 
+              <section className="grid gap-5 rounded-xl border border-border bg-raised p-5" aria-labelledby="compendium-choice-title">
+                <header>
+                  <h2 id="compendium-choice-title" className="text-lg font-semibold">Choose compendium entries</h2>
+                  <p className="mbs-1 text-sm leading-6 text-muted">Characters, locations, and lore start unselected. Choose only the details this campaign should know.</p>
+                </header>
+
+                {worldEntriesState.refreshError && (
+                  <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+                    {worldEntriesState.refreshError}
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldEntries(draft.worldId)}>Retry</button>
+                  </p>
+                )}
+
+                {worldEntriesState.items === undefined && worldEntriesState.loadError ? (
+                  <section className="grid justify-items-start gap-3 rounded-lg border border-border p-4" role="alert">
+                    <p className="text-sm text-muted">{worldEntriesState.loadError}</p>
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldEntries(draft.worldId)}>Try again</button>
+                  </section>
+                ) : worldEntriesState.items === undefined ? (
+                  <p className="text-sm text-muted" role="status">Loading this world’s compendium…</p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,17rem),1fr))] gap-4">
+                      {worldEntryGroups.map((group) => {
+                        const kind = group.kind;
+                        if (kind === "scene") return null;
+                        const categoryEntries = worldEntries.filter((entry) => entry.kind === kind);
+                        const selectedCount = categoryEntries.filter((entry) => draft.selectedEntryIds.includes(entry.id)).length;
+                        return (
+                          <fieldset key={kind} className="grid content-start gap-3 rounded-lg border border-border p-4">
+                            <legend className="px-1 font-semibold">{group.label}</legend>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs text-muted">{selectedCount} of {categoryEntries.length} selected</p>
+                              <button
+                                type="button"
+                                className="pressable min-h-9 rounded-lg border border-border px-3 text-xs font-medium [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+                                onClick={() => selectAll(kind)}
+                                disabled={categoryEntries.length === 0}
+                              >
+                                Select all
+                              </button>
+                            </div>
+                            {categoryEntries.length === 0 ? (
+                              <p className="text-sm text-muted">No {group.label.toLocaleLowerCase()} in this world yet.</p>
+                            ) : (
+                              <ul className="grid list-none gap-3 p-0">
+                                {categoryEntries.map((entry) => (
+                                  <li key={entry.id} className="border-bs border-border pbs-3 first:border-0 first:pbs-0">
+                                    <label className="flex items-start gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        className="mbs-1 size-4 flex-none accent-accent"
+                                        checked={draft.selectedEntryIds.includes(entry.id)}
+                                        onChange={() => toggleEntry(entry.id)}
+                                      />
+                                      <span className="grid min-w-0 gap-1">
+                                        <span className="font-medium">{entry.name}</span>
+                                        <span className="whitespace-pre-wrap leading-6 text-muted">{entry.description}</span>
+                                      </span>
+                                    </label>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </fieldset>
+                        );
+                      })}
+                    </div>
+
+                    <section className="grid gap-3 rounded-lg border border-border p-4" aria-labelledby="opening-scenes-title">
+                      <div>
+                        <h3 id="opening-scenes-title" className="font-semibold">Opening scenes</h3>
+                        <p className="mbs-1 text-sm text-muted">Use a scene to fill the starting situation. Scenes do not add separate compendium grounding.</p>
+                      </div>
+                      {worldEntries.filter((entry) => entry.kind === "scene").length === 0 ? (
+                        <p className="text-sm text-muted">No opening scenes in this world yet.</p>
+                      ) : (
+                        <ul className="grid list-none gap-3 p-0">
+                          {worldEntries.filter((entry) => entry.kind === "scene").map((scene) => (
+                            <li key={scene.id} className="flex flex-wrap items-start justify-between gap-3 border-bs border-border pbs-3 first:border-0 first:pbs-0">
+                              <div className="min-w-0 flex-1">
+                                <h4 className="font-medium">{scene.name}</h4>
+                                <p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{scene.description}</p>
+                              </div>
+                              <button
+                                type="button"
+                                className="pressable min-h-10 flex-none rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+                                aria-label={`Use ${scene.name} as starting situation`}
+                                onClick={() => chooseScene(scene)}
+                              >
+                                Use scene
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                  </>
+                )}
+
+                <section className="grid gap-3 rounded-lg bg-surface p-4" aria-labelledby="included-compendium-title">
+                  <div>
+                    <h3 id="included-compendium-title" className="font-semibold">Included compendium preview</h3>
+                    <p className="mbs-1 text-sm text-muted">Only selected characters, locations, and lore will be captured.</p>
+                  </div>
+                  {selectedEntries.length === 0 ? (
+                    <p className="text-sm text-muted">No compendium entries selected.</p>
+                  ) : (
+                    <ul className="grid list-none gap-3 p-0">
+                      {selectedEntries.map((entry) => (
+                        <li key={entry.id} className="border-bs border-border pbs-3 first:border-0 first:pbs-0">
+                          <p className="text-xs font-medium text-muted">{worldEntryGroups.find((group) => group.kind === entry.kind)?.label}</p>
+                          <h4 className="mbs-1 font-medium">{entry.name}</h4>
+                          <p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <p className="text-sm font-medium tabular-nums" role="status" aria-live="polite">
+                  Combined grounding: {groundingCount.toLocaleString()} / {GROUNDING_CHARACTER_LIMIT.toLocaleString()} characters
+                </p>
+                {overLimit && (
+                  <p className="text-sm text-muted" role="alert">
+                    This content exceeds the 32,000-character grounding limit. Shorten the text or deselect entries before starting.
+                  </p>
+                )}
+              </section>
               <section className="grid gap-4 rounded-xl border border-border bg-raised p-5">
                 <label className="grid gap-1.5 text-sm font-medium" htmlFor="campaign-situation">
                   Starting situation

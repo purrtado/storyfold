@@ -9,6 +9,7 @@ import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
+import { worldEntryGroups } from "../lib/worldEntryGroups";
 
 function PendingDots() {
   return (
@@ -308,6 +309,35 @@ export function CampaignPlay(props: {
                 <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
                   <p className="text-xs font-medium text-muted">Campaign starting situation</p>
                   <p className="whitespace-pre-wrap text-sm leading-6">{props.campaign.starting_situation || "No starting situation specified."}</p>
+                </section>
+                <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-captured-entries-title">
+                  <div>
+                    <p className="text-xs font-medium text-muted">Campaign grounding</p>
+                    <h3 id="campaign-captured-entries-title" className="mbs-1 font-semibold">Captured compendium</h3>
+                  </div>
+                  {props.campaign.world_snapshot.entries.length === 0 ? (
+                    <p className="text-sm text-muted">No compendium entries were included in this campaign.</p>
+                  ) : (
+                    worldEntryGroups
+                      .map((group) => ({
+                        ...group,
+                        entries: props.campaign!.world_snapshot.entries.filter((entry) => entry.kind === group.kind),
+                      }))
+                      .filter((group) => group.entries.length > 0)
+                      .map((group) => (
+                        <section key={group.kind} className="grid gap-2">
+                          <h4 className="text-sm font-medium">{group.label}</h4>
+                          <ul className="grid list-none gap-3 p-0">
+                            {group.entries.map((entry) => (
+                              <li key={entry.id} className="grid gap-1 border-bs border-border pbs-3 first:border-0 first:pbs-0">
+                                <p className="font-medium">{entry.name}</p>
+                                <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      ))
+                  )}
                 </section>
               </div>
             </div>

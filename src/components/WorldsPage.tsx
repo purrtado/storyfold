@@ -4,6 +4,7 @@ import type { World } from "../../shared/domain";
 import { createWorld, updateWorld, type WorldInput } from "../lib/storyApi";
 import { refreshWorlds, useWorlds, worldsLibrary } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
+import { WorldCompendium } from "./WorldCompendium";
 
 const emptyWorld: WorldInput = {
   name: "",
@@ -21,6 +22,7 @@ export function WorldsPage(props: {
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<{ id: string | null; value: WorldInput } | null>(null);
   const [saveError, setSaveError] = useState("");
+  const [compendiumWorldId, setCompendiumWorldId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function WorldsPage(props: {
         .some((value) => value.toLocaleLowerCase().includes(needle)),
     );
   }, [query, worlds]);
+  const compendiumWorld = worlds?.find((item) => item.id === compendiumWorldId);
 
   const openNew = () => {
     setEditor({ id: null, value: { ...emptyWorld } });
@@ -246,11 +249,22 @@ export function WorldsPage(props: {
                         <p className="mbs-1 line-clamp-3 whitespace-pre-wrap text-sm leading-6">{world.suggested_starting_situation}</p>
                       </div>
                     )}
-                    <div className="[margin-block-start:auto] flex flex-wrap gap-2 border-bs border-border pbs-3">
-                      <button type="button" className="pressable inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => openEdit(world)}>
-                        <Pencil className="size-4" aria-hidden="true" />Edit
-                      </button>
-                      <button type="button" className="pressable min-h-10 flex-1 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onSelect(world)}>
+                    <div className="grid gap-2 border-bs border-border pbs-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" className="pressable inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => openEdit(world)}>
+                          <Pencil className="size-4" aria-hidden="true" />Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="pressable inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-3 text-sm whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+                          aria-expanded={compendiumWorldId === world.id}
+                          aria-controls={compendiumWorldId === world.id ? `world-compendium-${world.id}` : undefined}
+                          onClick={() => setCompendiumWorldId((current) => current === world.id ? null : world.id)}
+                        >
+                          Compendium
+                        </button>
+                      </div>
+                      <button type="button" className="pressable inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onSelect(world)}>
                         Use in a campaign
                       </button>
                     </div>
@@ -259,6 +273,7 @@ export function WorldsPage(props: {
               ))}
             </ul>
           )}
+          {compendiumWorld && <WorldCompendium world={compendiumWorld} onClose={() => setCompendiumWorldId(null)} />}
         </main>
       </div>
     </div>

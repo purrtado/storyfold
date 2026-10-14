@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { Persona, World } from "../../shared/domain";
-import { fetchPersonas, fetchWorlds } from "./storyApi";
+import type { Persona, World, WorldEntry } from "../../shared/domain";
+import { fetchPersonas, fetchWorlds, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
   /** undefined until the first read completes; an empty array is a real, loaded library */
@@ -15,6 +15,7 @@ export type Library<T extends { id: string }> = {
   subscribe: (listener: () => void) => () => void;
   load: () => Promise<void>;
   applySaved: (saved: T, previousId: string | undefined) => void;
+  applyRemoved: (id: string) => void;
 };
 
 export function createLibrary<T extends { id: string }>(
@@ -79,6 +80,18 @@ export function createLibrary<T extends { id: string }>(
     if (needsReconcile) void load();
   };
 
+  const applyRemoved = (id: string) => {
+    const items = snapshot.items;
+    const needsReconcile = snapshot.loading || items === undefined;
+    commit({
+      items: items?.filter((item) => item.id !== id),
+      loading: needsReconcile,
+      loadError: undefined,
+      refreshError: snapshot.refreshError,
+    });
+    if (needsReconcile) void load();
+  };
+
   return {
     getSnapshot: () => snapshot,
     subscribe: (listener) => {
@@ -89,11 +102,53 @@ export function createLibrary<T extends { id: string }>(
     },
     load,
     applySaved,
+    applyRemoved,
   };
 }
 
 export const worldsLibrary = createLibrary<World>(fetchWorlds, "Could not load worlds.");
 export const personasLibrary = createLibrary<Persona>(fetchPersonas, "Could not load personas.");
+
+const worldEntryLibraries = new Map<string, Library<WorldEntry>>();
+
+function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
+  let library = worldEntryLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => listWorldEntries(worldId),
+      "Could not load this world's compendium.",
+    );
+    worldEntryLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+export function useWorldEntries(worldId: string): LibrarySnapshot<WorldEntry> {
+  const library = getWorldEntriesLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function ensureWorldEntries(worldId: string): void {
+  const library = getWorldEntriesLibrary(worldId);
+  const snapshot = library.getSnapshot();
+  if (snapshot.items === undefined && !snapshot.loading) void library.load();
+}
+
+export function refreshWorldEntries(worldId: string): void {
+  void getWorldEntriesLibrary(worldId).load();
+}
+
+export function applyWorldEntrySaved(
+  worldId: string,
+  saved: WorldEntry,
+  previousId?: string,
+): void {
+  getWorldEntriesLibrary(worldId).applySaved(saved, previousId);
+}
+
+export function applyWorldEntryRemoved(worldId: string, entryId: string): void {
+  getWorldEntriesLibrary(worldId).applyRemoved(entryId);
+}
 
 export function useWorlds(): LibrarySnapshot<World> {
   return useSyncExternalStore(worldsLibrary.subscribe, worldsLibrary.getSnapshot);

@@ -1,10 +1,13 @@
-import type { Campaign, Message, Persona, Session, World } from "../../shared/domain";
+import type { Campaign, Message, Persona, Session, World, WorldEntry } from "../../shared/domain";
 
 export type WorldInput = Pick<
   World,
   "name" | "setting_brief" | "suggested_starting_situation"
 >;
 export type PersonaInput = Pick<Persona, "name" | "description">;
+
+export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description">;
+export type WorldEntryPatch = Partial<WorldEntryInput>;
 
 type ApiErrorBody = {
   error?: unknown;
@@ -111,11 +114,46 @@ export async function updatePersona(id: string, input: PersonaInput): Promise<Pe
   ).persona;
 }
 
+export async function listWorldEntries(worldId: string): Promise<WorldEntry[]> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/entries`;
+  return (await request<{ entries: WorldEntry[] }>(path)).entries;
+}
+
+export async function createWorldEntry(worldId: string, input: WorldEntryInput): Promise<WorldEntry> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/entries`;
+  return (
+    await request<{ entry: WorldEntry }>(path, {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  ).entry;
+}
+
+export async function updateWorldEntry(
+  worldId: string,
+  entryId: string,
+  input: WorldEntryPatch,
+): Promise<WorldEntry> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/entries/${encodeURIComponent(entryId)}`;
+  return (
+    await request<{ entry: WorldEntry }>(path, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    })
+  ).entry;
+}
+
+export async function deleteWorldEntry(worldId: string, entryId: string): Promise<{ ok: true }> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/entries/${encodeURIComponent(entryId)}`;
+  return request<{ ok: true }>(path, { method: "DELETE" });
+}
+
 export type CampaignInput = {
   world_id: string;
   persona_id: string;
   starting_situation: string;
   name?: string;
+  entry_ids?: string[];
 };
 
 export async function fetchCampaigns(): Promise<Campaign[]> {
