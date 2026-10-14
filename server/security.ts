@@ -166,6 +166,6 @@ export async function readJsonBody(request: Request, limitBytes: number): Promis
 export const BODY_LIMITS = {
   provider: JSON_BODY_MAX_BYTES,
   chat: CHAT_BODY_MAX_BYTES,
-  /** Domain text fields (worlds, personas, campaigns, play input) allow 100k chars. */
+  /** Domain text fields (worlds, characters, campaigns, play input) allow 100k chars. */
   text: CHAT_BODY_MAX_BYTES,
 };
