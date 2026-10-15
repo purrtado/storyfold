@@ -19,28 +19,34 @@ import {
 import {
   UnknownEntityError,
   ValidationError,
+  associateWorldCharacter,
   createCampaign,
-  createPersona,
+  createCharacter,
   createWorld,
   createWorldEntry,
+  deleteWorldCharacter,
   deleteWorldEntry,
   getCampaign,
-  getPersona,
+  getCharacter,
   getSession,
   getWorld,
   listCampaigns,
-  listPersonas,
+  listCharacters,
+  listWorldCharacters,
   listWorldEntries,
   listWorlds,
   parseCampaignInput,
-  parsePersonaInput,
-  parsePersonaPatch,
+  parseCharacterInput,
+  parseCharacterPatch,
+  parseWorldCharacterInput,
+  parseWorldCharacterPatch,
   parseWorldEntryInput,
   parseWorldEntryPatch,
   parseWorldInput,
   parseWorldPatch,
-  updatePersona,
+  updateCharacter,
   updateWorld,
+  updateWorldCharacter,
   updateWorldEntry,
 } from "./library";
 import {
@@ -195,14 +201,14 @@ async function handleWorlds(request: Request, id: string | undefined, db: Databa
   return jsonError(405, "Method not allowed");
 }
 
-async function handlePersonas(request: Request, id: string | undefined, db: Database): Promise<Response> {
+async function handleCharacters(request: Request, id: string | undefined, db: Database): Promise<Response> {
   if (id === undefined) {
-    if (request.method === "GET") return jsonResponse({ personas: listPersonas(db) });
+    if (request.method === "GET") return jsonResponse({ characters: listCharacters(db) });
     if (request.method === "POST") {
       const body = await readObjectBody(request);
       if (body instanceof Response) return body;
       try {
-        return jsonResponse({ persona: createPersona(db, parsePersonaInput(body)) }, 201);
+        return jsonResponse({ character: createCharacter(db, parseCharacterInput(body)) }, 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
       }
@@ -210,18 +216,66 @@ async function handlePersonas(request: Request, id: string | undefined, db: Data
     return jsonError(405, "Method not allowed");
   }
   if (request.method === "GET") {
-    const persona = getPersona(db, id);
-    return persona ? jsonResponse({ persona }) : notFound("Unknown persona");
+    const character = getCharacter(db, id);
+    return character ? jsonResponse({ character }) : notFound("Unknown character");
   }
   if (request.method === "PATCH") {
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      const persona = updatePersona(db, id, parsePersonaPatch(body));
-      return persona ? jsonResponse({ persona }) : notFound("Unknown persona");
+      const character = updateCharacter(db, id, parseCharacterPatch(body));
+      return character ? jsonResponse({ character }) : notFound("Unknown character");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+/**
+ * World cast is world-scoped like entries: every route carries the world id,
+ * and a character id is only ever resolved inside that scope, so another
+ * world's association is indistinguishable from a missing one.
+ */
+async function handleWorldCharacters(
+  request: Request,
+  worldId: string | undefined,
+  characterId: string | undefined,
+  db: Database,
+): Promise<Response> {
+  if (worldId === undefined) return notFound("Unknown world");
+  if (!getWorld(db, worldId)) return notFound("Unknown world");
+
+  if (characterId === undefined) {
+    if (request.method === "GET") {
+      return jsonResponse({ characters: listWorldCharacters(db, worldId) });
+    }
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const association = associateWorldCharacter(db, worldId, parseWorldCharacterInput(body));
+        return association ? jsonResponse({ character: association }, 201) : notFound("Unknown world");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const association = updateWorldCharacter(db, worldId, characterId, parseWorldCharacterPatch(body));
+      return association ? jsonResponse({ character: association }) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    if (!deleteWorldCharacter(db, worldId, characterId)) return notFound("Unknown character");
+    return jsonResponse({ ok: true });
   }
   return jsonError(405, "Method not allowed");
 }
@@ -337,7 +391,7 @@ async function handlePlayPost(
   const settings = await ctx.store.load();
   const reserveTurn = (): ReservedTurn => {
     if (kind === "messages") {
-      return ctx.play.reservePlayerTurn(sessionId, content, campaign.persona_snapshot.name);
+      return ctx.play.reservePlayerTurn(sessionId, content, campaign.protagonist_snapshot.name);
     }
     return ctx.play.reserveOpening(sessionId);
   };
@@ -394,9 +448,12 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
     if (segments[3] === "entries") {
       return handleWorldEntries(request, segments[2], segments[4], ctx.db);
     }
+    if (segments[3] === "characters") {
+      return handleWorldCharacters(request, segments[2], segments[4], ctx.db);
+    }
     return handleWorlds(request, segments[2], ctx.db);
   }
-  if (resource === "personas") return handlePersonas(request, segments[2], ctx.db);
+  if (resource === "characters") return handleCharacters(request, segments[2], ctx.db);
   if (resource === "campaigns") return handleCampaigns(request, segments[2], ctx.db);
 
   if (resource === "sessions" && typeof segments[2] === "string") {

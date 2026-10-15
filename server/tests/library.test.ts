@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Campaign, Persona, Session, World } from "../../shared/domain";
+import type { Campaign, Character, Session, World } from "../../shared/domain";
 import {
   headersWith,
   makeConfigDirectory,
@@ -44,8 +44,8 @@ async function patchWorld(id: string, body: Record<string, unknown>): Promise<{ 
   return { status: response.status, ...(await response.json()) };
 }
 
-async function createPersona(body: Record<string, unknown>): Promise<{ status: number; persona?: Persona }> {
-  const response = await fetch(`${base.url}/api/personas`, {
+async function createCharacter(body: Record<string, unknown>): Promise<{ status: number; character?: Character }> {
+  const response = await fetch(`${base.url}/api/characters`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
     body: JSON.stringify(body),
@@ -90,32 +90,58 @@ describe("worlds API", () => {
   });
 });
 
-describe("personas API", () => {
-  test("creates and edits personas with validated required text", async () => {
-    const created = await createPersona({ name: "Moss", description: "A hedge-witch archivist." });
+describe("characters API", () => {
+  test("creates and edits characters with optional authored fields defaulting to empty", async () => {
+    const created = await createCharacter({
+      name: "Moss",
+      description: "A hedge-witch archivist.",
+      speaking_style: "Dry, precise, fond of marginalia.",
+    });
     expect(created.status).toBe(201);
-    const bad = await createPersona({ name: "", description: "d" });
+    expect(created.character?.appearance).toBe("");
+    expect(created.character?.personality).toBe("");
+    expect(created.character?.background).toBe("");
+    expect(created.character?.baseline_motivations).toBe("");
+    expect(created.character?.speaking_style).toBe("Dry, precise, fond of marginalia.");
+
+    const bad = await createCharacter({ name: "", description: "d" });
     expect(bad.status).toBe(400);
-    const patched = await fetch(`${base.url}/api/personas/${created.persona!.id}`, {
+    const notText = await createCharacter({ name: "n", description: "d", appearance: 42 });
+    expect(notText.status).toBe(400);
+
+    const list = (await (await fetch(`${base.url}/api/characters`, { headers: headersWith() })).json()) as {
+      characters: Character[];
+    };
+    expect(list.characters.some((character) => character.id === created.character?.id)).toBe(true);
+
+    const patched = await fetch(`${base.url}/api/characters/${created.character!.id}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ description: "Archivist of drowned libraries." }),
+      body: JSON.stringify({ description: "Archivist of drowned libraries.", personality: "Painstaking." }),
     });
     expect(patched.status).toBe(200);
-    const body = (await patched.json()) as { persona: Persona };
-    expect(body.persona.name).toBe("Moss");
-    expect(body.persona.description).toBe("Archivist of drowned libraries.");
+    const body = (await patched.json()) as { character: Character };
+    expect(body.character.description).toBe("Archivist of drowned libraries.");
+    expect(body.character.personality).toBe("Painstaking.");
+    expect(body.character.speaking_style).toBe("Dry, precise, fond of marginalia.");
+    const emptyPatch = await fetch(`${base.url}/api/characters/${created.character!.id}`, {
+      method: "PATCH",
+      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+      body: JSON.stringify({}),
+    });
+    expect(emptyPatch.status).toBe(400);
+    expect((await fetch(`${base.url}/api/characters/missing`, { headers: headersWith() })).status).toBe(404);
   });
 });
 
 describe("campaigns API", () => {
   test("campaigns create distinctly with or without an explicit name and reopen by id", async () => {
     const world = (await createWorld({ name: "Two Seat World", setting_brief: "b", suggested_starting_situation: "" })).world!;
-    const persona = (await createPersona({ name: "Two Seat Persona", description: "d" })).persona!;
+    const protagonist = (await createCharacter({ name: "Two Seat Hero", description: "d" })).character!;
     const named = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "s", name: "Custom Name" }),
+      body: JSON.stringify({ world_id: world.id, protagonist_id: protagonist.id, starting_situation: "s", name: "Custom Name" }),
     });
     expect(named.status).toBe(201);
     const namedBody = (await named.json()) as { campaign: Campaign; session: Session };
@@ -123,7 +149,7 @@ describe("campaigns API", () => {
     const unnamed = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "s2" }),
+      body: JSON.stringify({ world_id: world.id, protagonist_id: protagonist.id, starting_situation: "s2" }),
     });
     expect(unnamed.status).toBe(201);
     const unnamedBody = (await unnamed.json()) as { campaign: Campaign; session: Session };
@@ -140,18 +166,20 @@ describe("campaigns API", () => {
 
   test("campaign detail exposes parsed snapshots and unknown ids 404", async () => {
     const world = (await createWorld({ name: "Detail World", setting_brief: "deep", suggested_starting_situation: "opt" })).world!;
-    const persona = (await createPersona({ name: "Detail Persona", description: "deep persona" })).persona!;
+    const protagonist = (await createCharacter({ name: "Detail Hero", description: "deep hero" })).character!;
     const created = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: world.id, persona_id: persona.id, starting_situation: "Detail situation" }),
+      body: JSON.stringify({ world_id: world.id, protagonist_id: protagonist.id, starting_situation: "Detail situation" }),
     });
     const { campaign } = (await created.json()) as { campaign: Campaign };
     const detail = (await (
       await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() })
     ).json()) as { campaign: Campaign };
     expect(detail.campaign.world_snapshot.suggested_starting_situation).toBe("opt");
-    expect(detail.campaign.persona_snapshot.description).toBe("deep persona");
+    expect(detail.campaign.protagonist_snapshot.description).toBe("deep hero");
+    expect(detail.campaign.protagonist_snapshot.id).toBe(protagonist.id);
+    expect(detail.campaign.cast).toEqual([]);
     expect(detail.campaign.starting_situation).toBe("Detail situation");
     expect((await fetch(`${base.url}/api/campaigns/missing`, { headers: headersWith() })).status).toBe(404);
   });

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import type { Campaign, Message, Persona, Session, World } from "../shared/domain";
+import type { Campaign, Character, Message, Session, World } from "../shared/domain";
 import { CampaignPlay } from "./components/CampaignPlay";
 import { NewCampaignPage } from "./components/NewCampaignPage";
-import { PersonasPage } from "./components/PersonasPage";
+import { CharactersPage } from "./components/CharactersPage";
 import { ProvidersPage } from "./components/ProvidersPage";
 import { SettingsPage, SettingsSidebar } from "./components/SettingsPage";
 import { Sheet } from "./components/Sheet";
@@ -23,7 +23,7 @@ export default function App() {
   const [campaignsLoading, setCampaignsLoading] = useState(true);
   const [campaignsError, setCampaignsError] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState<string | null>(null);
-  const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Record<string, { campaign: Campaign; session: Session }>>({});
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [sessionsLoading, setSessionsLoading] = useState<Record<string, boolean>>({});
@@ -257,12 +257,12 @@ export default function App() {
           }
         />
         <Route
-          path="/personas"
+          path="/characters"
           element={
-            <PersonasPage
+            <CharactersPage
               onOpenSidebar={() => setMobileOpen(true)}
-              onSelect={(persona: Persona) => {
-                setSelectedPersonaId(persona.id);
+              onSelect={(character: Character) => {
+                setSelectedCharacterId(character.id);
                 navigate("/campaigns/new");
               }}
             />
@@ -274,11 +274,11 @@ export default function App() {
             <NewCampaignPage
               onOpenSidebar={() => setMobileOpen(true)}
               selectedWorldId={selectedWorldId}
-              selectedPersonaId={selectedPersonaId}
+              selectedCharacterId={selectedCharacterId}
               onStarted={(campaign, session) => {
                 setCampaigns((current) => [campaign, ...current.filter((item) => item.id !== campaign.id)]);
                 setSelectedWorldId(null);
-                setSelectedPersonaId(null);
+                setSelectedCharacterId(null);
                 navigate(`/sessions/${session.id}`);
               }}
             />

@@ -273,7 +273,7 @@ export function WorldsPage(props: {
               ))}
             </ul>
           )}
-          {compendiumWorld && <WorldCompendium world={compendiumWorld} onClose={() => setCompendiumWorldId(null)} />}
+          {compendiumWorld && <WorldCompendium key={compendiumWorld.id} world={compendiumWorld} onClose={() => setCompendiumWorldId(null)} />}
         </main>
       </div>
     </div>
