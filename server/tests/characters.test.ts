@@ -110,7 +110,7 @@ describe("world cast API", () => {
     const patched = await patchAssociation(world.id, character.id, { context: "Stripped of title; now runs smuggled salt." });
     expect(patched.status).toBe(200);
     expect(patched.character?.context).toBe("Stripped of title; now runs smuggled salt.");
-    expect(patchAssociation(world.id, "no-such-character", { context: "x" })).resolves.toMatchObject({ status: 404 });
+    await expect(patchAssociation(world.id, "no-such-character", { context: "x" })).resolves.toMatchObject({ status: 404 });
     expect((await json("PATCH", `/api/worlds/${world.id}/characters/${character.id}`, {})).status).toBe(400);
 
     const list = (await (await json("GET", `/api/worlds/${world.id}/characters`)).json()) as {
