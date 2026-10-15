@@ -3,15 +3,78 @@
  * JSON APIs are snake_case with ISO timestamps; ids are server-generated text.
  */
 
+export const WORLD_ENTRY_KINDS = ["local_npc", "location", "lore", "scene"] as const;
+
+export type WorldEntryKind = (typeof WORLD_ENTRY_KINDS)[number];
+
+export interface WorldEntry {
+  id: string;
+  world_id: string;
+  kind: WorldEntryKind;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A compendium entry captured into a campaign at creation; never re-resolved. */
+export interface WorldEntrySnapshot {
+  id: string;
+  kind: WorldEntryKind;
+  name: string;
+  description: string;
+}
+
 export interface WorldSnapshot {
   name: string;
   setting_brief: string;
   suggested_starting_situation: string;
+  entries: WorldEntrySnapshot[];
 }
 
-export interface PersonaSnapshot {
+/**
+ * A global character. name/description are required; the remaining authored
+ * fields are optional but always present, empty when unauthored.
+ */
+export interface Character {
+  id: string;
   name: string;
   description: string;
+  appearance: string;
+  personality: string;
+  background: string;
+  baseline_motivations: string;
+  speaking_style: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * A global character definition captured at campaign creation, together with
+ * the world-specific context of the world it was cast from ("" outside any
+ * world cast). `id` is the captured global character id; later library edits
+ * never rewrite a campaign snapshot.
+ */
+export interface CharacterSnapshot {
+  id: string;
+  name: string;
+  description: string;
+  appearance: string;
+  personality: string;
+  background: string;
+  baseline_motivations: string;
+  speaking_style: string;
+  world_context: string;
+}
+
+/** Association of a global character with a world plus freeform world-specific context. */
+export interface WorldCharacter {
+  world_id: string;
+  character_id: string;
+  context: string;
+  created_at: string;
+  updated_at: string;
+  character: Character;
 }
 
 export interface World {
@@ -23,21 +86,15 @@ export interface World {
   updated_at: string;
 }
 
-export interface Persona {
-  id: string;
-  name: string;
-  description: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Campaign {
   id: string;
   name: string;
   world_id: string;
-  persona_id: string;
+  protagonist_id: string;
   world_snapshot: WorldSnapshot;
-  persona_snapshot: PersonaSnapshot;
+  protagonist_snapshot: CharacterSnapshot;
+  /** Narrator-controlled cast; excludes the protagonist, who grounds once. */
+  cast: CharacterSnapshot[];
   starting_situation: string;
   active_session_id: string;
   created_at: string;

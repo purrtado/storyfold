@@ -74,8 +74,8 @@ export function Sidebar(props: {
             <Globe2 className="size-4.5" aria-hidden="true" />
           </NavLink>
         </Tooltip>
-        <Tooltip content="Personas" side="right">
-          <NavLink to="/personas" className={({ isActive }) => isActive ? "rail-btn rail-btn--active" : "rail-btn"} aria-label="Personas">
+        <Tooltip content="Characters" side="right">
+          <NavLink to="/characters" className={({ isActive }) => isActive ? "rail-btn rail-btn--active" : "rail-btn"} aria-label="Characters">
             <Users className="size-4.5" aria-hidden="true" />
           </NavLink>
         </Tooltip>
@@ -106,11 +106,11 @@ export function Sidebar(props: {
           Worlds
         </NavLink>
         <NavLink
-          to="/personas"
+          to="/characters"
           className={({ isActive }) => `pressable flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm no-underline ${isActive ? "bg-accent-soft font-medium text-foreground" : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
         >
           <Users className="size-4 shrink-0" aria-hidden="true" />
-          Personas
+          Characters
         </NavLink>
       </nav>
       <section className="flex min-block-size-0 flex-1 flex-col border-bs border-border pbs-3" aria-labelledby="campaign-list-heading">
@@ -137,7 +137,7 @@ export function Sidebar(props: {
                   <span className="min-w-0 flex-1">
                     <span className="block line-clamp-2 leading-5">{campaign.name}</span>
                     <span className="mbs-0.5 block line-clamp-1 text-xs font-normal opacity-75">
-                      {campaign.world_snapshot.name} · {campaign.persona_snapshot.name}
+                      {campaign.world_snapshot.name} · {campaign.protagonist_snapshot.name}
                     </span>
                   </span>
                 </span>

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createCampaign, createPersona, createWorld } from "../library";
+import { createCampaign, createCharacter, createWorld } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
 
 const NOW = "2026-01-01T00:00:00Z";
@@ -15,14 +15,14 @@ afterEach(() => {
   db.close();
 });
 
-function seedLibrary(): { worldId: string; personaId: string } {
+function seedLibrary(): { worldId: string; protagonistId: string } {
   const world = createWorld(db, {
     name: "Invariant World",
     setting_brief: "Brief.",
     suggested_starting_situation: "",
   });
-  const persona = createPersona(db, { name: "Invariant Persona", description: "Desc." });
-  return { worldId: world.id, personaId: persona.id };
+  const protagonist = createCharacter(db, { name: "Invariant Hero", description: "Desc." });
+  return { worldId: world.id, protagonistId: protagonist.id };
 }
 
 function insertMessage(sessionId: string, position: number, role: string, status: string, content = "x"): string {
@@ -40,10 +40,10 @@ function campaignRows(): Array<Record<string, unknown>> {
 
 describe("schema invariants", () => {
   test("active session must belong to its own campaign at commit", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { campaign, session } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "One.",
       name: "Owner",
     });
@@ -54,10 +54,10 @@ describe("schema invariants", () => {
     const steal = db.transaction(() => {
       db.query(
         `INSERT INTO campaigns
-           (id, name, world_id, persona_id, world_snapshot, persona_snapshot,
-            starting_situation, active_session_id, created_at, updated_at)
-         VALUES ('c2', 'Thief', ?, ?, '{}', '{}', 'Two.', ?, ?, ?)`,
-      ).run(worldId, personaId, session.id, NOW, NOW);
+           (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
+            cast_snapshot, starting_situation, active_session_id, created_at, updated_at)
+         VALUES ('c2', 'Thief', ?, ?, '{"entries":[]}', '{}', '[]', 'Two.', ?, ?, ?)`,
+      ).run(worldId, protagonistId, session.id, NOW, NOW);
     });
     expect(() => steal.immediate()).toThrow(/FOREIGN KEY/);
     expect(campaignRows().map((row) => row.id)).toEqual([campaign.id]);
@@ -70,10 +70,10 @@ describe("schema invariants", () => {
   });
 
   test("message positions are unique per session and persist in order", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "Order.",
     });
     const first = insertMessage(session.id, 1, "user", "complete");
@@ -91,10 +91,10 @@ describe("schema invariants", () => {
   });
 
   test("only one pending assistant reply may exist per session, and settlement frees the slot", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "Excl.",
     });
     const first = insertMessage(session.id, 1, "assistant", "pending");
@@ -116,10 +116,10 @@ describe("schema invariants", () => {
   });
 
   test("multiple sessions may share one campaign", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { campaign } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "Multi.",
     });
     const extra = crypto.randomUUID();
@@ -133,10 +133,10 @@ describe("schema invariants", () => {
   });
 
   test("roles, statuses and user completion are constrained and persisted", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "Check.",
     });
     expect(() => insertMessage(session.id, 1, "narrator", "complete")).toThrow();
@@ -151,15 +151,15 @@ describe("schema invariants", () => {
   });
 
   test("snapshot columns refuse non-JSON text", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const sessionId = crypto.randomUUID();
     const broken = db.transaction(() => {
       db.query(
         `INSERT INTO campaigns
-           (id, name, world_id, persona_id, world_snapshot, persona_snapshot,
-            starting_situation, active_session_id, created_at, updated_at)
-         VALUES (?, 'Broken', ?, ?, 'not json', '{}', 'x', ?, ?, ?)`,
-      ).run(crypto.randomUUID(), worldId, personaId, sessionId, NOW, NOW);
+           (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
+            cast_snapshot, starting_situation, active_session_id, created_at, updated_at)
+         VALUES (?, 'Broken', ?, ?, 'not json', '{"id":"c","name":"P","description":"d","appearance":"","personality":"","background":"","baseline_motivations":"","speaking_style":"","world_context":""}', '[]', 'x', ?, ?, ?)`,
+      ).run(crypto.randomUUID(), worldId, protagonistId, sessionId, NOW, NOW);
       db.query(
         "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'T', ?, ?)",
       ).run(sessionId, db.query<{ id: string }, []>("SELECT id FROM campaigns WHERE name = 'Broken'").get()!.id, NOW, NOW);
@@ -171,10 +171,10 @@ describe("schema invariants", () => {
 
 describe("startup sweep", () => {
   test("settles only the pending draft interrupted and preserves partial, input and identity", () => {
-    const { worldId, personaId } = seedLibrary();
+    const { worldId, protagonistId } = seedLibrary();
     const { session } = createCampaign(db, {
       world_id: worldId,
-      persona_id: personaId,
+      protagonist_id: protagonistId,
       starting_situation: "Crash.",
     });
     const draftId = insertMessage(session.id, 1, "assistant", "pending", "partial text");

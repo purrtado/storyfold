@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { Persona, World } from "../../shared/domain";
-import { fetchPersonas, fetchWorlds } from "./storyApi";
+import type { Character, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import { fetchCharacters, fetchWorlds, listWorldCharacters, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
   /** undefined until the first read completes; an empty array is a real, loaded library */
@@ -10,16 +10,21 @@ export type LibrarySnapshot<T> = {
   refreshError: string | undefined;
 };
 
-export type Library<T extends { id: string }> = {
+export type Library<T> = {
   getSnapshot: () => LibrarySnapshot<T>;
   subscribe: (listener: () => void) => () => void;
   load: () => Promise<void>;
   applySaved: (saved: T, previousId: string | undefined) => void;
+  applyRemoved: (id: string) => void;
 };
 
-export function createLibrary<T extends { id: string }>(
+export function createLibrary<T>(
   fetchItems: () => Promise<T[]>,
   unavailableMessage: string,
+  keyOf: (item: T) => string = (item) => {
+    if (typeof item === "object" && item !== null && "id" in item) return String(item.id);
+    throw new Error("Libraries without item ids require a key selector.");
+  },
 ): Library<T> {
   let snapshot: LibrarySnapshot<T> = {
     items: undefined,
@@ -63,7 +68,7 @@ export function createLibrary<T extends { id: string }>(
   const applySaved = (saved: T, previousId: string | undefined) => {
     const items = snapshot.items;
     const nextItems = previousId
-      ? items?.map((item) => (item.id === previousId ? saved : item))
+      ? items?.map((item) => (keyOf(item) === previousId ? saved : item))
       : items === undefined
         ? [saved]
         : [saved, ...items];
@@ -79,6 +84,17 @@ export function createLibrary<T extends { id: string }>(
     if (needsReconcile) void load();
   };
 
+  const applyRemoved = (id: string) => {
+    const items = snapshot.items;
+    const needsReconcile = snapshot.loading || items === undefined;
+    commit({
+      items: items?.filter((item) => keyOf(item) !== id),
+      loading: needsReconcile,
+      loadError: undefined,
+      refreshError: snapshot.refreshError,
+    });
+    if (needsReconcile) void load();
+  };
   return {
     getSnapshot: () => snapshot,
     subscribe: (listener) => {
@@ -89,37 +105,120 @@ export function createLibrary<T extends { id: string }>(
     },
     load,
     applySaved,
+    applyRemoved,
   };
 }
 
 export const worldsLibrary = createLibrary<World>(fetchWorlds, "Could not load worlds.");
-export const personasLibrary = createLibrary<Persona>(fetchPersonas, "Could not load personas.");
+export const charactersLibrary = createLibrary<Character>(fetchCharacters, "Could not load characters.");
+
+const worldEntryLibraries = new Map<string, Library<WorldEntry>>();
+const worldCharacterLibraries = new Map<string, Library<WorldCharacter>>();
+
+function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
+  let library = worldEntryLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => listWorldEntries(worldId),
+      "Could not load this world's compendium.",
+    );
+    worldEntryLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+function getWorldCharactersLibrary(worldId: string): Library<WorldCharacter> {
+  let library = worldCharacterLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => listWorldCharacters(worldId),
+      "Could not load this world's cast.",
+      (item) => item.character_id,
+    );
+    worldCharacterLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+export function useWorldEntries(worldId: string): LibrarySnapshot<WorldEntry> {
+  const library = getWorldEntriesLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function ensureWorldEntries(worldId: string): void {
+  const library = getWorldEntriesLibrary(worldId);
+  const snapshot = library.getSnapshot();
+  if (snapshot.items === undefined && !snapshot.loading) void library.load();
+}
+
+export function refreshWorldEntries(worldId: string): void {
+  void getWorldEntriesLibrary(worldId).load();
+}
+
+export function applyWorldEntrySaved(
+  worldId: string,
+  saved: WorldEntry,
+  previousId?: string,
+): void {
+  getWorldEntriesLibrary(worldId).applySaved(saved, previousId);
+}
+
+export function applyWorldEntryRemoved(worldId: string, entryId: string): void {
+  getWorldEntriesLibrary(worldId).applyRemoved(entryId);
+}
+
+export function useWorldCharacters(worldId: string): LibrarySnapshot<WorldCharacter> {
+  const library = getWorldCharactersLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function ensureWorldCharacters(worldId: string): void {
+  const library = getWorldCharactersLibrary(worldId);
+  const snapshot = library.getSnapshot();
+  if (snapshot.items === undefined && !snapshot.loading) void library.load();
+}
+
+export function refreshWorldCharacters(worldId: string): void {
+  void getWorldCharactersLibrary(worldId).load();
+}
+
+export function applyWorldCharacterSaved(
+  worldId: string,
+  saved: WorldCharacter,
+  previousId?: string,
+): void {
+  getWorldCharactersLibrary(worldId).applySaved(saved, previousId);
+}
+
+export function applyWorldCharacterRemoved(worldId: string, characterId: string): void {
+  getWorldCharactersLibrary(worldId).applyRemoved(characterId);
+}
 
 export function useWorlds(): LibrarySnapshot<World> {
   return useSyncExternalStore(worldsLibrary.subscribe, worldsLibrary.getSnapshot);
 }
 
-export function usePersonas(): LibrarySnapshot<Persona> {
-  return useSyncExternalStore(personasLibrary.subscribe, personasLibrary.getSnapshot);
+export function useCharacters(): LibrarySnapshot<Character> {
+  return useSyncExternalStore(charactersLibrary.subscribe, charactersLibrary.getSnapshot);
 }
 
 export function refreshWorlds(): void {
   void worldsLibrary.load();
 }
 
-export function refreshPersonas(): void {
-  void personasLibrary.load();
+export function refreshCharacters(): void {
+  void charactersLibrary.load();
 }
 
 /** Loads each library once per app lifetime; skips anything already loaded or loading. */
 export function warmLibraries(): void {
   const worlds = worldsLibrary.getSnapshot();
   if (worlds.items === undefined && !worlds.loading) refreshWorlds();
-  const personas = personasLibrary.getSnapshot();
-  if (personas.items === undefined && !personas.loading) refreshPersonas();
+  const characters = charactersLibrary.getSnapshot();
+  if (characters.items === undefined && !characters.loading) refreshCharacters();
 }
 
 export function refreshLibraries(): void {
   refreshWorlds();
-  refreshPersonas();
+  refreshCharacters();
 }
