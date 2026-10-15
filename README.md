@@ -82,6 +82,8 @@ World entries — characters, locations, lore, and opening-scene templates — p
 
 Campaign creation accepts `entry_ids`. Malformed arrays, duplicates, and `scene` entries are rejected with `400 {code:"invalid_input"}` — scenes are opening templates only: selecting one copies its description into the editable starting situation in the UI and is never captured as grounding. Unknown or other-world ids answer `404 {code:"not_found"}`. Selected entries are captured by value into `world_snapshot.entries` (`[{id, kind, name, description}]`, in selection order) inside the same creation transaction, so later library edits and deletes never rewrite an existing campaign, and narration is grounded only on that captured list — the live library is never re-resolved.
 
+Entry mutations, including deletion, require a trusted `Origin` header. If a selected entry disappears from the shared browser cache, campaign submission omits it while preserving the remaining selection order; the server still rejects unknown IDs from stale clients.
+
 Combined authored grounding — world name/brief, persona name/description, starting situation, and the selected entry names/descriptions — is capped at 32,000 characters. The same count is enforced server-side and shown live in the UI via the shared `groundingCharacterCount` helper in `shared/grounding.ts`; over-limit selections are rejected with `400 {code:"invalid_input"}` and never truncated. This bounds authored input size; it is not a token-window guarantee, and the M1 context-limit error handling still applies.
 
 ## UI components

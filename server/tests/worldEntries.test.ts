@@ -131,6 +131,24 @@ describe("world entries API", () => {
     expect((await json("DELETE", `/api/worlds/${world.id}/entries/${created.entry!.id}`)).status).toBe(404);
   });
 
+  test("entry deletion requires a trusted Origin and preserves entries on rejection", async () => {
+    const world = await createWorld({ name: "Protected", setting_brief: "b", suggested_starting_situation: "" });
+    const entry = (await createEntry(world.id, { kind: "lore", name: "Protected lore", description: "Keep this." })).entry!;
+    const path = `/api/worlds/${world.id}/entries/${entry.id}`;
+    for (const origin of [null, "https://attacker.example"]) {
+      const response = await fetch(`${base.url}${path}`, {
+        method: "DELETE",
+        headers: headersWith(origin === null ? {} : { origin }),
+      });
+      expect(response.status).toBe(403);
+      const listed = await (await json("GET", `/api/worlds/${world.id}/entries`)).json() as { entries: WorldEntry[] };
+      expect(listed.entries.map(({ id }) => id)).toContain(entry.id);
+    }
+    expect((await json("DELETE", path)).status).toBe(200);
+    const listed = await (await json("GET", `/api/worlds/${world.id}/entries`)).json() as { entries: WorldEntry[] };
+    expect(listed.entries.map(({ id }) => id)).not.toContain(entry.id);
+  });
+
   test("rejects invalid payloads with invalid_input and unknown routes with not_found", async () => {
     const world = await createWorld({ name: "Validation", setting_brief: "b", suggested_starting_situation: "" });
 

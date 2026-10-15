@@ -387,7 +387,7 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   // require the Origin header (hasTrustedOrigin).
   const origin = request.headers.get("origin");
   if (origin !== null && trustedOrigin(request) === null) return jsonError(403, "Origin not allowed");
-  const mutating = request.method === "POST" || request.method === "PATCH";
+  const mutating = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
   if (mutating && origin === null) return jsonError(403, "Origin not allowed");
 
   if (resource === "worlds") {

@@ -159,7 +159,7 @@ export function NewCampaignPage(props: {
         world_id: world.id,
         persona_id: persona.id,
         starting_situation: draft.startingSituation.trim(),
-        entry_ids: draft.selectedEntryIds,
+        entry_ids: draft.selectedEntryIds.filter((id) => selectedEntries.some((entry) => entry.id === id)),
         ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
       });
       props.onStarted(result.campaign, result.session);
