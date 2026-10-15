@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
   Campaign,
-  PersonaSnapshot,
+  CharacterSnapshot,
   WorldEntryKind,
   WorldEntrySnapshot,
   WorldSnapshot,
@@ -21,18 +21,32 @@ CREATE TABLE IF NOT EXISTS worlds (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS personas (
+CREATE TABLE IF NOT EXISTS characters (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT NOT NULL,
+  appearance TEXT NOT NULL,
+  personality TEXT NOT NULL,
+  background TEXT NOT NULL,
+  baseline_motivations TEXT NOT NULL,
+  speaking_style TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS world_characters (
+  world_id TEXT NOT NULL REFERENCES worlds(id),
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  context TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (world_id, character_id)
 );
 
 CREATE TABLE IF NOT EXISTS world_entries (
   id TEXT PRIMARY KEY,
   world_id TEXT NOT NULL REFERENCES worlds(id),
-  kind TEXT NOT NULL CHECK (kind IN ('character', 'location', 'lore', 'scene')),
+  kind TEXT NOT NULL CHECK (kind IN ('local_npc', 'location', 'lore', 'scene')),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -45,9 +59,10 @@ CREATE TABLE IF NOT EXISTS campaigns (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   world_id TEXT NOT NULL REFERENCES worlds(id),
-  persona_id TEXT NOT NULL REFERENCES personas(id),
+  protagonist_id TEXT NOT NULL REFERENCES characters(id),
   world_snapshot TEXT NOT NULL CHECK (json_valid(world_snapshot)),
-  persona_snapshot TEXT NOT NULL CHECK (json_valid(persona_snapshot)),
+  protagonist_snapshot TEXT NOT NULL CHECK (json_valid(protagonist_snapshot)),
+  cast_snapshot TEXT NOT NULL CHECK (json_valid(cast_snapshot)),
   starting_situation TEXT NOT NULL,
   active_session_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -121,21 +136,35 @@ export interface CampaignRecord {
   id: string;
   name: string;
   world_id: string;
-  persona_id: string;
+  protagonist_id: string;
   world_snapshot: string;
-  persona_snapshot: string;
+  protagonist_snapshot: string;
+  cast_snapshot: string;
   starting_situation: string;
   active_session_id: string;
   created_at: string;
   updated_at: string;
 }
 
+const CHARACTER_SNAPSHOT_FIELDS = [
+  "name",
+  "description",
+  "appearance",
+  "personality",
+  "background",
+  "baseline_motivations",
+  "speaking_style",
+  "world_context",
+] as const;
+
 /**
  * Snapshot columns are written only by campaign creation from API-validated
  * fields; on read we re-check the shape so a corrupt workspace can never reach
  * prompts as undefined. name/setting_brief stay non-empty;
  * suggested_starting_situation may be blank; entries must be present — there
- * is no pre-M2 snapshot compatibility.
+ * is no pre-M2 snapshot compatibility. A character snapshot must carry its
+ * captured global id and a non-empty name/description; every other authored
+ * field may be blank.
  */
 function parseWorldSnapshot(text: string): WorldSnapshot {
   let value: unknown;
@@ -170,7 +199,7 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   return { ...(value as WorldSnapshot), entries: entries as WorldEntrySnapshot[] };
 }
 
-function parsePersonaSnapshot(text: string): PersonaSnapshot {
+function parseCharacterSnapshot(text: string): CharacterSnapshot {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -179,19 +208,50 @@ function parsePersonaSnapshot(text: string): PersonaSnapshot {
   }
   if (typeof value !== "object" || value === null) throw new Error("corrupt campaign snapshot");
   const snapshot = value as Record<string, unknown>;
-  if (typeof snapshot.name !== "string" || typeof snapshot.description !== "string") {
+  if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
     throw new Error("corrupt campaign snapshot");
   }
-  if (snapshot.name.length === 0 || snapshot.description.length === 0) {
+  for (const key of CHARACTER_SNAPSHOT_FIELDS) {
+    if (typeof snapshot[key] !== "string") throw new Error("corrupt campaign snapshot");
+  }
+  if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
     throw new Error("corrupt campaign snapshot");
   }
-  return value as PersonaSnapshot;
+  return value as CharacterSnapshot;
+}
+
+function parseCastSnapshot(text: string): CharacterSnapshot[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("corrupt campaign snapshot");
+  }
+  if (!Array.isArray(value)) throw new Error("corrupt campaign snapshot");
+  const ids = new Set<string>();
+  return value.map((member) => {
+    if (typeof member !== "object" || member === null) throw new Error("corrupt campaign snapshot");
+    const snapshot = member as Record<string, unknown>;
+    if (typeof snapshot.id !== "string" || snapshot.id.length === 0 || ids.has(snapshot.id)) {
+      throw new Error("corrupt campaign snapshot");
+    }
+    ids.add(snapshot.id);
+    for (const key of CHARACTER_SNAPSHOT_FIELDS) {
+      if (typeof snapshot[key] !== "string") throw new Error("corrupt campaign snapshot");
+    }
+    if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
+      throw new Error("corrupt campaign snapshot");
+    }
+    return member as CharacterSnapshot;
+  });
 }
 
 export function campaignFromRow(row: CampaignRecord): Campaign {
+  const { cast_snapshot: _rawCast, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     world_snapshot: parseWorldSnapshot(row.world_snapshot),
-    persona_snapshot: parsePersonaSnapshot(row.persona_snapshot),
+    protagonist_snapshot: parseCharacterSnapshot(row.protagonist_snapshot),
+    cast: parseCastSnapshot(row.cast_snapshot),
   };
 }

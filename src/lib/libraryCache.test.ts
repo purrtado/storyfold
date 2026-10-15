@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createLibrary, type Library, type LibrarySnapshot } from "./libraryCache";
-import type { Persona, World } from "../../shared/domain";
+import type { Character, World } from "../../shared/domain";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -30,11 +30,16 @@ function world(id: string, name: string): World {
   };
 }
 
-function persona(id: string, name: string): Persona {
+function character(id: string, name: string): Character {
   return {
     id,
     name,
     description: `${name} is a cautious cartographer who trusts neither maps nor their makers.`,
+    appearance: "",
+    personality: "",
+    background: "",
+    baseline_motivations: "",
+    speaking_style: "",
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   };
@@ -200,24 +205,24 @@ describe("library cache", () => {
     expect(settled.loading).toBeFalse();
   });
 
-  test("a save during the cold read keeps the record and reconciles the full list", async () => {
-    const reads: Array<Deferred<Persona[]>> = [];
-    const library = trackedLibrary<Persona>(reads, "Could not load personas.");
+  test("a save during the cold read keeps a character and reconciles the full list", async () => {
+    const reads: Array<Deferred<Character[]>> = [];
+    const library = trackedLibrary<Character>(reads, "Could not load characters.");
 
     const coldLoad = library.load();
     const coldRead = latestRead(reads);
-    const created = persona("p9", "Ilse");
+    const created = character("c9", "Ilse");
     library.applySaved(created, undefined);
-    expect(itemIds(library.getSnapshot())).toEqual(["p9"]);
+    expect(itemIds(library.getSnapshot())).toEqual(["c9"]);
 
     coldRead.resolve([]);
     await coldLoad;
-    expect(itemIds(library.getSnapshot())).toEqual(["p9"]);
+    expect(itemIds(library.getSnapshot())).toEqual(["c9"]);
 
     const reconcileRead = latestRead(reads);
-    reconcileRead.resolve([persona("p1", "Nils"), created]);
+    reconcileRead.resolve([character("c1", "Nils"), created]);
     await reconcileRead.promise;
-    expect(itemIds(library.getSnapshot())).toEqual(["p1", "p9"]);
+    expect(itemIds(library.getSnapshot())).toEqual(["c1", "c9"]);
     expect(library.getSnapshot().loading).toBeFalse();
   });
 });

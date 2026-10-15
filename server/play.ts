@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Campaign, Message } from "../shared/domain";
+import type { Campaign, CharacterSnapshot, Message } from "../shared/domain";
 import { newId, nowIso } from "./db";
 import { ValidationError } from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
@@ -31,6 +31,24 @@ interface ActiveRun {
   settled: boolean;
   /** Bound during streamNarration; Stop uses the same first-wins settlement. */
   settle: (status: "complete" | "interrupted" | "failed") => void;
+}
+
+/**
+ * One authored character as prompt text: description first, then only the
+ * fields actually authored — blank fields add no scaffold text.
+ */
+function characterDefinition(character: CharacterSnapshot): string {
+  return [
+    character.description,
+    ...(character.appearance.length > 0 ? [`Appearance: ${character.appearance}`] : []),
+    ...(character.personality.length > 0 ? [`Personality: ${character.personality}`] : []),
+    ...(character.background.length > 0 ? [`Background: ${character.background}`] : []),
+    ...(character.baseline_motivations.length > 0
+      ? [`Motivations: ${character.baseline_motivations}`]
+      : []),
+    ...(character.speaking_style.length > 0 ? [`Speaking style: ${character.speaking_style}`] : []),
+    ...(character.world_context.length > 0 ? [`In this world: ${character.world_context}`] : []),
+  ].join("; ");
 }
 
 /**
@@ -151,21 +169,30 @@ export class PlayService {
 
   /**
    * Fixed narrator grounding, built only from the campaign's captured
-   * snapshots. The compendium section uses exclusively the entries captured at
-   * creation — the live library is never consulted, so edits and deletes to
-   * world entries cannot rewrite an existing campaign's grounding. The
-   * campaign's starting situation is used as written — a deliberately blank
-   * one stays blank; the world's suggestion is never reapplied. Only a story
-   * without prior narration asks the model to start a scene; an opening
+   * snapshots. The protagonist, the narrator-controlled cast, and the
+   * compendium use exclusively what was captured at creation — the live
+   * library is never consulted, so edits and deletes to characters, world
+   * casts, or world entries cannot rewrite an existing campaign's grounding.
+   * The campaign's starting situation is used as written — a deliberately
+   * blank one stays blank; the world's suggestion is never reapplied. Only a
+   * story without prior narration asks the model to start a scene; an opening
    * retried after accepted player turns continues the story.
    */
   narratorSystemPrompt(campaign: Campaign, opening: boolean, hasHistory: boolean): string {
     const world = campaign.world_snapshot;
-    const persona = campaign.persona_snapshot;
+    const protagonist = campaign.protagonist_snapshot;
     const situation =
       campaign.starting_situation.trim().length > 0
         ? campaign.starting_situation
         : "No starting situation was given; open with a scene that fits the world.";
+    const cast =
+      campaign.cast.length > 0
+        ? [
+            "Narrator-controlled cast (captured at campaign creation):",
+            ...campaign.cast.map((member) => `- ${member.name}: ${characterDefinition(member)}`),
+            "Respect these definitions as written.",
+          ]
+        : [];
     const compendium =
       world.entries.length > 0
         ? [
@@ -181,13 +208,15 @@ export class PlayService {
       "",
       `Starting situation: ${situation}`,
       "",
-      `The player controls their persona, ${persona.name}: ${persona.description}`,
-      `Whenever the player speaks or acts, it is ${persona.name} acting.`,
+      `The player controls their character, ${protagonist.name}: ${characterDefinition(protagonist)}`,
+      `Whenever the player speaks or acts, it is ${protagonist.name} acting.`,
+      "",
+      ...cast,
       "",
       ...compendium,
       "",
       "Narrate the world and every other character yourself; never narrate",
-      `${persona.name}'s decisions, words, or thoughts.`,
+      `${protagonist.name}'s decisions, words, or thoughts.`,
       "",
       hasHistory
         ? "Continue the established story from the player's latest input; do not restart or retell earlier events."

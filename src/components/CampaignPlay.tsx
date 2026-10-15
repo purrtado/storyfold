@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { BookOpen, ChevronRight, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import type { Campaign, Message, Session } from "../../shared/domain";
+import type { Campaign, CharacterSnapshot, Message, Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import type { Generation } from "../lib/useChatGeneration";
 import { Markdown } from "./Markdown";
@@ -57,6 +57,34 @@ function MessageRow(props: {
       </div>
       {content ? <Markdown content={content} streaming={props.streaming} /> : message.status === "pending" ? <PendingDots /> : null}
     </article>
+  );
+}
+
+const characterSnapshotFields = [
+  ["appearance", "Appearance"],
+  ["personality", "Personality"],
+  ["background", "Background"],
+  ["baseline_motivations", "Baseline motivations"],
+  ["speaking_style", "Speaking style"],
+] as const;
+
+function CampaignCharacterSnapshot(props: { character: CharacterSnapshot; role: string }) {
+  return (
+    <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
+      <p className="text-xs font-medium text-muted">{props.role}</p>
+      <h3 className="font-semibold">{props.character.name}</h3>
+      <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.character.description}</p>
+      {characterSnapshotFields.filter(([field]) => props.character[field]).map(([field, label]) => (
+        <p key={field} className="whitespace-pre-wrap text-sm leading-6 text-muted">
+          <span className="font-medium text-foreground">{label}:</span> {props.character[field]}
+        </p>
+      ))}
+      {props.character.world_context && (
+        <p className="whitespace-pre-wrap text-sm leading-6 text-muted">
+          <span className="font-medium text-foreground">World-specific context:</span> {props.character.world_context}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -189,7 +217,7 @@ export function CampaignPlay(props: {
               <div className="mbs-2 flex flex-wrap items-center gap-2 text-sm text-muted">
                 <span>{props.campaign.world_snapshot.name}</span>
                 <ChevronRight className="size-3.5" aria-hidden="true" />
-                <span>Playing as {props.campaign.persona_snapshot.name}</span>
+                <span>Playing as {props.campaign.protagonist_snapshot.name}</span>
               </div>
             </div>
             <Link to="/campaigns/new" className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-sm text-foreground no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
@@ -277,8 +305,8 @@ export function CampaignPlay(props: {
             defaultModel={provider?.model ?? null}
             models={provider?.models ?? []}
             modelCatalogState={modelCatalogState}
-            placeholder={`What does ${props.campaign.persona_snapshot.name} do or say?`}
-            inputLabel={`What does ${props.campaign.persona_snapshot.name} do or say?`}
+            placeholder={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
+            inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
             sendLabel="Send action"
             busy={busy || !hasCompletedNarration}
             showStop={hasPending || Boolean(otherGeneration)}
@@ -301,11 +329,10 @@ export function CampaignPlay(props: {
                   <h3 className="font-semibold">{props.campaign.world_snapshot.name}</h3>
                   <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.campaign.world_snapshot.setting_brief}</p>
                 </section>
-                <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
-                  <p className="text-xs font-medium text-muted">Playing as</p>
-                  <h3 className="font-semibold">{props.campaign.persona_snapshot.name}</h3>
-                  <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.campaign.persona_snapshot.description}</p>
-                </section>
+                <CampaignCharacterSnapshot character={props.campaign.protagonist_snapshot} role="Playing as" />
+                {props.campaign.cast.map((character) => (
+                  <CampaignCharacterSnapshot key={character.id} character={character} role="Narrator-controlled cast" />
+                ))}
                 <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
                   <p className="text-xs font-medium text-muted">Campaign starting situation</p>
                   <p className="whitespace-pre-wrap text-sm leading-6">{props.campaign.starting_situation || "No starting situation specified."}</p>

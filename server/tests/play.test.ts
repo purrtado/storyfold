@@ -48,18 +48,24 @@ async function seedStory(serverBase: string): Promise<{ campaign: Campaign; sess
     }),
   });
   expect(world.status).toBe(201);
-  const persona = await fetch(`${serverBase}/api/personas`, {
+  const worldPayload = (await world.json()) as { world: { id: string } };
+  const protagonist = await fetch(`${serverBase}/api/characters`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({ name: "Sable", description: "A cynical ferrywoman spy." }),
+    body: JSON.stringify({
+      name: "Sable",
+      description: "A cynical ferrywoman spy.",
+      speaking_style: "Clipped, sarcastic.",
+    }),
   });
-  expect(persona.status).toBe(201);
+  expect(protagonist.status).toBe(201);
+  const protagonistPayload = (await protagonist.json()) as { character: { id: string } };
   const created = await fetch(`${serverBase}/api/campaigns`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
     body: JSON.stringify({
-      world_id: ((await world.json()) as { world: { id: string } }).world.id,
-      persona_id: ((await persona.json()) as { persona: { id: string } }).persona.id,
+      world_id: worldPayload.world.id,
+      protagonist_id: protagonistPayload.character.id,
       starting_situation: "Sable docks at dawn while the harbor bells ring.",
     }),
   });
@@ -244,19 +250,21 @@ describe("campaign creation", () => {
   test("binds snapshots and the opening session in one committed response", async () => {
     const { campaign, session } = await seedStory(base.url);
     expect(campaign.world_snapshot.name).toBe("Veloria");
-    expect(campaign.persona_snapshot.name).toBe("Sable");
+    expect(campaign.protagonist_snapshot.name).toBe("Sable");
+    expect(campaign.protagonist_snapshot.speaking_style).toBe("Clipped, sarcastic.");
+    expect(campaign.cast).toEqual([]);
     expect(campaign.active_session_id).toBe(session.id);
     expect(session.campaign_id).toBe(campaign.id);
     const detail = await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() });
     expect(detail.status).toBe(200);
   });
 
-  test("unknown world or persona references roll back without creating rows", async () => {
+  test("unknown world or protagonist references roll back without creating rows", async () => {
     const before = await (await fetch(`${base.url}/api/campaigns`, { headers: headersWith() })).json();
     const response = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: "nope", persona_id: "nope", starting_situation: "x" }),
+      body: JSON.stringify({ world_id: "nope", protagonist_id: "nope", starting_situation: "x" }),
     });
     expect(response.status).toBe(404);
     const after = (await (await fetch(`${base.url}/api/campaigns`, { headers: headersWith() })).json()) as {
@@ -274,7 +282,7 @@ describe("campaign creation", () => {
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Veloria Prime", setting_brief: "Rewritten entirely." }),
     });
-    await fetch(`${base.url}/api/personas/${campaign.persona_id}`, {
+    await fetch(`${base.url}/api/characters/${campaign.protagonist_id}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Sable II", description: "Rewritten." }),
@@ -284,19 +292,19 @@ describe("campaign creation", () => {
     ).json()) as { campaign: Campaign };
     expect(detail.campaign.world_snapshot.name).toBe("Veloria");
     expect(detail.campaign.world_snapshot.setting_brief).toBe("A rain-soaked harbor kingdom of rival ferries.");
-    expect(detail.campaign.persona_snapshot.name).toBe("Sable");
+    expect(detail.campaign.protagonist_snapshot.name).toBe("Sable");
     const fresh = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({
         world_id: campaign.world_id,
-        persona_id: campaign.persona_id,
+        protagonist_id: campaign.protagonist_id,
         starting_situation: "New morning.",
       }),
     });
     const freshBody = (await fresh.json()) as { campaign: Campaign };
     expect(freshBody.campaign.world_snapshot.name).toBe("Veloria Prime");
-    expect(freshBody.campaign.persona_snapshot.name).toBe("Sable II");
+    expect(freshBody.campaign.protagonist_snapshot.name).toBe("Sable II");
   });
 });
 
