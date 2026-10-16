@@ -3,7 +3,12 @@ import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Campaign, CampaignStateItem, CharacterSnapshot, Message } from "../shared/domain";
 import { newId, nowIso } from "./db";
-import { listCampaignState, sessionGroundingHandoff, ValidationError } from "./library";
+import {
+  SessionClosedError,
+  listCampaignState,
+  sessionGroundingHandoff,
+  ValidationError,
+} from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
 
 export const NARRATOR_NAME = "Narrator";
@@ -22,9 +27,6 @@ export class BusyError extends Error {}
 
 /** The session already contains completed opening narration. */
 export class AlreadyOpenedError extends Error {}
-
-/** Only the campaign's first session may open the story. */
-export class OpeningNotAllowedError extends Error {}
 
 /** Accepting this input would push completed history past the limit. */
 export class ContextLimitError extends Error {}
@@ -105,6 +107,7 @@ export class PlayService {
   reservePlayerTurn(sessionId: string, content: string, speakerName: string): ReservedTurn {
     const reserve = this.db.transaction(
       (id: string, text: string, speaker: string): ReservedTurn => {
+        this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
         const completed = this.completedHistoryCharacters(id);
         if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
@@ -126,22 +129,23 @@ export class PlayService {
     return reserve.immediate(sessionId, content, speakerName);
   }
 
-  /** Opening narration reserves only the pending row; no player input exists. */
+  /**
+   * Opening narration reserves only the pending row; no player input exists.
+   * Every active session may open exactly once — the campaign's first from the
+   * starting situation, later ones (and a fork's opening session) from their
+   * leading handoff — so a fresh session is never stuck before its first turn.
+   * Retries stay possible while only failed/interrupted drafts exist.
+   */
   reserveOpening(sessionId: string): ReservedTurn {
     const opened = this.db
       .query<Message, [string]>(
         "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
       )
       .get(sessionId);
-    if (opened) throw new AlreadyOpenedError("This campaign has already opened");
-    const session = this.db
-      .query<{ ordinal: number }, [string]>("SELECT ordinal FROM sessions WHERE id = ?")
-      .get(sessionId);
-    if (!session || session.ordinal !== 1) {
-      throw new OpeningNotAllowedError("Only the campaign's first session can open the story");
-    }
+    if (opened) throw new AlreadyOpenedError("This session has already opened");
 
     const reserve = this.db.transaction((id: string): ReservedTurn => {
+      this.requireOpenSession(id);
       if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
       const pendingId = newId();
       this.insertMessage(
@@ -157,6 +161,20 @@ export class PlayService {
       return { playerId: null, pendingId };
     });
     return reserve.immediate(sessionId);
+  }
+
+  /**
+   * Write-side half of the read-only closed-session invariant, checked inside
+   * the reservation transaction: a close that raced an in-flight play request
+   * (between the route's early check and the provider-settings await) loses.
+   */
+  private requireOpenSession(sessionId: string): void {
+    const session = this.db
+      .query<{ closed_at: string | null }, [string]>("SELECT closed_at FROM sessions WHERE id = ?")
+      .get(sessionId);
+    if (!session || session.closed_at !== null) {
+      throw new SessionClosedError("This session is closed; play continues in the campaign's active session");
+    }
   }
 
   /** True while a narration run is being generated for this session. */

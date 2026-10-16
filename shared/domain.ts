@@ -97,17 +97,25 @@ export const CAMPAIGN_STATE_CATEGORIES = [
 
 export type CampaignStateCategory = (typeof CAMPAIGN_STATE_CATEGORIES)[number];
 
+/** What a state item's subject refers to: null on both fields means a free-text label. */
+export type CampaignStateSubjectKind = "character" | "entry";
+
 /**
  * Campaign-owned manual state. `subject` is display text: the name of a
- * captured character/world entry or any campaign-local label; `content` is the
- * tracked value. Journal entries are read chronologically by created_at, which
- * never changes after creation.
+ * captured character/world entry or any campaign-local label. When the subject
+ * refers to a captured snapshot, `subject_kind` plus `subject_id` identify it —
+ * validated at write time against the campaign's captured snapshots and never
+ * re-resolved against the live library. `content` is the tracked value, and
+ * journal entries are read chronologically by created_at, which never changes
+ * after creation.
  */
 export interface CampaignStateItem {
   id: string;
   campaign_id: string;
   category: CampaignStateCategory;
   subject: string;
+  subject_kind: CampaignStateSubjectKind | null;
+  subject_id: string | null;
   content: string;
   created_at: string;
   updated_at: string;

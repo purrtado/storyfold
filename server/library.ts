@@ -3,6 +3,7 @@ import type {
   Campaign,
   CampaignStateCategory,
   CampaignStateItem,
+  CampaignStateSubjectKind,
   Character,
   CharacterSnapshot,
   Session,
@@ -761,9 +762,19 @@ export function beginNextSession(
       for (const item of checkpointItems) {
         db.query(
           `INSERT INTO session_state_checkpoints
-             (id, session_id, campaign_id, category, subject, content, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(newId(), active.id, id, item.category, item.subject, item.content, item.created_at);
+             (id, session_id, campaign_id, category, subject, subject_kind, subject_id, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          newId(),
+          active.id,
+          id,
+          item.category,
+          item.subject,
+          item.subject_kind,
+          item.subject_id,
+          item.content,
+          item.created_at,
+        );
       }
 
       const sessionId = newId();
@@ -853,18 +864,35 @@ export function forkCampaignFromSession(
 
     const checkpoint = db
       .query<
-        { category: string; subject: string; content: string; created_at: string },
+        {
+          category: string;
+          subject: string;
+          subject_kind: string | null;
+          subject_id: string | null;
+          content: string;
+          created_at: string;
+        },
         [string]
       >(
-        "SELECT category, subject, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
+        "SELECT category, subject, subject_kind, subject_id, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
       )
       .all(source.id);
     for (const item of checkpoint) {
       db.query(
         `INSERT INTO campaign_state_items
-           (id, campaign_id, category, subject, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(newId(), campaignId, item.category, item.subject, item.content, item.created_at, now);
+           (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        newId(),
+        campaignId,
+        item.category,
+        item.subject,
+        item.subject_kind,
+        item.subject_id,
+        item.content,
+        item.created_at,
+        now,
+      );
     }
 
     return {
@@ -886,6 +914,8 @@ export function listCampaignState(db: Database, campaignId: string): CampaignSta
 export interface CampaignStateInput {
   category: CampaignStateCategory;
   subject: string;
+  subject_kind: CampaignStateSubjectKind | null;
+  subject_id: string | null;
   content: string;
 }
 
@@ -896,10 +926,54 @@ function parseStateCategory(value: unknown): CampaignStateCategory {
   return value as CampaignStateCategory;
 }
 
+function parseSubjectKind(value: unknown): CampaignStateSubjectKind | null {
+  if (value === undefined || value === null) return null;
+  if (value === "character" || value === "entry") return value;
+  throw new ValidationError("subject_kind must be 'character' or 'entry' or null");
+}
+
+function parseSubjectId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ValidationError("subject_id must be a non-empty string when provided");
+  }
+  return value;
+}
+
+/**
+ * A subject may be a free-text label (both fields null) or refer to a captured
+ * snapshot of this campaign: kind 'character' resolves against the captured
+ * protagonist and cast ids, 'entry' against the captured compendium entries.
+ * The live library is never consulted, so the reference survives library edits
+ * and deletes exactly like every other captured grounding.
+ */
+function validateSubjectRef(
+  campaign: Campaign,
+  subject: { subject_kind: CampaignStateSubjectKind | null; subject_id: string | null },
+): void {
+  if (subject.subject_kind === null || subject.subject_id === null) {
+    if (subject.subject_kind !== null || subject.subject_id !== null) {
+      throw new ValidationError("subject_kind and subject_id must be set together");
+    }
+    return;
+  }
+  const captured =
+    subject.subject_kind === "character"
+      ? [campaign.protagonist_snapshot.id, ...campaign.cast.map((member) => member.id)]
+      : campaign.world_snapshot.entries.map((entry) => entry.id);
+  if (!captured.includes(subject.subject_id)) {
+    throw new ValidationError(
+      `subject_id does not match a captured ${subject.subject_kind} of this campaign`,
+    );
+  }
+}
+
 export function parseCampaignStateInput(body: Record<string, unknown>): CampaignStateInput {
   return {
     category: parseStateCategory(body.category),
     subject: requiredText(body.subject, "subject"),
+    subject_kind: parseSubjectKind(body.subject_kind),
+    subject_id: parseSubjectId(body.subject_id),
     content: requiredText(body.content, "content"),
   };
 }
@@ -909,9 +983,11 @@ export function parseCampaignStatePatch(body: Record<string, unknown>): Partial<
   const patch: Partial<CampaignStateInput> = {};
   if (body.category !== undefined) patch.category = parseStateCategory(body.category);
   if (body.subject !== undefined) patch.subject = requiredText(body.subject, "subject");
+  if (body.subject_kind !== undefined) patch.subject_kind = parseSubjectKind(body.subject_kind);
+  if (body.subject_id !== undefined) patch.subject_id = parseSubjectId(body.subject_id);
   if (body.content !== undefined) patch.content = requiredText(body.content, "content");
   if (Object.keys(patch).length === 0) {
-    throw new ValidationError("at least one of category, subject, content is required");
+    throw new ValidationError("at least one of category, subject, subject_kind, subject_id, content is required");
   }
   return patch;
 }
@@ -921,7 +997,9 @@ export function createCampaignStateItem(
   campaignId: string,
   input: CampaignStateInput,
 ): CampaignStateItem | null {
-  if (!getCampaign(db, campaignId)) return null;
+  const campaign = getCampaign(db, campaignId);
+  if (!campaign) return null;
+  validateSubjectRef(campaign, input);
   const now = nowIso();
   const item: CampaignStateItem = {
     id: newId(),
@@ -932,9 +1010,19 @@ export function createCampaignStateItem(
   };
   db.query(
     `INSERT INTO campaign_state_items
-       (id, campaign_id, category, subject, content, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(item.id, campaignId, item.category, item.subject, item.content, item.created_at, item.updated_at);
+       (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    item.id,
+    campaignId,
+    item.category,
+    item.subject,
+    item.subject_kind,
+    item.subject_id,
+    item.content,
+    item.created_at,
+    item.updated_at,
+  );
   return item;
 }
 
@@ -944,6 +1032,8 @@ export function updateCampaignStateItem(
   itemId: string,
   patch: Partial<CampaignStateInput>,
 ): CampaignStateItem | null {
+  const campaign = getCampaign(db, campaignId);
+  if (!campaign) return null;
   // Null covers both an unknown campaign and an item from another campaign.
   const existing =
     db
@@ -953,9 +1043,18 @@ export function updateCampaignStateItem(
       .get(itemId, campaignId) ?? null;
   if (!existing) return null;
   const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
+  validateSubjectRef(campaign, next);
   db.query(
-    "UPDATE campaign_state_items SET category = ?, subject = ?, content = ?, updated_at = ? WHERE id = ?",
-  ).run(next.category, next.subject, next.content, next.updated_at, itemId);
+    "UPDATE campaign_state_items SET category = ?, subject = ?, subject_kind = ?, subject_id = ?, content = ?, updated_at = ? WHERE id = ?",
+  ).run(
+    next.category,
+    next.subject,
+    next.subject_kind,
+    next.subject_id,
+    next.content,
+    next.updated_at,
+    itemId,
+  );
   return next;
 }
 

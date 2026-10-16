@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS campaign_state_items (
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
   category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
   subject TEXT NOT NULL,
+  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
+  subject_id TEXT,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -105,6 +107,8 @@ CREATE TABLE IF NOT EXISTS session_state_checkpoints (
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
   category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
   subject TEXT NOT NULL,
+  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
+  subject_id TEXT,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );

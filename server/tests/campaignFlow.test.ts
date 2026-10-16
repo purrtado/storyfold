@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Campaign, Message, Session } from "../../shared/domain";
-import { HISTORY_CHARACTER_LIMIT } from "../play";
+import { openDatabase } from "../db";
+import {
+  beginNextSession,
+  createCampaign,
+  createCharacter,
+  createWorld,
+  getCampaign,
+  SessionClosedError,
+} from "../library";
+import { HISTORY_CHARACTER_LIMIT, PlayService } from "../play";
 import {
   headersWith,
   makeConfigDirectory,
@@ -312,8 +321,6 @@ describe("sequential sessions and handoffs", () => {
       handoff: "Moving on.",
     });
     expect(closed.status).toBe(201);
-    const closedPayload = (await closed.json()) as { session: Session };
-    const nextId = closedPayload.session.id;
 
     const play = await postMessage(base.url, seeded.session.id, "Keep playing here.");
     expect(play.status).toBe(409);
@@ -321,15 +328,69 @@ describe("sequential sessions and handoffs", () => {
     expect(playError.code).toBe("session_closed");
     expect(await transcript(base.url, seeded.session.id)).toEqual([]);
 
-    const opening = await json(`/api/sessions/${nextId}/opening`, "POST", {});
-    expect(opening.status).toBe(409);
-    const openingError = (await opening.json()) as { code?: string };
-    expect(openingError.code).toBe("opening_not_allowed");
+    const closedOpening = await json(`/api/sessions/${seeded.session.id}/opening`, "POST", {});
+    expect(closedOpening.status).toBe(409);
+    const openingError = (await closedOpening.json()) as { code?: string };
+    expect(openingError.code).toBe("session_closed");
 
     const malformed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", { title: "Only title" });
     expect(malformed.status).toBe(400);
     const unknown = await json("/api/campaigns/nope/sessions", "POST", { title: "T", handoff: "H" });
     expect(unknown.status).toBe(404);
+  });
+
+  test("each new session opens once from its handoff and then accepts play", async () => {
+    const seeded = await seedCampaign("OpenFlow", "Opening flow situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+    const next = ((await closed.json()) as { session: Session }).session;
+
+    const calls: Array<Record<string, unknown>> = [];
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(openAiChatCompletionSse("glm-5.3", ["The pass widens."]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }) as typeof fetch,
+    });
+    try {
+      const opening = await fetch(`${server.url}/api/sessions/${next.id}/opening`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify({}),
+      });
+      expect(opening.status).toBe(200);
+      await opening.text();
+      const history = calls[0].messages as Array<{ role: string; content: string }>;
+      const prompt = history[0].content;
+      expect(prompt).toContain("Handoff from the previous session: The party reached the northern pass at dusk.");
+      expect(prompt).not.toContain("Starting situation:");
+      expect(prompt).not.toContain(seeded.situation);
+      expect(history.slice(1)).toEqual([{ role: "user", content: "Begin the opening scene." }]);
+
+      // The completed opening unblocks the composer: player turns are accepted.
+      const turn = await postMessage(server.url, next.id, "I walk on.");
+      expect(turn.status).toBe(200);
+      await turn.text();
+
+      const again = await fetch(`${server.url}/api/sessions/${next.id}/opening`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify({}),
+      });
+      expect(again.status).toBe(409);
+      const againError = (await again.json()) as { code?: string };
+      expect(againError.code).toBe("already_opened");
+    } finally {
+      await server.stop();
+    }
   });
 
   test("the next session's prompt carries handoff and current state, never the old situation or history", async () => {
@@ -641,6 +702,179 @@ describe("history context boundary", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("closed-session race guard", () => {
+  test("a close landing inside a play request's await window cannot write into the closed session", async () => {
+    const directory = await makeConfigDirectory();
+    const db = openDatabase(join(directory, "race.db"));
+    try {
+      const world = createWorld(db, { name: "Race", setting_brief: "Harbor.", suggested_starting_situation: "" });
+      const character = createCharacter(db, { name: "Sable", description: "Ferrywoman spy." });
+      const { campaign, session } = createCampaign(db, {
+        world_id: world.id,
+        protagonist_id: character.id,
+        starting_situation: "Race situation.",
+      });
+      const play = new PlayService(db);
+
+      // Simulates the interleaving: another browser closes the session while a
+      // play request sits between its early route check and its reservation.
+      beginNextSession(db, campaign.id, { title: "Next", handoff: "Raced ahead." });
+
+      expect(() => play.reservePlayerTurn(session.id, "hello", "Sable")).toThrow(SessionClosedError);
+      expect(play.transcript(session.id)).toEqual([]);
+      expect(() => play.reserveOpening(session.id)).toThrow(SessionClosedError);
+
+      // The new active session still accepts turns.
+      const moved = getCampaign(db, campaign.id)!;
+      const reserved = play.reservePlayerTurn(moved.active_session_id, "hello", "Sable");
+      expect(reserved.playerId).not.toBeNull();
+      expect(play.transcript(moved.active_session_id)).toHaveLength(2);
+    } finally {
+      db.close();
+      await removeDirectory(directory);
+    }
+  });
+});
+
+describe("state subject references", () => {
+  test("subjects may reference captured snapshots or stay free-text labels", async () => {
+    const world = await json("/api/worlds", "POST", {
+      name: "Ref World",
+      setting_brief: "Harbor kingdom.",
+      suggested_starting_situation: "",
+    });
+    const worldId = ((await world.json()) as { world: { id: string } }).world.id;
+    const entry = await json(`/api/worlds/${worldId}/entries`, "POST", {
+      kind: "lore",
+      name: "Drowned bell",
+      description: "Rings beneath the pier at slack tide.",
+    });
+    const entryId = ((await entry.json()) as { entry: { id: string } }).entry.id;
+    const protagonist = await json("/api/characters", "POST", {
+      name: "Sable",
+      description: "Ferrywoman spy.",
+    });
+    const protagonistId = ((await protagonist.json()) as { character: { id: string } }).character.id;
+    const castMember = await json("/api/characters", "POST", {
+      name: "Mira",
+      description: "Harbormaster.",
+    });
+    const castId = ((await castMember.json()) as { character: { id: string } }).character.id;
+    // A library character never captured by this campaign.
+    const outsider = await json("/api/characters", "POST", {
+      name: "Outsider",
+      description: "Never captured.",
+    });
+    const outsiderId = ((await outsider.json()) as { character: { id: string } }).character.id;
+    const created = await json("/api/campaigns", "POST", {
+      world_id: worldId,
+      protagonist_id: protagonistId,
+      cast_character_ids: [castId],
+      entry_ids: [entryId],
+      starting_situation: "Ref situation.",
+    });
+    const campaign = ((await created.json()) as { campaign: Campaign }).campaign;
+
+    const label = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
+      category: "internal",
+      subject: "Sable's doubt",
+      content: "She no longer trusts the harbormaster.",
+    });
+    expect(label.status).toBe(201);
+    await label.body?.cancel();
+    const listed = ((await (
+      await json(`/api/campaigns/${campaign.id}/state`, "GET")
+    ).json()) as { items: Array<{ subject_kind: string | null; subject_id: string | null }> }).items;
+    expect(listed[0].subject_kind).toBeNull();
+    expect(listed[0].subject_id).toBeNull();
+
+    const characterRef = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
+      category: "relationship",
+      subject: "Mira",
+      content: "Warily cooperative.",
+      subject_kind: "character",
+      subject_id: castId,
+    });
+    expect(characterRef.status).toBe(201);
+    const refItem = (await characterRef.json()) as { subject_kind: string; subject_id: string };
+    expect(refItem.subject_kind).toBe("character");
+    expect(refItem.subject_id).toBe(castId);
+
+    const entryRef = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
+      category: "knowledge",
+      subject: "Drowned bell",
+      content: "Its ring marks the smuggler's tide.",
+      subject_kind: "entry",
+      subject_id: entryId,
+    });
+    expect(entryRef.status).toBe(201);
+
+    for (const body of [
+      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: outsiderId },
+      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: "nope" },
+      { category: "goal", subject: "X", content: "Y", subject_kind: "entry", subject_id: castId },
+      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: entryId },
+      { category: "goal", subject: "X", content: "Y", subject_kind: "character" },
+      { category: "goal", subject: "X", content: "Y", subject_id: castId },
+      { category: "goal", subject: "X", content: "Y", subject_kind: "deity", subject_id: "z" },
+    ]) {
+      const refused = await json(`/api/campaigns/${campaign.id}/state`, "POST", body);
+      expect(refused.status).toBe(400);
+    }
+
+    // PATCH: half updates on a label refuse; the pair sets and clears together.
+    const items = ((await (
+      await json(`/api/campaigns/${campaign.id}/state`, "GET")
+    ).json()) as { items: Array<{ id: string }> }).items;
+    const labelId = items[0].id;
+    const halfId = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
+      subject_id: castId,
+    });
+    expect(halfId.status).toBe(400);
+    const halfKind = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
+      subject_kind: "entry",
+    });
+    expect(halfKind.status).toBe(400);
+    const setPair = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
+      subject_kind: "character",
+      subject_id: protagonistId,
+    });
+    expect(setPair.status).toBe(200);
+    const setItem = (await setPair.json()) as { subject_kind: string; subject_id: string };
+    expect(setItem.subject_kind).toBe("character");
+    expect(setItem.subject_id).toBe(protagonistId);
+    const clearPair = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
+      subject_kind: null,
+      subject_id: null,
+    });
+    expect(clearPair.status).toBe(200);
+    const cleared = (await clearPair.json()) as { subject_kind: string | null; subject_id: string | null };
+    expect(cleared.subject_kind).toBeNull();
+    expect(cleared.subject_id).toBeNull();
+
+    // Refs survive the boundary checkpoint and the fork.
+    await json(`/api/campaigns/${campaign.id}/sessions`, "POST", {
+      title: "Next",
+      handoff: "Handoff with references.",
+    });
+    const forked = await json(`/api/sessions/${campaign.active_session_id}/fork`, "POST", { name: "Ref fork" });
+    const fork = (await forked.json()) as { campaign: Campaign };
+    const forkItems = ((await (
+      await json(`/api/campaigns/${fork.campaign.id}/state`, "GET")
+    ).json()) as { items: Array<{ subject_kind: string | null; subject_id: string | null; subject: string }> }).items;
+    expect(forkItems.map((item) => [item.subject, item.subject_kind, item.subject_id])).toContainEqual([
+      "Mira",
+      "character",
+      castId,
+    ]);
+    expect(forkItems.map((item) => [item.subject, item.subject_kind, item.subject_id])).toContainEqual([
+      "Drowned bell",
+      "entry",
+      entryId,
+    ]);
   });
 });
 

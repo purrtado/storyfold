@@ -13,7 +13,6 @@ import {
   AlreadyOpenedError,
   BusyError,
   ContextLimitError,
-  OpeningNotAllowedError,
   PlayService,
   parsePlayerContent,
   type ReservedTurn,
@@ -166,9 +165,6 @@ function domainErrorResponse(error: unknown): Response | null {
   }
   if (error instanceof AlreadyOpenedError) {
     return jsonError(409, error.message, undefined, { code: "already_opened", accepted: false });
-  }
-  if (error instanceof OpeningNotAllowedError) {
-    return jsonError(409, error.message, undefined, { code: "opening_not_allowed", accepted: false });
   }
   if (error instanceof ContextLimitError) {
     return jsonError(413, error.message, undefined, { code: "context_limit", accepted: false });
