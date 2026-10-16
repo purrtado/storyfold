@@ -327,6 +327,17 @@ export function CampaignManagement(props: {
             Add state
           </button>
         </div>
+        {!props.active && (
+          <>
+            <p className="text-sm text-muted">Current campaign state; not the state at this session&apos;s end.</p>
+            <Link
+              to={`/sessions/${encodeURIComponent(activeSession?.id ?? props.campaign.active_session_id)}`}
+              className="pressable inline-flex min-h-11 w-fit items-center rounded-lg border border-border px-3 text-sm text-foreground no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+            >
+              Open active session
+            </Link>
+          </>
+        )}
 
         {stateError && (
           <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Campaign, Message, Session } from "../../shared/domain";
+import { openDatabase } from "../db";
+import { AlreadyOpenedError, PlayService } from "../play";
 import {
   headersWith,
   makeConfigDirectory,
@@ -344,7 +346,7 @@ describe("opening narration", () => {
     }
   });
 
-  test("rejects a second opening once narration completed (already_opened)", async () => {
+  test("rejects direct and HTTP duplicate reservations after narration completes (already_opened)", async () => {
     const { session } = await seedStory(base.url);
     const server = await startTestServer({
       configDirectory,
@@ -357,6 +359,13 @@ describe("opening narration", () => {
       // Drain to completion so the second attempt sees settled state, not a
       // still-pending reply.
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+      // Exercise the reservation guard directly rather than relying on the route.
+      const db = openDatabase(databasePath);
+      try {
+        expect(() => new PlayService(db).reserveOpening(session.id)).toThrow(AlreadyOpenedError);
+      } finally {
+        db.close();
+      }
       const second = await postOpening(server.url, session.id);
       expect(second.status).toBe(409);
       expect(((await second.json()) as { code: string }).code).toBe("already_opened");

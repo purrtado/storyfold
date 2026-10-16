@@ -141,12 +141,12 @@ export class PlayService {
   reserveOpening(sessionId: string): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
       this.requireOpenSession(id);
-      const opened = this.db
+      const completedOpening = this.db
         .query<Message, [string]>(
           "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
         )
         .get(id);
-      if (opened) throw new AlreadyOpenedError("This session has already opened");
+      if (completedOpening) throw new AlreadyOpenedError("This session has already opened");
       if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
       const pendingId = newId();
       this.insertMessage(
