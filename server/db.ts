@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   cast_snapshot TEXT NOT NULL CHECK (json_valid(cast_snapshot)),
   starting_situation TEXT NOT NULL,
   active_session_id TEXT NOT NULL,
+  forked_from_campaign_id TEXT REFERENCES campaigns(id),
+  forked_from_session_id TEXT REFERENCES sessions(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (active_session_id, id) REFERENCES sessions(id, campaign_id)
@@ -74,12 +76,40 @@ CREATE TABLE IF NOT EXISTS campaigns (
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  ordinal INTEGER NOT NULL,
   title TEXT NOT NULL,
+  handoff TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (campaign_id, ordinal)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_id);
+
+CREATE TABLE IF NOT EXISTS campaign_state_items (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  subject TEXT NOT NULL,
+  content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_id);
+CREATE INDEX IF NOT EXISTS campaign_state_items_campaign ON campaign_state_items(campaign_id);
+
+CREATE TABLE IF NOT EXISTS session_state_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  subject TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS session_state_checkpoints_session ON session_state_checkpoints(session_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -142,6 +172,8 @@ export interface CampaignRecord {
   cast_snapshot: string;
   starting_situation: string;
   active_session_id: string;
+  forked_from_campaign_id: string | null;
+  forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
 }

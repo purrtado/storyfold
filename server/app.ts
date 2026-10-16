@@ -12,38 +12,53 @@ import { openDatabase } from "./db";
 import {
   AlreadyOpenedError,
   BusyError,
+  ContextLimitError,
+  OpeningNotAllowedError,
   PlayService,
   parsePlayerContent,
   type ReservedTurn,
 } from "./play";
 import {
+  SessionClosedError,
+  SessionNotClosedError,
   UnknownEntityError,
   ValidationError,
   associateWorldCharacter,
+  beginNextSession,
+  createCampaignStateItem,
   createCampaign,
   createCharacter,
   createWorld,
   createWorldEntry,
   deleteWorldCharacter,
+  deleteCampaignStateItem,
   deleteWorldEntry,
+  forkCampaignFromSession,
   getCampaign,
   getCharacter,
   getSession,
   getWorld,
+  listCampaignSessions,
+  listCampaignState,
   listCampaigns,
   listCharacters,
   listWorldCharacters,
   listWorldEntries,
   listWorlds,
   parseCampaignInput,
+  parseCampaignStateInput,
+  parseCampaignStatePatch,
   parseCharacterInput,
   parseCharacterPatch,
+  parseForkInput,
+  parseSessionCreateInput,
   parseWorldCharacterInput,
   parseWorldCharacterPatch,
   parseWorldEntryInput,
   parseWorldEntryPatch,
   parseWorldInput,
   parseWorldPatch,
+  updateCampaignStateItem,
   updateCharacter,
   updateWorld,
   updateWorldCharacter,
@@ -151,6 +166,18 @@ function domainErrorResponse(error: unknown): Response | null {
   }
   if (error instanceof AlreadyOpenedError) {
     return jsonError(409, error.message, undefined, { code: "already_opened", accepted: false });
+  }
+  if (error instanceof OpeningNotAllowedError) {
+    return jsonError(409, error.message, undefined, { code: "opening_not_allowed", accepted: false });
+  }
+  if (error instanceof ContextLimitError) {
+    return jsonError(413, error.message, undefined, { code: "context_limit", accepted: false });
+  }
+  if (error instanceof SessionClosedError) {
+    return jsonError(409, error.message, undefined, { code: "session_closed", accepted: false });
+  }
+  if (error instanceof SessionNotClosedError) {
+    return jsonError(409, error.message, undefined, { code: "session_not_closed", accepted: false });
   }
   return null;
 }
@@ -348,6 +375,99 @@ async function handleCampaigns(request: Request, id: string | undefined, db: Dat
 }
 
 /**
+ * Campaign state is campaign-owned manual grounding: routes carry the campaign
+ * id and an item id resolves only inside it, so another campaign's item is
+ * indistinguishable from a missing one. Mutations are refused while a
+ * narration run is pending in the campaign's active session; nothing was
+ * saved when that happens.
+ */
+async function handleCampaignState(
+  request: Request,
+  campaignId: string | undefined,
+  itemId: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  if (campaignId === undefined) return notFound("Unknown campaign");
+  const campaign = getCampaign(ctx.db, campaignId);
+  if (!campaign) return notFound("Unknown campaign");
+
+  if (itemId === undefined) {
+    if (request.method === "GET") {
+      return jsonResponse({ items: listCampaignState(ctx.db, campaignId) });
+    }
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const input = parseCampaignStateInput(body);
+        if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+        return jsonResponse(createCampaignStateItem(ctx.db, campaignId, input), 201);
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const patch = parseCampaignStatePatch(body);
+      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      const item = updateCampaignStateItem(ctx.db, campaignId, itemId, patch);
+      return item ? jsonResponse(item) : notFound("Unknown state item");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    try {
+      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      if (!deleteCampaignStateItem(ctx.db, campaignId, itemId)) return notFound("Unknown state item");
+      return jsonResponse({ ok: true });
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+/**
+ * Sessions are listed in story order. POST closes the campaign's open session
+ * with the reviewed handoff (checkpointing the state at that boundary) and
+ * opens the next one; active_session_id moves in the same transaction.
+ */
+async function handleCampaignSessions(
+  request: Request,
+  campaignId: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  if (campaignId === undefined) return notFound("Unknown campaign");
+  const campaign = getCampaign(ctx.db, campaignId);
+  if (!campaign) return notFound("Unknown campaign");
+
+  if (request.method === "GET") {
+    return jsonResponse({ sessions: listCampaignSessions(ctx.db, campaignId) });
+  }
+  if (request.method === "POST") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const input = parseSessionCreateInput(body);
+      if (ctx.play.hasPending(campaign.active_session_id)) {
+        throw new BusyError("A reply is already being generated for this session");
+      }
+      const result = beginNextSession(ctx.db, campaignId, input);
+      return result ? jsonResponse({ session: result.session }, 201) : notFound("Unknown campaign");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+/**
  * Player turns and opening requests share one shape: reserve input + pending
  * reply atomically (committed before any model setup), then stream. A missing
  * provider settles the reserved reply as failed while accepted input stays
@@ -380,6 +500,14 @@ async function handlePlayPost(
 
   const session = getSession(ctx.db, sessionId);
   if (!session) return notFound("Unknown session");
+  if (session.closed_at !== null) {
+    return jsonError(
+      409,
+      "This session is closed; play continues in the campaign's active session",
+      undefined,
+      { code: "session_closed", accepted: false },
+    );
+  }
   const campaign = getCampaign(ctx.db, session.campaign_id);
   if (!campaign) return jsonError(500, "Internal server error");
 
@@ -454,11 +582,32 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
     return handleWorlds(request, segments[2], ctx.db);
   }
   if (resource === "characters") return handleCharacters(request, segments[2], ctx.db);
-  if (resource === "campaigns") return handleCampaigns(request, segments[2], ctx.db);
+  if (resource === "campaigns") {
+    if (segments[3] === "state") return handleCampaignState(request, segments[2], segments[4], ctx);
+    if (segments[3] === "sessions") return handleCampaignSessions(request, segments[2], ctx);
+    return handleCampaigns(request, segments[2], ctx.db);
+  }
 
   if (resource === "sessions" && typeof segments[2] === "string") {
     const sessionId = segments[2];
     const action = segments[3];
+    if (action === "fork" && request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const source = getSession(ctx.db, sessionId);
+        if (!source) return notFound("Unknown session");
+        const sourceCampaign = getCampaign(ctx.db, source.campaign_id);
+        if (!sourceCampaign) return jsonError(500, "Internal server error");
+        if (ctx.play.hasPending(sourceCampaign.active_session_id)) {
+          throw new BusyError("A reply is already being generated for this session");
+        }
+        const forked = forkCampaignFromSession(ctx.db, sessionId, parseForkInput(body));
+        return forked ? jsonResponse(forked, 201) : notFound("Unknown session");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
     if (action === undefined) {
       if (request.method === "GET") {
         const session = getSession(ctx.db, sessionId);

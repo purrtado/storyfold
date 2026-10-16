@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type {
   Campaign,
+  CampaignStateCategory,
+  CampaignStateItem,
   Character,
   CharacterSnapshot,
   Session,
@@ -10,7 +12,7 @@ import type {
   WorldEntryKind,
   WorldEntrySnapshot,
 } from "../shared/domain";
-import { WORLD_ENTRY_KINDS } from "../shared/domain";
+import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
 import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
 
@@ -633,7 +635,7 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     );
 
     db.query(
-      "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO sessions (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at) VALUES (?, ?, 1, ?, NULL, NULL, ?, ?)",
     ).run(sessionId, campaignId, "Opening session", now, now);
 
     const campaign = campaignFromRow(
@@ -658,5 +660,309 @@ export function getCampaign(db: Database, id: string): Campaign | null {
 }
 
 export function getSession(db: Database, id: string): Session | null {
-  return db.query<Session, [string]>("SELECT * FROM sessions WHERE id = ?").get(id) ?? null;
+  const row = getSessionRecord(db, id);
+  return row ? sessionFromRow(row) : null;
+}
+
+/** Storage shape of a session row: ordinal orders the campaign's sequence. */
+export interface SessionRecord extends Session {
+  ordinal: number;
+}
+
+export function sessionFromRow(row: SessionRecord): Session {
+  const { ordinal: _ordinal, ...session } = row;
+  return session;
+}
+
+export function getSessionRecord(db: Database, id: string): SessionRecord | null {
+  return db.query<SessionRecord, [string]>("SELECT * FROM sessions WHERE id = ?").get(id) ?? null;
+}
+
+export function listCampaignSessions(db: Database, campaignId: string): Session[] {
+  return db
+    .query<SessionRecord, [string]>("SELECT * FROM sessions WHERE campaign_id = ? ORDER BY ordinal")
+    .all(campaignId)
+    .map(sessionFromRow);
+}
+
+/**
+ * The handoff that grounds this session: an inherited fork handoff, or the
+ * handoff written at the close of the latest completed session before it
+ * (null for a campaign's opening session).
+ */
+export function sessionGroundingHandoff(db: Database, campaignId: string, sessionId: string): string | null {
+  const session = getSessionRecord(db, sessionId);
+  if (!session || session.campaign_id !== campaignId) return null;
+  if (session.handoff !== null) return session.handoff;
+  const previous = db
+    .query<{ handoff: string | null }, [string, number]>(
+      `SELECT handoff FROM sessions
+       WHERE campaign_id = ? AND closed_at IS NOT NULL AND ordinal < ?
+       ORDER BY ordinal DESC LIMIT 1`,
+    )
+    .get(campaignId, session.ordinal);
+  return previous?.handoff ?? null;
+}
+
+export class SessionClosedError extends Error {}
+
+export class SessionNotClosedError extends Error {}
+
+export interface SessionCreateInput {
+  title: string;
+  handoff: string;
+}
+
+export function parseSessionCreateInput(body: Record<string, unknown>): SessionCreateInput {
+  return {
+    title: requiredText(body.title, "title"),
+    handoff: requiredText(body.handoff, "handoff"),
+  };
+}
+
+export interface BeginNextSessionResult {
+  closed: Session;
+  session: Session;
+}
+
+/**
+ * Closes the campaign's open session with the reviewed handoff, checkpoints
+ * the campaign's current state at that boundary, and opens the next session —
+ * one transaction, so active_session_id moves atomically and a closed session
+ * is immutable thereafter. Refuses nothing here about pending runs: the route
+ * guards that synchronously before calling, and this transaction never awaits.
+ */
+export function beginNextSession(
+  db: Database,
+  campaignId: string,
+  input: SessionCreateInput,
+): BeginNextSessionResult | null {
+  const begin = db.transaction(
+    (id: string, title: string, handoff: string): BeginNextSessionResult | null => {
+      const campaign = getCampaign(db, id);
+      if (!campaign) return null;
+      const active = getSessionRecord(db, campaign.active_session_id);
+      if (!active || active.closed_at !== null) {
+        throw new ValidationError("campaign has no open session to close");
+      }
+
+      const now = nowIso();
+      const closed: Session = { ...sessionFromRow(active), handoff, closed_at: now, updated_at: now };
+      db.query("UPDATE sessions SET handoff = ?, closed_at = ?, updated_at = ? WHERE id = ?").run(
+        handoff,
+        now,
+        now,
+        active.id,
+      );
+
+      // Checkpoint copies the campaign state by value at this boundary, keyed
+      // to the closed session; later campaign edits never rewrite it.
+      const checkpointItems = listCampaignState(db, id);
+      for (const item of checkpointItems) {
+        db.query(
+          `INSERT INTO session_state_checkpoints
+             (id, session_id, campaign_id, category, subject, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(newId(), active.id, id, item.category, item.subject, item.content, item.created_at);
+      }
+
+      const sessionId = newId();
+      db.query(
+        `INSERT INTO sessions
+           (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`,
+      ).run(sessionId, id, active.ordinal + 1, title, now, now);
+      db.query("UPDATE campaigns SET active_session_id = ?, updated_at = ? WHERE id = ?").run(
+        sessionId,
+        now,
+        id,
+      );
+
+      return {
+        closed,
+        session: sessionFromRow(getSessionRecord(db, sessionId)!),
+      };
+    },
+  );
+  return begin.immediate(campaignId, input.title, input.handoff);
+}
+
+export interface ForkInput {
+  name: string;
+}
+
+export function parseForkInput(body: Record<string, unknown>): ForkInput {
+  return { name: requiredText(body.name, "name") };
+}
+
+export interface CreatedFork {
+  campaign: Campaign;
+  session: Session;
+}
+
+/**
+ * Forks a completed session's boundary into a new independent campaign: the
+ * captured world/protagonist/cast snapshots and starting situation are copied
+ * by value, the closed session's state checkpoint becomes the new campaign's
+ * state, and its handoff grounds the new opening session. The origin ids are
+ * recorded for provenance; the origin is never re-resolved afterwards.
+ */
+export function forkCampaignFromSession(
+  db: Database,
+  sessionId: string,
+  input: ForkInput,
+): CreatedFork | null {
+  const fork = db.transaction((id: string, name: string): CreatedFork | null => {
+    const source = getSessionRecord(db, id);
+    if (!source) return null;
+    if (source.closed_at === null) throw new SessionNotClosedError("only completed sessions can fork");
+    const origin = getCampaign(db, source.campaign_id);
+    if (!origin) return null;
+
+    const now = nowIso();
+    const campaignId = newId();
+    const forkSessionId = newId();
+
+    db.query(
+      `INSERT INTO campaigns
+         (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
+          cast_snapshot, starting_situation, active_session_id,
+          forked_from_campaign_id, forked_from_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      campaignId,
+      name,
+      origin.world_id,
+      origin.protagonist_id,
+      JSON.stringify(origin.world_snapshot),
+      JSON.stringify(origin.protagonist_snapshot),
+      JSON.stringify(origin.cast),
+      origin.starting_situation,
+      forkSessionId,
+      origin.id,
+      source.id,
+      now,
+      now,
+    );
+
+    db.query(
+      `INSERT INTO sessions
+         (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
+       VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
+    ).run(forkSessionId, campaignId, source.title, source.handoff ?? "", now, now);
+
+    const checkpoint = db
+      .query<
+        { category: string; subject: string; content: string; created_at: string },
+        [string]
+      >(
+        "SELECT category, subject, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
+      )
+      .all(source.id);
+    for (const item of checkpoint) {
+      db.query(
+        `INSERT INTO campaign_state_items
+           (id, campaign_id, category, subject, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(newId(), campaignId, item.category, item.subject, item.content, item.created_at, now);
+    }
+
+    return {
+      campaign: getCampaign(db, campaignId)!,
+      session: sessionFromRow(getSessionRecord(db, forkSessionId)!),
+    };
+  });
+  return fork.immediate(sessionId, input.name);
+}
+
+export function listCampaignState(db: Database, campaignId: string): CampaignStateItem[] {
+  return db
+    .query<CampaignStateItem, [string]>(
+      "SELECT * FROM campaign_state_items WHERE campaign_id = ? ORDER BY created_at, id",
+    )
+    .all(campaignId);
+}
+
+export interface CampaignStateInput {
+  category: CampaignStateCategory;
+  subject: string;
+  content: string;
+}
+
+function parseStateCategory(value: unknown): CampaignStateCategory {
+  if (typeof value !== "string" || !CAMPAIGN_STATE_CATEGORIES.includes(value as CampaignStateCategory)) {
+    throw new ValidationError(`category must be one of: ${CAMPAIGN_STATE_CATEGORIES.join(", ")}`);
+  }
+  return value as CampaignStateCategory;
+}
+
+export function parseCampaignStateInput(body: Record<string, unknown>): CampaignStateInput {
+  return {
+    category: parseStateCategory(body.category),
+    subject: requiredText(body.subject, "subject"),
+    content: requiredText(body.content, "content"),
+  };
+}
+
+/** PATCH applies only the provided fields; at least one must be present. */
+export function parseCampaignStatePatch(body: Record<string, unknown>): Partial<CampaignStateInput> {
+  const patch: Partial<CampaignStateInput> = {};
+  if (body.category !== undefined) patch.category = parseStateCategory(body.category);
+  if (body.subject !== undefined) patch.subject = requiredText(body.subject, "subject");
+  if (body.content !== undefined) patch.content = requiredText(body.content, "content");
+  if (Object.keys(patch).length === 0) {
+    throw new ValidationError("at least one of category, subject, content is required");
+  }
+  return patch;
+}
+
+export function createCampaignStateItem(
+  db: Database,
+  campaignId: string,
+  input: CampaignStateInput,
+): CampaignStateItem | null {
+  if (!getCampaign(db, campaignId)) return null;
+  const now = nowIso();
+  const item: CampaignStateItem = {
+    id: newId(),
+    campaign_id: campaignId,
+    ...input,
+    created_at: now,
+    updated_at: now,
+  };
+  db.query(
+    `INSERT INTO campaign_state_items
+       (id, campaign_id, category, subject, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(item.id, campaignId, item.category, item.subject, item.content, item.created_at, item.updated_at);
+  return item;
+}
+
+export function updateCampaignStateItem(
+  db: Database,
+  campaignId: string,
+  itemId: string,
+  patch: Partial<CampaignStateInput>,
+): CampaignStateItem | null {
+  // Null covers both an unknown campaign and an item from another campaign.
+  const existing =
+    db
+      .query<CampaignStateItem, [string, string]>(
+        "SELECT * FROM campaign_state_items WHERE id = ? AND campaign_id = ?",
+      )
+      .get(itemId, campaignId) ?? null;
+  if (!existing) return null;
+  const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
+  db.query(
+    "UPDATE campaign_state_items SET category = ?, subject = ?, content = ?, updated_at = ? WHERE id = ?",
+  ).run(next.category, next.subject, next.content, next.updated_at, itemId);
+  return next;
+}
+
+export function deleteCampaignStateItem(db: Database, campaignId: string, itemId: string): boolean {
+  return (
+    db
+      .query("DELETE FROM campaign_state_items WHERE id = ? AND campaign_id = ?")
+      .run(itemId, campaignId).changes > 0
+  );
 }

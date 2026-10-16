@@ -86,6 +86,33 @@ export interface World {
   updated_at: string;
 }
 
+export const CAMPAIGN_STATE_CATEGORIES = [
+  "relationship",
+  "goal",
+  "knowledge",
+  "internal",
+  "attribute",
+  "journal",
+] as const;
+
+export type CampaignStateCategory = (typeof CAMPAIGN_STATE_CATEGORIES)[number];
+
+/**
+ * Campaign-owned manual state. `subject` is display text: the name of a
+ * captured character/world entry or any campaign-local label; `content` is the
+ * tracked value. Journal entries are read chronologically by created_at, which
+ * never changes after creation.
+ */
+export interface CampaignStateItem {
+  id: string;
+  campaign_id: string;
+  category: CampaignStateCategory;
+  subject: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Campaign {
   id: string;
   name: string;
@@ -97,6 +124,9 @@ export interface Campaign {
   cast: CharacterSnapshot[];
   starting_situation: string;
   active_session_id: string;
+  /** Set when this campaign was forked from a completed session checkpoint. */
+  forked_from_campaign_id: string | null;
+  forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +135,14 @@ export interface Session {
   id: string;
   campaign_id: string;
   title: string;
+  /**
+   * The reviewable handoff written when this session was closed, or the
+   * inherited handoff grounding a forked campaign's opening session; null
+   * while a sequentially created session is still open.
+   */
+  handoff: string | null;
+  /** Set when the session was closed by beginning the next one; read-only after. */
+  closed_at: string | null;
   created_at: string;
   updated_at: string;
 }
