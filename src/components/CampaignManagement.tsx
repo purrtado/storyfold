@@ -12,6 +12,7 @@ import {
   type CampaignStateInput,
 } from "../lib/storyApi";
 import { sortCampaignStateItems } from "../lib/campaignLifecycle";
+import { createRequestEpoch } from "../lib/requestEpoch";
 
 const categoryLabels: Record<CampaignStateCategory, string> = {
   relationship: "Relationship",
@@ -39,6 +40,8 @@ export function CampaignManagement(props: {
   onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const navigate = useNavigate();
+  const [stateRequestEpoch] = useState(createRequestEpoch);
+  const [sessionsRequestEpoch] = useState(createRequestEpoch);
   const [items, setItems] = useState<CampaignStateItem[] | null>(null);
   const [stateLoading, setStateLoading] = useState(false);
   const [stateError, setStateError] = useState("");
@@ -62,38 +65,48 @@ export function CampaignManagement(props: {
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
 
   const loadState = useCallback(async () => {
+    const requestId = stateRequestEpoch.next();
     setStateLoading(true);
     setStateError("");
     try {
-      setItems(await fetchCampaignState(props.campaign.id));
+      const loaded = await fetchCampaignState(props.campaign.id);
+      if (stateRequestEpoch.isCurrent(requestId)) setItems(loaded);
     } catch (error) {
-      setStateError(errorMessage(error, "Could not load campaign state."));
+      if (stateRequestEpoch.isCurrent(requestId)) {
+        setStateError(errorMessage(error, "Could not load campaign state."));
+      }
     } finally {
-      setStateLoading(false);
+      if (stateRequestEpoch.isCurrent(requestId)) setStateLoading(false);
     }
-  }, [props.campaign.id]);
+  }, [props.campaign.id, stateRequestEpoch]);
 
   const loadSessions = useCallback(async () => {
+    const requestId = sessionsRequestEpoch.next();
     setSessionsLoading(true);
     setSessionsError("");
     try {
-      setSessions(await fetchCampaignSessions(props.campaign.id));
+      const loaded = await fetchCampaignSessions(props.campaign.id);
+      if (sessionsRequestEpoch.isCurrent(requestId)) setSessions(loaded);
     } catch (error) {
-      setSessionsError(errorMessage(error, "Could not load campaign sessions."));
+      if (sessionsRequestEpoch.isCurrent(requestId)) {
+        setSessionsError(errorMessage(error, "Could not load campaign sessions."));
+      }
     } finally {
-      setSessionsLoading(false);
+      if (sessionsRequestEpoch.isCurrent(requestId)) setSessionsLoading(false);
     }
-  }, [props.campaign.id]);
+  }, [props.campaign.id, sessionsRequestEpoch]);
 
   useEffect(() => {
     setItems(null);
     void loadState();
-  }, [loadState]);
+    return () => stateRequestEpoch.invalidate();
+  }, [loadState, stateRequestEpoch]);
 
   useEffect(() => {
     setSessions([]);
     void loadSessions();
-  }, [loadSessions, props.session.id]);
+    return () => sessionsRequestEpoch.invalidate();
+  }, [loadSessions, props.session.id, sessionsRequestEpoch]);
 
   const clearItemForm = () => {
     setCreatingItem(false);

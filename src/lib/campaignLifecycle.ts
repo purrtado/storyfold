@@ -11,3 +11,20 @@ export function sortCampaignStateItems(items: CampaignStateItem[], category: Cam
       : b.updated_at.localeCompare(a.updated_at));
 }
 
+export type CampaignSessionDetails = { campaign: Campaign; session: Session };
+
+export function updateCampaignSessionCache(
+  current: Record<string, CampaignSessionDetails>,
+  sessionId: string,
+  details: CampaignSessionDetails,
+) {
+  const next = { ...current };
+  for (const [cachedSessionId, cached] of Object.entries(current)) {
+    if (cached.campaign.id === details.campaign.id) {
+      next[cachedSessionId] = { ...cached, campaign: details.campaign };
+    }
+  }
+  next[sessionId] = details;
+  return next;
+}
+

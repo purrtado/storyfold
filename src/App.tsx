@@ -13,6 +13,7 @@ import { fetchCampaigns, fetchSession, fetchSessionMessages } from "./lib/storyA
 import { refreshLibraries, warmLibraries } from "./lib/libraryCache";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
+import { updateCampaignSessionCache } from "./lib/campaignLifecycle";
 
 export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -102,28 +103,19 @@ export default function App() {
     setCampaignsLoading(true);
     setCampaignsError("");
     try {
-      const [details, loadedCampaigns] = await Promise.all([
-        fetchSession(sessionId),
-        fetchCampaigns(),
-      ]);
+      const details = await fetchSession(sessionId);
       if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
-      setCampaigns(loadedCampaigns);
-      setSessions((current) => {
-        const next = { ...current };
-        for (const [cachedSessionId, cached] of Object.entries(current)) {
-          if (cached.campaign.id === details.campaign.id) {
-            next[cachedSessionId] = { ...cached, campaign: details.campaign };
-          }
-        }
-        next[sessionId] = details;
-        return next;
-      });
+      setSessions((current) => updateCampaignSessionCache(current, sessionId, details));
       setSessionErrors((current) => {
         const next = { ...current };
         delete next[sessionId];
         return next;
       });
       setSessionsLoading({});
+
+      const loadedCampaigns = await fetchCampaigns();
+      if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
+      setCampaigns(loadedCampaigns);
     } catch (error) {
       if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
       const message = error instanceof Error ? error.message : "Could not refresh the campaign.";
