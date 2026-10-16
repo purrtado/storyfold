@@ -134,18 +134,19 @@ export class PlayService {
    * Every active session may open exactly once — the campaign's first from the
    * starting situation, later ones (and a fork's opening session) from their
    * leading handoff — so a fresh session is never stuck before its first turn.
-   * Retries stay possible while only failed/interrupted drafts exist.
+   * Retries stay possible while only failed/interrupted drafts exist. All
+   * guards sit inside the reservation transaction: a second /opening that
+   * raced the first can never reserve after the first settled complete.
    */
   reserveOpening(sessionId: string): ReservedTurn {
-    const opened = this.db
-      .query<Message, [string]>(
-        "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
-      )
-      .get(sessionId);
-    if (opened) throw new AlreadyOpenedError("This session has already opened");
-
     const reserve = this.db.transaction((id: string): ReservedTurn => {
       this.requireOpenSession(id);
+      const opened = this.db
+        .query<Message, [string]>(
+          "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
+        )
+        .get(id);
+      if (opened) throw new AlreadyOpenedError("This session has already opened");
       if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
       const pendingId = newId();
       this.insertMessage(

@@ -10,7 +10,7 @@ import {
   getCampaign,
   SessionClosedError,
 } from "../library";
-import { HISTORY_CHARACTER_LIMIT, PlayService } from "../play";
+import { AlreadyOpenedError, HISTORY_CHARACTER_LIMIT, PlayService } from "../play";
 import {
   headersWith,
   makeConfigDirectory,
@@ -732,6 +732,44 @@ describe("closed-session race guard", () => {
       const reserved = play.reservePlayerTurn(moved.active_session_id, "hello", "Sable");
       expect(reserved.playerId).not.toBeNull();
       expect(play.transcript(moved.active_session_id)).toHaveLength(2);
+    } finally {
+      db.close();
+      await removeDirectory(directory);
+    }
+  });
+
+  test("a second opening cannot reserve after the first settled complete", async () => {
+    const directory = await makeConfigDirectory();
+    const db = openDatabase(join(directory, "opening-race.db"));
+    try {
+      const world = createWorld(db, { name: "OpeningRace", setting_brief: "Harbor.", suggested_starting_situation: "" });
+      const character = createCharacter(db, { name: "Sable", description: "Ferrywoman spy." });
+      const { campaign, session } = createCampaign(db, {
+        world_id: world.id,
+        protagonist_id: character.id,
+        starting_situation: "Opening race situation.",
+      });
+      const play = new PlayService(db);
+
+      // Request A reserves and its narration settles complete before request
+      // B's reservation runs — B must find the completed row in-transaction.
+      const first = play.reserveOpening(session.id);
+      expect(play.settlePending(first.pendingId, "complete", "The dawn breaks over the pier.")).toBe(true);
+      expect(() => play.reserveOpening(session.id)).toThrow(AlreadyOpenedError);
+      expect(play.transcript(session.id)).toHaveLength(1);
+
+      // A draft (interrupted) keeps the retry path open: on a second session,
+      // an interrupted first attempt still allows exactly one more opening.
+      beginNextSession(db, campaign.id, { title: "Next", handoff: "Race handoff." });
+      const second = getCampaign(db, campaign.id)!;
+      const draft = play.reserveOpening(second.active_session_id);
+      expect(play.settlePending(draft.pendingId, "interrupted", "Half a dawn.")).toBe(true);
+      const retry = play.reserveOpening(second.active_session_id);
+      expect(retry.pendingId).not.toBeNull();
+      expect(play.transcript(second.active_session_id).map((message) => message.status)).toEqual([
+        "interrupted",
+        "pending",
+      ]);
     } finally {
       db.close();
       await removeDirectory(directory);
