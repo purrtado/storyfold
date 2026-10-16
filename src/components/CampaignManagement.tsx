@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CAMPAIGN_STATE_CATEGORIES, type Campaign, type CampaignStateCategory, type CampaignStateItem, type Session } from "../../shared/domain";
+import { CAMPAIGN_STATE_CATEGORIES, type Campaign, type CampaignStateCategory, type CampaignStateItem, type CampaignStateSubjectKind, type Session } from "../../shared/domain";
 import {
   createCampaignSession,
   createCampaignStateItem,
@@ -31,6 +31,54 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+type StateSubjectCandidate = {
+  subject_kind: CampaignStateSubjectKind;
+  subject_id: string;
+  name: string;
+  source: string;
+};
+
+type StateSubjectOption = StateSubjectCandidate & { value: string; label: string };
+
+function getStateSubjectOptions(campaign: Campaign): StateSubjectOption[] {
+  const candidates: StateSubjectCandidate[] = [
+    { subject_kind: "character", subject_id: campaign.protagonist_snapshot.id, name: campaign.protagonist_snapshot.name, source: "Protagonist" },
+    ...campaign.cast.map((character) => ({
+      subject_kind: "character" as const,
+      subject_id: character.id,
+      name: character.name,
+      source: "Cast",
+    })),
+    ...campaign.world_snapshot.entries.map((entry) => ({
+      subject_kind: "entry" as const,
+      subject_id: entry.id,
+      name: entry.name,
+      source: "World entry",
+    })),
+  ];
+  const nameCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const key = `${candidate.subject_kind}\u0000${candidate.name}`;
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  return candidates.map((candidate) => {
+    const key = `${candidate.subject_kind}\u0000${candidate.name}`;
+    const duplicate = nameCounts.get(key)! > 1;
+    return {
+      ...candidate,
+      value: `${candidate.subject_kind}:${candidate.subject_id}`,
+      label: `${candidate.source}: ${candidate.name}${duplicate ? ` · ${candidate.subject_id.slice(0, 8)}` : ""}`,
+    };
+  });
+}
+
+function stateSubjectLabel(item: CampaignStateItem, options: StateSubjectOption[]) {
+  if (!item.subject_kind || !item.subject_id) return item.subject;
+  return options.find((option) =>
+    option.subject_kind === item.subject_kind && option.subject_id === item.subject_id
+  )?.label ?? item.subject;
+}
+
 
 export function CampaignManagement(props: {
   campaign: Campaign;
@@ -51,6 +99,7 @@ export function CampaignManagement(props: {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [formCategory, setFormCategory] = useState<CampaignStateCategory>("relationship");
   const [formSubject, setFormSubject] = useState("");
+  const [subjectSelection, setSubjectSelection] = useState("manual");
   const [formContent, setFormContent] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -63,6 +112,8 @@ export function CampaignManagement(props: {
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const subjectOptions = useMemo(() => getStateSubjectOptions(props.campaign), [props.campaign]);
+  const selectedSubjectOption = subjectOptions.find((option) => option.value === subjectSelection);
 
   const loadState = useCallback(async () => {
     const requestId = stateRequestEpoch.next();
@@ -113,6 +164,7 @@ export function CampaignManagement(props: {
     setEditingId(null);
     setFormCategory("relationship");
     setFormSubject("");
+    setSubjectSelection("manual");
     setFormContent("");
   };
 
@@ -121,6 +173,7 @@ export function CampaignManagement(props: {
     setEditingId(null);
     setFormCategory("relationship");
     setFormSubject("");
+    setSubjectSelection("manual");
     setFormContent("");
     setCreatingItem(true);
   };
@@ -130,7 +183,11 @@ export function CampaignManagement(props: {
     setCreatingItem(false);
     setEditingId(item.id);
     setFormCategory(item.category);
-    setFormSubject(item.subject);
+    const reference = subjectOptions.find((option) =>
+      option.subject_kind === item.subject_kind && option.subject_id === item.subject_id
+    );
+    setSubjectSelection(reference?.value ?? "manual");
+    setFormSubject(reference?.name ?? item.subject);
     setFormContent(item.content);
   };
 
@@ -138,7 +195,9 @@ export function CampaignManagement(props: {
     event.preventDefault();
     const input: CampaignStateInput = {
       category: formCategory,
-      subject: formSubject.trim(),
+      subject: selectedSubjectOption?.name ?? formSubject.trim(),
+      subject_kind: selectedSubjectOption?.subject_kind ?? null,
+      subject_id: selectedSubjectOption?.subject_id ?? null,
       content: formContent.trim(),
     };
     if (!input.subject || !input.content) {
@@ -289,8 +348,24 @@ export function CampaignManagement(props: {
               </select>
             </label>
             <label className="grid gap-1 text-sm">
+              Subject reference
+              <select
+                className="min-h-11 rounded-lg border border-border bg-background px-3"
+                value={subjectSelection}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setSubjectSelection(value);
+                  const option = subjectOptions.find((candidate) => candidate.value === value);
+                  if (option) setFormSubject(option.name);
+                }}
+              >
+                <option value="manual">Manual label</option>
+                {subjectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1 text-sm">
               Subject
-              <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} required />
+              <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} readOnly={Boolean(selectedSubjectOption)} required />
             </label>
             <label className="grid gap-1 text-sm">
               Content
@@ -316,7 +391,7 @@ export function CampaignManagement(props: {
                 {categoryItems.map((item) => (
                   <li key={item.id} className="grid gap-2 rounded-xl border border-border p-3">
                     <div className="grid gap-1">
-                      <h5 className="font-medium">{item.subject}</h5>
+                      <h5 className="font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
                       <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
                       <p className="text-xs text-muted">
                         {category === "journal" ? `Added ${formatDate(item.created_at)}` : `Updated ${formatDate(item.updated_at)}`}

@@ -35,6 +35,8 @@ const stateItem: CampaignStateItem = {
   campaign_id: "campaign/1",
   category: "journal",
   subject: "A promise",
+  subject_kind: "entry",
+  subject_id: "entry-4",
   content: "Mira promised to return.",
   created_at: "2026-10-01T10:00:00.000Z",
   updated_at: "2026-10-01T10:00:00.000Z",
@@ -57,7 +59,13 @@ test("campaign state API unwraps lists and sends create, edit, and delete reques
     { ...stateItem, content: "Mira kept her promise." },
     { ok: true },
   ]);
-  const input = { category: "journal" as const, subject: stateItem.subject, content: stateItem.content };
+  const input = {
+    category: "journal" as const,
+    subject: stateItem.subject,
+    subject_kind: stateItem.subject_kind,
+    subject_id: stateItem.subject_id,
+    content: stateItem.content,
+  };
 
   expect(await fetchCampaignState("campaign/1")).toEqual([stateItem]);
   expect(await createCampaignStateItem("campaign/1", input)).toEqual(stateItem);

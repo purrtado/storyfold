@@ -1,6 +1,9 @@
 import type { Campaign, CampaignStateItem, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
-export type CampaignStateInput = Pick<CampaignStateItem, "category" | "subject" | "content">;
+export type CampaignStateInput = Pick<
+  CampaignStateItem,
+  "category" | "subject" | "subject_kind" | "subject_id" | "content"
+>;
 
 export async function fetchCampaignState(campaignId: string): Promise<CampaignStateItem[]> {
   return (await request<{ items: CampaignStateItem[] }>(
