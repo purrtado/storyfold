@@ -9,7 +9,9 @@ import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
+import { CampaignManagement } from "./CampaignManagement";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
+import { isActiveCampaignSession } from "../lib/campaignLifecycle";
 
 function PendingDots() {
   return (
@@ -110,6 +112,7 @@ export function CampaignPlay(props: {
   onRefreshMessages: (sessionId: string) => void | Promise<void>;
   onRetrySession: (sessionId: string) => void | Promise<void>;
   onDismissGeneration: () => void;
+  onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [following, setFollowing] = useState(true);
@@ -131,14 +134,20 @@ export function CampaignPlay(props: {
     && provider?.models.some((model) => model.id === props.selectedModel)
     ? props.selectedModel
     : "";
+  const isActiveSession = Boolean(
+    props.campaign
+    && props.session
+    && isActiveCampaignSession(props.campaign, props.session),
+  );
   const hasPending = messages.some((message) => message.role === "assistant" && message.status === "pending")
     || Boolean(live?.pendingMessageId && live.phase !== "error");
   const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
-  const canRetryOpening = !hasCompletedNarration
+  const canRetryOpening = isActiveSession
+    && !hasCompletedNarration
     && messages.some((message) => message.role === "assistant" && (message.status === "failed" || message.status === "interrupted"));
   const transcriptReady = props.messages !== undefined && !props.messagesLoading && !props.messagesError;
   const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || modelCatalogState === "loading";
-  const showEmptyOpening = messages.length === 0 && !busy && (!live || live.phase === "error");
+  const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
     let active = true;
@@ -173,10 +182,10 @@ export function CampaignPlay(props: {
   }, [hasPending, props.onRefreshMessages, props.sessionId]);
 
   useEffect(() => {
-    if (props.sessionLoading || props.sessionError || !props.session || !transcriptReady || modelCatalogState === "loading") return;
+    if (!isActiveSession || props.sessionLoading || props.sessionError || !props.session || !transcriptReady || modelCatalogState === "loading") return;
     if (messages.length !== 0) return;
     props.onOpen(props.sessionId, selectedModel || undefined);
-  }, [messages.length, modelCatalogState, props.generation?.phase, props.generation?.sessionId, props.onOpen, props.session, props.sessionError, props.sessionId, props.sessionLoading, selectedModel, transcriptReady]);
+  }, [isActiveSession, messages.length, modelCatalogState, props.generation?.phase, props.generation?.sessionId, props.onOpen, props.session, props.sessionError, props.sessionId, props.sessionLoading, selectedModel, transcriptReady]);
 
   const handleSend = (value: string) => {
     setFollowing(true);
@@ -212,7 +221,7 @@ export function CampaignPlay(props: {
                 <ChevronRight className="size-3.5" aria-hidden="true" />
                 <span aria-current="page">{props.session.title}</span>
               </nav>
-              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Current session</p>
+              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">{isActiveSession ? "Active session" : "Read-only session"}</p>
               <h1 className="mbs-1 text-xl font-semibold tracking-tight">{props.session.title}</h1>
               <div className="mbs-2 flex flex-wrap items-center gap-2 text-sm text-muted">
                 <span>{props.campaign.world_snapshot.name}</span>
@@ -246,8 +255,8 @@ export function CampaignPlay(props: {
               {messages.length === 0 ? (
                 <div className="my-12 grid justify-items-center gap-3 rounded-xl border border-dashed border-border px-5 py-10 text-center">
                   <Sparkles className="size-6 text-accent" aria-hidden="true" />
-                  <h2 className="text-lg font-semibold">Your session is ready</h2>
-                  <p className="max-w-md text-sm text-muted">The narrator will open the first scene using the context you chose.</p>
+                  <h2 className="text-lg font-semibold">{isActiveSession ? "Your session is ready" : "No transcript for this session"}</h2>
+                  <p className="max-w-md text-sm text-muted">{isActiveSession ? "The narrator will open the first scene using the context you chose." : "This session is read-only and will not open or accept new actions."}</p>
                   {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onRetryOpening(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
                 </div>
               ) : messages.map((message) => (
@@ -296,22 +305,31 @@ export function CampaignPlay(props: {
             </p>
           )}
 
-          <Composer
-            value={props.draft}
-            onValueChange={(value) => props.onDraftChange(props.sessionId, value)}
-            onSubmit={handleSend}
-            selectedModel={selectedModel}
-            onModelChange={(model) => props.onModelChange(props.sessionId, model)}
-            defaultModel={provider?.model ?? null}
-            models={provider?.models ?? []}
-            modelCatalogState={modelCatalogState}
-            placeholder={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
-            inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
-            sendLabel="Send action"
-            busy={busy || !hasCompletedNarration}
-            showStop={hasPending || Boolean(otherGeneration)}
-            onStop={() => { void props.onStop(otherGeneration?.sessionId ?? props.sessionId); }}
-          />
+          {isActiveSession ? (
+            <Composer
+              value={props.draft}
+              onValueChange={(value) => props.onDraftChange(props.sessionId, value)}
+              onSubmit={handleSend}
+              selectedModel={selectedModel}
+              onModelChange={(model) => props.onModelChange(props.sessionId, model)}
+              defaultModel={provider?.model ?? null}
+              models={provider?.models ?? []}
+              modelCatalogState={modelCatalogState}
+              placeholder={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
+              inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
+              sendLabel="Send action"
+              busy={busy || !hasCompletedNarration}
+              showStop={hasPending || Boolean(otherGeneration)}
+              onStop={() => { void props.onStop(otherGeneration?.sessionId ?? props.sessionId); }}
+            />
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 border-bs border-border px-4 py-3 text-sm" role="note">
+              <p className="flex-1 text-muted">Read-only transcript. Only the active session can accept actions.</p>
+              {props.session.id !== props.campaign.active_session_id && (
+                <Link to={`/sessions/${encodeURIComponent(props.campaign.active_session_id)}`} className="font-medium text-accent underline underline-offset-2">Open active session</Link>
+              )}
+            </div>
+          )}
 
           <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} title="Campaign details" closeLabel="Close campaign details" className="drawer fixed inset-bs-0 inset-be-0 end-0 start-auto z-40 w-[min(100vw,28rem)] border-s border-e-0 border-border bg-surface">
             <div className="flex h-full min-block-size-0 flex-col">
@@ -321,9 +339,17 @@ export function CampaignPlay(props: {
               </div>
               <div className="chat-scroll flex-1 p-5">
                 <section className="grid gap-2 border-bs border-border pbs-4">
-                  <p className="text-xs font-medium text-muted">Current session</p>
+                  <p className="text-xs font-medium text-muted">{isActiveSession ? "Current session" : "Archived session"}</p>
                   <h3 className="font-semibold">{props.session.title}</h3>
                 </section>
+                <CampaignManagement
+                  key={props.campaign.id}
+                  campaign={props.campaign}
+                  session={props.session}
+                  active={isActiveSession}
+                  canEndSession={isActiveSession && !busy}
+                  onSyncSession={props.onSyncSession}
+                />
                 <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
                   <p className="text-xs font-medium text-muted">World</p>
                   <h3 className="font-semibold">{props.campaign.world_snapshot.name}</h3>

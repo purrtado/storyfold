@@ -1,4 +1,63 @@
-import type { Campaign, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignStateItem, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+export type CampaignFork = { campaign: Campaign; session: Session };
+export type CampaignStateInput = Pick<CampaignStateItem, "category" | "subject" | "content">;
+
+export async function fetchCampaignState(campaignId: string): Promise<CampaignStateItem[]> {
+  return (await request<{ items: CampaignStateItem[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state`,
+  )).items;
+}
+
+export async function createCampaignStateItem(
+  campaignId: string,
+  input: CampaignStateInput,
+): Promise<CampaignStateItem> {
+  return request<CampaignStateItem>(`/api/campaigns/${encodeURIComponent(campaignId)}/state`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateCampaignStateItem(
+  campaignId: string,
+  itemId: string,
+  input: CampaignStateInput,
+): Promise<CampaignStateItem> {
+  return request<CampaignStateItem>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export async function deleteCampaignStateItem(campaignId: string, itemId: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchCampaignSessions(campaignId: string): Promise<Session[]> {
+  return (await request<{ sessions: Session[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
+  )).sessions;
+}
+
+export async function createCampaignSession(
+  campaignId: string,
+  input: { title: string; handoff: string },
+): Promise<Session> {
+  return (await request<{ session: Session }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
+    { method: "POST", body: JSON.stringify(input) },
+  )).session;
+}
+
+export async function forkSession(sessionId: string, name: string): Promise<CampaignFork> {
+  return request<CampaignFork>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
 
 export type WorldInput = Pick<
   World,
