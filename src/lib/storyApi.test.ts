@@ -1,15 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  createCampaignRelationship,
+  createCampaignRelationshipEvent,
+  createCampaignRelationshipSubject,
   createCampaignSession,
   createCampaignStateItem,
+  deleteCampaignRelationship,
   deleteCampaignStateItem,
+  fetchCampaignRelationshipEvents,
+  fetchCampaignRelationships,
   fetchCampaignSessions,
   fetchCampaignState,
   forkSession,
+  updateCampaignRelationship,
   updateCampaignStateItem,
   type CampaignFork,
 } from "./storyApi";
-import type { CampaignStateItem, Session } from "../../shared/domain";
+import type { CampaignStateItem, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session } from "../../shared/domain";
 
 const originalFetch = globalThis.fetch;
 
@@ -127,4 +134,76 @@ test("session history, transition, and fork unwrap their endpoint envelopes", as
     handoff: session.handoff,
   });
   expect(JSON.parse(requests[2]?.init?.body as string)).toEqual({ name: "The northern road" });
+});
+test("relationship API sends directed endpoints, revisions, and session-bound event descriptions", async () => {
+  const document: RelationshipDocument = {
+    how_met: "At the river crossing.",
+    status: "Uneasy allies",
+    stats: { trust: { value: 2, min: 0, max: 5 } },
+    known_facts: ["Captain follows the old road."],
+    sections: [{ id: "note-1", label: "Promises", type: "list", value: ["Return before dawn."] }],
+  };
+  const subject: RelationshipSubject = { id: "local-npc/1", name: "Captain", kind: "local_character" };
+  const relationship: Relationship = {
+    id: "relationship/1",
+    campaign_id: "campaign/1",
+    source_id: "character:protagonist",
+    target_id: subject.id,
+    document,
+    revision: 1,
+    created_at: "2026-10-03T10:00:00.000Z",
+    updated_at: "2026-10-03T10:00:00.000Z",
+  };
+  const event: RelationshipEvent = {
+    id: "event/1",
+    relationship_id: relationship.id,
+    campaign_id: relationship.campaign_id,
+    session_id: "session/1",
+    description: "The captain returned the map.",
+    created_at: "2026-10-03T11:00:00.000Z",
+  };
+  const requests = useResponses([
+    { subjects: [subject], relationships: [relationship] },
+    { subject },
+    { relationship },
+    { relationship: { ...relationship, revision: 2 } },
+    { ok: true },
+    { events: [event] },
+    { event: { ...event, id: "event/2", description: "The party agreed to travel together." } },
+  ]);
+
+  expect(await fetchCampaignRelationships("campaign/1")).toEqual({ subjects: [subject], relationships: [relationship] });
+  expect(await createCampaignRelationshipSubject("campaign/1", subject.name)).toEqual(subject);
+  expect(await createCampaignRelationship("campaign/1", {
+    source_id: relationship.source_id,
+    target_id: relationship.target_id,
+    document,
+  })).toEqual(relationship);
+  expect(await updateCampaignRelationship("campaign/1", relationship.id, { document, revision: 1 })).toMatchObject({
+    id: relationship.id,
+    revision: 2,
+  });
+  expect(await deleteCampaignRelationship("campaign/1", relationship.id)).toEqual({ ok: true });
+  expect(await fetchCampaignRelationshipEvents("campaign/1", relationship.id)).toEqual([event]);
+  expect(await createCampaignRelationshipEvent("campaign/1", relationship.id, "The party agreed to travel together.")).toMatchObject({
+    session_id: event.session_id,
+    description: "The party agreed to travel together.",
+  });
+
+  expect(requests.map(({ url, init }) => [url, init?.method ?? "GET"])).toEqual([
+    ["/api/campaigns/campaign%2F1/relationships", "GET"],
+    ["/api/campaigns/campaign%2F1/relationship-subjects", "POST"],
+    ["/api/campaigns/campaign%2F1/relationships", "POST"],
+    ["/api/campaigns/campaign%2F1/relationships/relationship%2F1", "PATCH"],
+    ["/api/campaigns/campaign%2F1/relationships/relationship%2F1", "DELETE"],
+    ["/api/campaigns/campaign%2F1/relationships/relationship%2F1/events", "GET"],
+    ["/api/campaigns/campaign%2F1/relationships/relationship%2F1/events", "POST"],
+  ]);
+  expect(JSON.parse(requests[2]?.init?.body as string)).toEqual({
+    source_id: relationship.source_id,
+    target_id: relationship.target_id,
+    document,
+  });
+  expect(JSON.parse(requests[3]?.init?.body as string)).toEqual({ document, revision: 1 });
+  expect(JSON.parse(requests[6]?.init?.body as string)).toEqual({ description: "The party agreed to travel together." });
 });

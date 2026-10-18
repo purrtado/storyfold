@@ -1,5 +1,75 @@
-import type { Campaign, CampaignStateItem, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignStateItem, Character, Message, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
+export type CampaignRelationships = {
+  subjects: RelationshipSubject[];
+  relationships: Relationship[];
+};
+
+export async function fetchCampaignRelationships(campaignId: string): Promise<CampaignRelationships> {
+  return request<CampaignRelationships>(`/api/campaigns/${encodeURIComponent(campaignId)}/relationships`);
+}
+
+export async function createCampaignRelationshipSubject(
+  campaignId: string,
+  name: string,
+): Promise<RelationshipSubject> {
+  return (await request<{ subject: RelationshipSubject }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationship-subjects`,
+    { method: "POST", body: JSON.stringify({ name }) },
+  )).subject;
+}
+
+export async function createCampaignRelationship(
+  campaignId: string,
+  input: { source_id: string; target_id: string; document: RelationshipDocument },
+): Promise<Relationship> {
+  return (await request<{ relationship: Relationship }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
+    { method: "POST", body: JSON.stringify(input) },
+  )).relationship;
+}
+
+export async function updateCampaignRelationship(
+  campaignId: string,
+  relationshipId: string,
+  input: { document: RelationshipDocument; revision: number },
+): Promise<Relationship> {
+  return (await request<{ relationship: Relationship }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  )).relationship;
+}
+
+export async function deleteCampaignRelationship(
+  campaignId: string,
+  relationshipId: string,
+): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchCampaignRelationshipEvents(
+  campaignId: string,
+  relationshipId: string,
+): Promise<RelationshipEvent[]> {
+  return (await request<{ events: RelationshipEvent[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
+  )).events;
+}
+
+export async function createCampaignRelationshipEvent(
+  campaignId: string,
+  relationshipId: string,
+  description: string,
+): Promise<RelationshipEvent> {
+  return (await request<{ event: RelationshipEvent }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
+    { method: "POST", body: JSON.stringify({ description }) },
+  )).event;
+}
+
 export type CampaignStateInput = Pick<
   CampaignStateItem,
   "category" | "subject" | "subject_kind" | "subject_id" | "content"

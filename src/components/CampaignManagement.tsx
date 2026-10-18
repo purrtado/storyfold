@@ -13,9 +13,9 @@ import {
 } from "../lib/storyApi";
 import { sortCampaignStateItems } from "../lib/campaignLifecycle";
 import { createRequestEpoch } from "../lib/requestEpoch";
+import { RelationshipManagement } from "./RelationshipManagement";
 
 const categoryLabels: Record<CampaignStateCategory, string> = {
-  relationship: "Relationship",
   goal: "Goal",
   knowledge: "Knowledge",
   internal: "Internal",
@@ -97,7 +97,7 @@ export function CampaignManagement(props: {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creatingItem, setCreatingItem] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [formCategory, setFormCategory] = useState<CampaignStateCategory>("relationship");
+  const [formCategory, setFormCategory] = useState<CampaignStateCategory>("goal");
   const [formSubject, setFormSubject] = useState("");
   const [subjectSelection, setSubjectSelection] = useState("manual");
   const [formContent, setFormContent] = useState("");
@@ -162,7 +162,7 @@ export function CampaignManagement(props: {
   const clearItemForm = () => {
     setCreatingItem(false);
     setEditingId(null);
-    setFormCategory("relationship");
+    setFormCategory("goal");
     setFormSubject("");
     setSubjectSelection("manual");
     setFormContent("");
@@ -171,7 +171,7 @@ export function CampaignManagement(props: {
   const openNewItem = () => {
     setStateError("");
     setEditingId(null);
-    setFormCategory("relationship");
+    setFormCategory("goal");
     setFormSubject("");
     setSubjectSelection("manual");
     setFormContent("");
@@ -312,6 +312,8 @@ export function CampaignManagement(props: {
         </section>
       )}
 
+      <RelationshipManagement campaign={props.campaign} sessions={sessions} />
+
       <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-state-title">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -391,7 +393,7 @@ export function CampaignManagement(props: {
           </form>
         )}
 
-        {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No campaign state yet. Add a relationship, goal, fact, or journal entry.</p> : null}
+        {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No campaign state yet. Add a goal, fact, attribute, or journal entry.</p> : null}
         {items && CAMPAIGN_STATE_CATEGORIES.map((category) => {
           const categoryItems = sortCampaignStateItems(items, category);
           if (categoryItems.length === 0) return null;
