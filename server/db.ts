@@ -153,6 +153,19 @@ CREATE TABLE IF NOT EXISTS relationship_events (
 CREATE INDEX IF NOT EXISTS relationship_events_order
   ON relationship_events(relationship_id, created_at, id);
 
+CREATE TABLE IF NOT EXISTS session_relationship_subject_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  subject_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (session_id, subject_id)
+);
+
+CREATE INDEX IF NOT EXISTS relationship_subject_checkpoints_session
+  ON session_relationship_subject_checkpoints(session_id);
+
 CREATE TABLE IF NOT EXISTS session_relationship_checkpoints (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id),

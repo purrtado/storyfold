@@ -104,11 +104,18 @@ test("subjects, prompt grounding, session boundary, and fork copies remain isola
   const afterBoundary = getCampaign(db, campaign.id)!;
   const updated = updateRelationship(db, afterBoundary, relationship.id, parseRelationshipDocument(document("After checkpoint.")), relationship.revision)!;
   appendRelationshipEvent(db, afterBoundary, relationship.id, "A later session event.");
+  const laterSubject = createRelationshipSubject(db, campaign.id, "Later subject");
+  expect(laterSubject.id).not.toBe(local.id);
+  expect(relationshipNarrationContext(db, afterBoundary)[0]!.recent_events).toEqual([
+    "Ilyra shared the map.",
+    "A later session event.",
+  ]);
   const fork = forkAtCheckpoint(db, closed.id);
   const forkRelationship = listRelationships(db, fork.campaign).relationships[0]!;
   expect(forkRelationship.id).not.toBe(relationship.id);
   expect(forkRelationship.target_id).not.toBe(local.id);
   expect(listRelationships(db, fork.campaign).subjects.some((subject) => subject.id === forkRelationship.target_id && subject.name === "Ilyra")).toBe(true);
+  expect(listRelationships(db, fork.campaign).subjects.some((subject) => subject.name === "Later subject")).toBe(false);
   const forkEvents = listRelationshipEvents(db, fork.campaign.id, forkRelationship.id)!;
   expect(forkEvents.map((event) => event.description)).toEqual(["Ilyra shared the map."]);
   expect(forkEvents[0]!.id).not.toBe(originalEvent.id);

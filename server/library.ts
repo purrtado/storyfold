@@ -864,7 +864,7 @@ export function forkCampaignFromSession(
        VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
     ).run(forkSessionId, campaignId, source.title, source.handoff ?? "", now, now);
 
-    const copiedSubjectIds = createCampaignLocalSubjects(db, origin, campaignId);
+    const copiedSubjectIds = createCampaignLocalSubjects(db, source.id, campaignId);
     forkRelationships(db, source.id, campaignId, copiedSubjectIds);
     const checkpoint = db
       .query<

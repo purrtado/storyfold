@@ -144,7 +144,7 @@ export function relationshipNarrationContext(db: Database, campaign: Campaign): 
   const names = new Map(available.map((subject) => [subject.id, subject.name]));
   const recent = db.query<{ relationship_id: string; description: string }, [string]>(
     "SELECT relationship_id,description FROM relationship_events WHERE campaign_id=? ORDER BY rowid DESC LIMIT 5",
-  ).all(campaign.id);
+  ).all(campaign.id).reverse();
   const byRelationship = new Map<string, string[]>();
   for (const event of recent) {
     const events = byRelationship.get(event.relationship_id) ?? [];
@@ -214,6 +214,13 @@ export function appendRelationshipEvent(db: Database, campaign: Campaign, relati
 }
 
 export function checkpointRelationships(db: Database, campaignId: string, sessionId: string): void {
+  const localSubjects = db.query<{ id: string; name: string }, [string]>(
+    "SELECT id,name FROM relationship_subjects WHERE campaign_id=? ORDER BY created_at,id",
+  ).all(campaignId);
+  for (const subject of localSubjects) {
+    db.query("INSERT INTO session_relationship_subject_checkpoints (id,session_id,campaign_id,subject_id,name,created_at) VALUES (?,?,?,?,?,?)")
+      .run(newId(), sessionId, campaignId, subject.id, subject.name, nowIso());
+  }
   const rows = db.query<RelationshipRow, [string]>("SELECT * FROM relationships WHERE campaign_id=? ORDER BY created_at,id").all(campaignId);
   for (const row of rows) {
     const events = db.query<RelationshipEvent, [string]>("SELECT id,relationship_id,campaign_id,session_id,description,created_at FROM relationship_events WHERE relationship_id=? ORDER BY rowid").all(row.id);
@@ -243,11 +250,13 @@ export function forkRelationships(
   }
 }
 
-export function createCampaignLocalSubjects(db: Database, sourceCampaign: Campaign, forkCampaignId: string): Record<string, string> {
+export function createCampaignLocalSubjects(db: Database, sourceSessionId: string, forkCampaignId: string): Record<string, string> {
   const subjectIds: Record<string, string> = {};
-  for (const subject of db.query<{ id: string; name: string }, [string]>("SELECT id,name FROM relationship_subjects WHERE campaign_id=?").all(sourceCampaign.id)) {
+  for (const subject of db.query<{ subject_id: string; name: string }, [string]>(
+    "SELECT subject_id,name FROM session_relationship_subject_checkpoints WHERE session_id=? ORDER BY created_at,id",
+  ).all(sourceSessionId)) {
     const id = newId();
-    subjectIds[subject.id] = id;
+    subjectIds[subject.subject_id] = id;
     db.query("INSERT INTO relationship_subjects (id,campaign_id,name,created_at) VALUES (?,?,?,?)")
       .run(id, forkCampaignId, subject.name, nowIso());
   }
