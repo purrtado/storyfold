@@ -16,6 +16,7 @@ import type {
 import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
 import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
+import { checkpointRelationships, createCampaignLocalSubjects, forkRelationships } from "./relationships";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -776,6 +777,7 @@ export function beginNextSession(
           item.created_at,
         );
       }
+      checkpointRelationships(db, id, active.id);
 
       const sessionId = newId();
       db.query(
@@ -862,6 +864,8 @@ export function forkCampaignFromSession(
        VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
     ).run(forkSessionId, campaignId, source.title, source.handoff ?? "", now, now);
 
+    const copiedSubjectIds = createCampaignLocalSubjects(db, origin, campaignId);
+    forkRelationships(db, source.id, campaignId, copiedSubjectIds);
     const checkpoint = db
       .query<
         {

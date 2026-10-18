@@ -87,7 +87,6 @@ export interface World {
 }
 
 export const CAMPAIGN_STATE_CATEGORIES = [
-  "relationship",
   "goal",
   "knowledge",
   "internal",
@@ -119,6 +118,40 @@ export interface CampaignStateItem {
   content: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface RelationshipDocument {
+  how_met: string;
+  status: string;
+  stats: Record<string, { value: number; min: number; max: number }>;
+  known_facts: string[];
+  sections: { id: string; label: string; type: "text" | "list"; value: string | string[] }[];
+}
+
+export interface RelationshipSubject {
+  id: string;
+  name: string;
+  kind: "character" | "entry" | "local_character";
+}
+
+export interface Relationship {
+  id: string;
+  campaign_id: string;
+  source_id: string;
+  target_id: string;
+  document: RelationshipDocument;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RelationshipEvent {
+  id: string;
+  relationship_id: string;
+  campaign_id: string;
+  session_id: string;
+  description: string;
+  created_at: string;
 }
 
 export interface Campaign {

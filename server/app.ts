@@ -64,6 +64,18 @@ import {
   updateWorldEntry,
 } from "./library";
 import {
+  RelationshipConflictError,
+  RelationshipValidationError,
+  appendRelationshipEvent,
+  createRelationship,
+  createRelationshipSubject,
+  deleteRelationship,
+  listRelationshipEvents,
+  listRelationships,
+  parseRelationshipDocument,
+  updateRelationship,
+} from "./relationships";
+import {
   BODY_LIMITS,
   hasTrustedOrigin,
   isJsonContentType,
@@ -174,6 +186,12 @@ function domainErrorResponse(error: unknown): Response | null {
   }
   if (error instanceof SessionNotClosedError) {
     return jsonError(409, error.message, undefined, { code: "session_not_closed", accepted: false });
+  }
+  if (error instanceof RelationshipValidationError) {
+    return jsonError(400, error.message, undefined, { code: "invalid_input", accepted: false });
+  }
+  if (error instanceof RelationshipConflictError) {
+    return jsonError(409, error.message, undefined, { code: "conflict" });
   }
   return null;
 }
@@ -428,6 +446,89 @@ async function handleCampaignState(
   }
   return jsonError(405, "Method not allowed");
 }
+async function handleCampaignRelationships(
+  request: Request,
+  campaignId: string | undefined,
+  relationshipId: string | undefined,
+  action: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  if (campaignId === undefined) return notFound("Unknown campaign");
+  const campaign = getCampaign(ctx.db, campaignId);
+  if (!campaign) return notFound("Unknown campaign");
+  if (action === "events" && relationshipId !== undefined) {
+    if (request.method === "GET") {
+      const events = listRelationshipEvents(ctx.db, campaignId, relationshipId);
+      return events ? jsonResponse({ events }) : notFound("Unknown relationship");
+    }
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const activeCampaign = getCampaign(ctx.db, campaignId);
+        if (!activeCampaign) return notFound("Unknown campaign");
+        if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+        const event = appendRelationshipEvent(ctx.db, activeCampaign, relationshipId, body.description as string);
+        return event ? jsonResponse({ event }, 201) : notFound("Unknown relationship");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (relationshipId === undefined && action === "relationship-subjects" && request.method === "POST") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const activeCampaign = getCampaign(ctx.db, campaignId);
+      if (!activeCampaign) return notFound("Unknown campaign");
+      if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      return jsonResponse({ subject: createRelationshipSubject(ctx.db, campaignId, body.name as string) }, 201);
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (relationshipId === undefined) {
+    if (request.method === "GET") return jsonResponse(listRelationships(ctx.db, campaign));
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const activeCampaign = getCampaign(ctx.db, campaignId);
+        if (!activeCampaign) return notFound("Unknown campaign");
+        if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+        const relationship = createRelationship(ctx.db, activeCampaign, body.source_id as string, body.target_id as string, parseRelationshipDocument(body.document));
+        return jsonResponse({ relationship }, 201);
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const activeCampaign = getCampaign(ctx.db, campaignId);
+      if (!activeCampaign) return notFound("Unknown campaign");
+      if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipDocument(body.document), body.revision as number);
+      return relationship ? jsonResponse({ relationship }) : notFound("Unknown relationship");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    try {
+      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      return deleteRelationship(ctx.db, campaignId, relationshipId) ? jsonResponse({ ok: true }) : notFound("Unknown relationship");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
 
 /**
  * Sessions are listed in story order. POST closes the campaign's open session
@@ -581,6 +682,9 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   if (resource === "campaigns") {
     if (segments[3] === "state") return handleCampaignState(request, segments[2], segments[4], ctx);
     if (segments[3] === "sessions") return handleCampaignSessions(request, segments[2], ctx);
+    if (segments[3] === "relationships" || segments[3] === "relationship-subjects") {
+      return handleCampaignRelationships(request, segments[2], segments[4], segments[5] ?? segments[3], ctx);
+    }
     return handleCampaigns(request, segments[2], ctx.db);
   }
 

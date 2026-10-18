@@ -10,6 +10,7 @@ import {
   ValidationError,
 } from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { relationshipNarrationContext, type RelationshipPrompt } from "./relationships";
 
 export const NARRATOR_NAME = "Narrator";
 
@@ -246,6 +247,7 @@ export class PlayService {
     handoff: string | null,
     opening: boolean,
     hasHistory: boolean,
+    relationships: RelationshipPrompt[] = [],
   ): string {
     const world = campaign.world_snapshot;
     const protagonist = campaign.protagonist_snapshot;
@@ -280,6 +282,18 @@ export class PlayService {
             ...state.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`),
           ]
         : [];
+    const relationshipLines =
+      relationships.length > 0
+        ? [
+            "Current directional relationships (campaign-owned; use as canon, without inventing automatic changes):",
+            ...relationships.map(({ source_name, target_name, document, recent_events }) =>
+              `- ${source_name} → ${target_name}: how met: ${document.how_met}; status: ${document.status}; ` +
+              `stats: ${JSON.stringify(document.stats)}; known facts: ${JSON.stringify(document.known_facts)}; ` +
+              `sections: ${JSON.stringify(document.sections)}` +
+              (recent_events.length > 0 ? `; recent events: ${JSON.stringify(recent_events)}` : ""),
+            ),
+          ]
+        : [];
     return [
       "You are the narrator of an ongoing interactive story.",
       "",
@@ -295,6 +309,8 @@ export class PlayService {
       ...compendium,
       "",
       ...stateLines,
+      "",
+      ...relationshipLines,
       "",
       "Narrate the world and every other character yourself; never narrate",
       `${protagonist.name}'s decisions, words, or thoughts.`,
@@ -377,6 +393,7 @@ export class PlayService {
     const history = this.modelHistory(sessionId);
     const state = listCampaignState(this.db, options.campaign.id);
     const handoff = sessionGroundingHandoff(this.db, options.campaign.id, sessionId);
+    const relationships = relationshipNarrationContext(this.db, options.campaign);
 
     const { stream: upstream } = startZaiRun({
       model: options.settings.model,
@@ -387,6 +404,7 @@ export class PlayService {
         handoff,
         opening,
         history.length > 0,
+        relationships,
       ),
       messages:
         history.length > 0

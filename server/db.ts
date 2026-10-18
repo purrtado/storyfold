@@ -90,7 +90,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_
 CREATE TABLE IF NOT EXISTS campaign_state_items (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
   subject TEXT NOT NULL,
   subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
   subject_id TEXT,
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS session_state_checkpoints (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id),
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  category TEXT NOT NULL CHECK (category IN ('relationship', 'goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
   subject TEXT NOT NULL,
   subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
   subject_id TEXT,
@@ -114,6 +114,59 @@ CREATE TABLE IF NOT EXISTS session_state_checkpoints (
 );
 
 CREATE INDEX IF NOT EXISTS session_state_checkpoints_session ON session_state_checkpoints(session_id);
+
+CREATE TABLE IF NOT EXISTS relationship_subjects (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (id, campaign_id)
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  source_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (json_valid(document)),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (source_id != target_id),
+  UNIQUE (campaign_id, source_id, target_id),
+  UNIQUE (id, campaign_id)
+);
+
+CREATE INDEX IF NOT EXISTS relationships_campaign ON relationships(campaign_id);
+
+CREATE TABLE IF NOT EXISTS relationship_events (
+  id TEXT PRIMARY KEY,
+  relationship_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  description TEXT NOT NULL,
+  origin_event_id TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (relationship_id, campaign_id) REFERENCES relationships(id, campaign_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS relationship_events_order
+  ON relationship_events(relationship_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS session_relationship_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  source_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (json_valid(document)),
+  revision INTEGER NOT NULL,
+  events TEXT NOT NULL CHECK (json_valid(events)),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS relationship_checkpoints_session
+  ON session_relationship_checkpoints(session_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,

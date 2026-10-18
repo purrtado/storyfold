@@ -164,7 +164,7 @@ describe("campaign state items", () => {
   test("create, list, edit, and delete campaign-owned state", async () => {
     const { campaign } = await seedCampaign("State", "State situation one.");
     const created = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
-      category: "relationship",
+      category: "goal",
       subject: "Mira the harbormaster",
       content: "Warily cooperative after the ledger was returned.",
     });
@@ -179,9 +179,14 @@ describe("campaign state items", () => {
       updated_at: string;
     };
     expect(item.campaign_id).toBe(campaign.id);
-    expect(item.category).toBe("relationship");
+    expect(item.category).toBe("goal");
     expect(item.subject).toBe("Mira the harbormaster");
     expect(item.created_at).toBe(item.updated_at);
+    expect((await json(`/api/campaigns/${campaign.id}/state`, "POST", {
+      category: "relationship",
+      subject: "Mira",
+      content: "This belongs in directional relationship state.",
+    })).status).toBe(400);
 
     const journal = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
       category: "journal",
@@ -830,7 +835,7 @@ describe("state subject references", () => {
     expect(listed[0].subject_id).toBeNull();
 
     const characterRef = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
-      category: "relationship",
+      category: "goal",
       subject: "Mira",
       content: "Warily cooperative.",
       subject_kind: "character",
@@ -960,4 +965,51 @@ describe("restart and persistence", () => {
       await restarted.stop();
     }
   });
+});
+
+test("directional relationship API validates subjects, revisions, and session events", async () => {
+  const { campaign, session } = await seedCampaign("Relationship API", "A meeting at the harbor.");
+  const subjectsResponse = await json(`/api/campaigns/${campaign.id}/relationships`, "GET");
+  expect(subjectsResponse.status).toBe(200);
+  const subjects = (await subjectsResponse.json()) as { subjects: Array<{ id: string; kind: string }> };
+  expect(subjects.subjects.some((subject) => subject.id === campaign.protagonist_snapshot.id)).toBe(true);
+  const createdSubject = await json(`/api/campaigns/${campaign.id}/relationship-subjects`, "POST", { name: "Aven" });
+  expect(createdSubject.status).toBe(201);
+  const target = ((await createdSubject.json()) as { subject: { id: string } }).subject.id;
+  const document = { how_met: "At the harbor.", status: "cautious", stats: {}, known_facts: [], sections: [] };
+  const created = await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
+    source_id: campaign.protagonist_snapshot.id,
+    target_id: target,
+    document,
+  });
+  expect(created.status).toBe(201);
+  const relationship = ((await created.json()) as { relationship: { id: string; revision: number } }).relationship;
+  expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
+    source_id: campaign.protagonist_snapshot.id,
+    target_id: target,
+    document,
+  })).status).toBe(400);
+  expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
+    source_id: campaign.protagonist_snapshot.id,
+    target_id: target,
+    document: { ...document, hidden: "field" },
+  })).status).toBe(400);
+  const updated = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
+    document: { ...document, status: "trusting" },
+    revision: relationship.revision,
+  });
+  expect(updated.status).toBe(200);
+  expect((await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
+    document,
+    revision: relationship.revision,
+  })).status).toBe(409);
+  const eventResponse = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}/events`, "POST", {
+    description: "Aven offered a map.",
+  });
+  expect(eventResponse.status).toBe(201);
+  const event = ((await eventResponse.json()) as { event: { session_id: string; description: string } }).event;
+  expect(event.session_id).toBe(session.id);
+  expect(event.description).toBe("Aven offered a map.");
+  const events = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}/events`, "GET");
+  expect(((await events.json()) as { events: unknown[] }).events).toHaveLength(1);
 });
