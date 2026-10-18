@@ -377,6 +377,7 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   }, [props.campaign.id, requestEpoch]);
   const subjectLabels = useMemo(() => {
     const counts = new Map<string, number>();
+    const castIds = new Set(props.campaign.cast.map((character) => character.id));
     for (const subject of subjects) {
       const key = `${subject.kind}\u0000${subject.name}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -384,24 +385,24 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     return new Map<string, string>(subjects.map((subject): [string, string] => {
       const key = `${subject.kind}\u0000${subject.name}`;
       const duplicate = (counts.get(key) ?? 0) > 1;
-      const role = subject.kind === "character" && !duplicate
-        ? subject.name === props.campaign.protagonist_snapshot.name
+      const role = subject.kind !== "character"
+        ? subjectKindLabel(subject.kind)
+        : subject.id === props.campaign.protagonist_snapshot.id
           ? "Protagonist"
-          : props.campaign.cast.some((character) => character.name === subject.name)
+          : castIds.has(subject.id)
             ? "Cast"
-            : subjectKindLabel(subject.kind)
-        : subjectKindLabel(subject.kind);
+            : subjectKindLabel(subject.kind);
       return [subject.id, `${role}: ${subject.name}${duplicate ? ` · ${subject.id.slice(0, 8)}` : ""}`];
     }));
-  }, [props.campaign.cast, props.campaign.protagonist_snapshot.name, subjects]);
+  }, [props.campaign.cast, props.campaign.protagonist_snapshot.id, subjects]);
   const subjectMap = useMemo(
     () => new Map<string, RelationshipSubject>(subjects.map((subject): [string, RelationshipSubject] => [subject.id, subject])),
     [subjects],
   );
   const protagonistSourceId = useMemo(() => {
-    const matches = subjects.filter((subject) => subject.kind === "character" && subject.name === props.campaign.protagonist_snapshot.name);
-    return matches.length === 1 ? matches[0].id : "";
-  }, [props.campaign.protagonist_snapshot.name, subjects]);
+    const protagonistId = props.campaign.protagonist_snapshot.id;
+    return subjects.some((subject) => subject.id === protagonistId && subject.kind === "character") ? protagonistId : "";
+  }, [props.campaign.protagonist_snapshot.id, subjects]);
   const activeSessionTitle = props.sessions.find((session) => session.id === props.campaign.active_session_id)?.title;
   const rawDocument = advanced ? parseDocumentJson(rawJson) : null;
   const rawValidationError = rawDocument?.error ?? "";
@@ -409,7 +410,7 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     ? rawDocument?.document ? JSON.stringify(rawDocument.document).length : rawJson.length
     : JSON.stringify(draft).length;
 
-  const resetEditor = () => {
+  const resetEditor = useCallback(() => {
     setCreatingRelationship(false);
     setEditingId(null);
     setSourceId("");
@@ -421,7 +422,23 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     setEditorError("");
     setEditorNotice("");
     setConflict(false);
-  };
+  }, []);
+  useEffect(() => {
+    setSubjects([]);
+    setRelationships([]);
+    setLoadError("");
+    setNpcName("");
+    setNpcError("");
+    setSubjectBusy(false);
+    setConfirmDeleteId(null);
+    setDeleteBusyId(null);
+    setDeleteErrors({});
+    setSaving(false);
+    setRefreshingLatest(false);
+    resetEditor();
+    void loadRelationships();
+    return () => requestEpoch.invalidate();
+  }, [loadRelationships, requestEpoch, resetEditor]);
 
   const openCreate = () => {
     setCreatingRelationship(true);
