@@ -279,9 +279,9 @@ function RelationshipRow(props: {
             <span>{props.sourceLabel}</span> <span className="sr-only">points to</span> <span aria-hidden="true" className="text-muted">→</span> <span>{props.targetLabel}</span>
           </span>
           {(status || statSummary) && (
-            <span className="min-w-0 basis-full truncate text-muted">
-              {status || "No current status recorded"}
-              {statSummary && <span className="tabular-nums"> · {statSummary}</span>}
+            <span className="grid min-w-0 basis-full gap-1 pis-5 text-muted">
+              {status && <span className="truncate">{status}</span>}
+              {statSummary && <span className="truncate text-xs tabular-nums">{statSummary}</span>}
             </span>
           )}
         </summary>
@@ -841,10 +841,9 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
       {creatingRelationship && editorForm}
 
       <details ref={npcDisclosureRef} className="group rounded-xl border border-border bg-surface">
-        <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 rounded-t-xl p-3 text-sm font-medium active:bg-raised group-not-open:rounded-xl [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
+        <summary className="flex cursor-pointer items-center gap-2 rounded-t-xl p-3 text-sm font-medium active:bg-raised group-not-open:rounded-xl [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
           <ChevronRight className="size-3.5 shrink-0 text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform group-open:rotate-90" aria-hidden="true" />
           Add local NPC
-          <span className="min-w-0 flex-1 text-sm font-normal text-muted">Create a campaign-only reference to use as either end of a relationship.</span>
         </summary>
         <form className="grid gap-2 border-bs border-border p-3" onSubmit={(event) => { void createNpc(event); }}>
           <label className="grid gap-1 text-sm">
