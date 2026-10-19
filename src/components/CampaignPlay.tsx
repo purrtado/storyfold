@@ -255,18 +255,14 @@ function CampaignDetailsSheet(props: {
             </CapturedDisclosure>
           </section>
         </div>
-        {mounted.state && (
-          <div role="tabpanel" id="campaign-panel-state" aria-labelledby="campaign-tab-state" hidden={tab !== "state"} tabIndex={0}>
-            <CampaignStateSection campaign={props.campaign} active={props.active} />
-          </div>
-        )}
-        {mounted.relationships && (
-          <div role="tabpanel" id="campaign-panel-relationships" aria-labelledby="campaign-tab-relationships" hidden={tab !== "relationships"} tabIndex={0}>
-            <RelationshipManagement campaign={props.campaign} sessions={sessions} />
-          </div>
-        )}
-        {mounted.timeline && (
-          <div role="tabpanel" id="campaign-panel-timeline" aria-labelledby="campaign-tab-timeline" hidden={tab !== "timeline"} tabIndex={0}>
+        <div role="tabpanel" id="campaign-panel-state" aria-labelledby="campaign-tab-state" hidden={tab !== "state"} tabIndex={0}>
+          {mounted.state && <CampaignStateSection campaign={props.campaign} active={props.active} />}
+        </div>
+        <div role="tabpanel" id="campaign-panel-relationships" aria-labelledby="campaign-tab-relationships" hidden={tab !== "relationships"} tabIndex={0}>
+          {mounted.relationships && <RelationshipManagement campaign={props.campaign} sessions={sessions} />}
+        </div>
+        <div role="tabpanel" id="campaign-panel-timeline" aria-labelledby="campaign-tab-timeline" hidden={tab !== "timeline"} tabIndex={0}>
+          {mounted.timeline && (
             <CampaignTimelineSection
               campaign={props.campaign}
               session={props.session}
@@ -278,8 +274,8 @@ function CampaignDetailsSheet(props: {
               onReloadSessions={reloadSessions}
               onSyncSession={props.onSyncSession}
             />
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
