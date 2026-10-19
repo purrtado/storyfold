@@ -13,7 +13,6 @@ import {
 } from "../lib/storyApi";
 import { sortCampaignStateItems } from "../lib/campaignLifecycle";
 import { createRequestEpoch } from "../lib/requestEpoch";
-import { RelationshipManagement } from "./RelationshipManagement";
 
 const categoryLabels: Record<CampaignStateCategory, string> = {
   goal: "Goal",
@@ -79,17 +78,40 @@ function stateSubjectLabel(item: CampaignStateItem, options: StateSubjectOption[
   )?.label ?? item.subject;
 }
 
+export function useCampaignSessions(campaignId: string, sessionId: string) {
+  const [requestEpoch] = useState(createRequestEpoch);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-export function CampaignManagement(props: {
+  const load = useCallback(async () => {
+    const requestId = requestEpoch.next();
+    setLoading(true);
+    setError("");
+    try {
+      const loaded = await fetchCampaignSessions(campaignId);
+      if (requestEpoch.isCurrent(requestId)) setSessions(loaded);
+    } catch (cause) {
+      if (requestEpoch.isCurrent(requestId)) setError(errorMessage(cause, "Could not load campaign sessions."));
+    } finally {
+      if (requestEpoch.isCurrent(requestId)) setLoading(false);
+    }
+  }, [campaignId, requestEpoch]);
+
+  useEffect(() => {
+    setSessions([]);
+    void load();
+    return () => requestEpoch.invalidate();
+  }, [load, requestEpoch, sessionId]);
+
+  return { sessions, loading, error, reload: load };
+}
+
+export function CampaignStateSection(props: {
   campaign: Campaign;
-  session: Session;
   active: boolean;
-  canEndSession: boolean;
-  onSyncSession: (sessionId: string) => Promise<void>;
 }) {
-  const navigate = useNavigate();
   const [stateRequestEpoch] = useState(createRequestEpoch);
-  const [sessionsRequestEpoch] = useState(createRequestEpoch);
   const [items, setItems] = useState<CampaignStateItem[] | null>(null);
   const [stateLoading, setStateLoading] = useState(false);
   const [stateError, setStateError] = useState("");
@@ -101,17 +123,6 @@ export function CampaignManagement(props: {
   const [formSubject, setFormSubject] = useState("");
   const [subjectSelection, setSubjectSelection] = useState("manual");
   const [formContent, setFormContent] = useState("");
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [sessionsError, setSessionsError] = useState("");
-  const [nextTitle, setNextTitle] = useState("");
-  const [handoff, setHandoff] = useState("");
-  const [reviewHandoff, setReviewHandoff] = useState(false);
-  const [forkTarget, setForkTarget] = useState<string | null>(null);
-  const [forkName, setForkName] = useState("");
-  const [sessionBusy, setSessionBusy] = useState(false);
-  const [sessionError, setSessionError] = useState("");
-  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const subjectOptions = useMemo(() => getStateSubjectOptions(props.campaign), [props.campaign]);
   const selectedSubjectOption = subjectOptions.find((option) => option.value === subjectSelection);
 
@@ -131,33 +142,11 @@ export function CampaignManagement(props: {
     }
   }, [props.campaign.id, stateRequestEpoch]);
 
-  const loadSessions = useCallback(async () => {
-    const requestId = sessionsRequestEpoch.next();
-    setSessionsLoading(true);
-    setSessionsError("");
-    try {
-      const loaded = await fetchCampaignSessions(props.campaign.id);
-      if (sessionsRequestEpoch.isCurrent(requestId)) setSessions(loaded);
-    } catch (error) {
-      if (sessionsRequestEpoch.isCurrent(requestId)) {
-        setSessionsError(errorMessage(error, "Could not load campaign sessions."));
-      }
-    } finally {
-      if (sessionsRequestEpoch.isCurrent(requestId)) setSessionsLoading(false);
-    }
-  }, [props.campaign.id, sessionsRequestEpoch]);
-
   useEffect(() => {
     setItems(null);
     void loadState();
     return () => stateRequestEpoch.invalidate();
   }, [loadState, stateRequestEpoch]);
-
-  useEffect(() => {
-    setSessions([]);
-    void loadSessions();
-    return () => sessionsRequestEpoch.invalidate();
-  }, [loadSessions, props.session.id, sessionsRequestEpoch]);
 
   const clearItemForm = () => {
     setCreatingItem(false);
@@ -238,6 +227,146 @@ export function CampaignManagement(props: {
     }
   };
 
+  return (
+    <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-state-title">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium text-muted">Persistent campaign memory</p>
+          <h3 id="campaign-state-title" className="mbs-1 font-semibold">Campaign state</h3>
+        </div>
+        <button
+          type="button"
+          className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          onClick={openNewItem}
+          disabled={stateBusy}
+        >
+          Add state
+        </button>
+      </div>
+      {!props.active && (
+        <>
+          <p className="text-sm text-muted">Current campaign state; not the state at this session&apos;s end.</p>
+          <Link
+            to={`/sessions/${encodeURIComponent(props.campaign.active_session_id)}`}
+            className="pressable inline-flex min-h-11 w-fit items-center rounded-lg border border-border px-3 text-sm text-foreground no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          >
+            Open active session
+          </Link>
+        </>
+      )}
+
+      {stateError && (
+        <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
+          <p className="text-muted">{stateError}</p>
+          {items === null && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadState(); }}>Retry state load</button>}
+        </div>
+      )}
+      {stateLoading && items === null ? (
+        <p className="text-sm text-muted" role="status">Loading campaign state…</p>
+      ) : null}
+
+      {(creatingItem || editingId) && (
+        <form className="grid gap-3 rounded-xl border border-border bg-surface p-3" onSubmit={(event) => { void saveItem(event); }}>
+          <h4 className="font-medium">{editingId ? "Edit state" : "Add campaign state"}</h4>
+          <label className="grid gap-1 text-sm">
+            Category
+            <select className="min-h-11 rounded-lg border border-border bg-background px-3" value={formCategory} onChange={(event) => setFormCategory(event.target.value as CampaignStateCategory)}>
+              {CAMPAIGN_STATE_CATEGORIES.map((category) => <option key={category} value={category}>{categoryLabels[category]}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            Subject reference
+            <select
+              className="min-h-11 rounded-lg border border-border bg-background px-3"
+              value={subjectSelection}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSubjectSelection(value);
+                const option = subjectOptions.find((candidate) => candidate.value === value);
+                if (option) setFormSubject(option.name);
+              }}
+            >
+              <option value="manual">Manual label</option>
+              {subjectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            Subject
+            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} readOnly={Boolean(selectedSubjectOption)} required />
+          </label>
+          <label className="grid gap-1 text-sm">
+            Content
+            <textarea className="min-h-24 rounded-lg border border-border bg-background p-3" value={formContent} onChange={(event) => setFormContent(event.target.value)} required rows={4} />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={stateBusy}>
+              {stateBusy ? "Saving…" : "Save state"}
+            </button>
+            <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={clearItemForm} disabled={stateBusy}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No campaign state yet. Add a goal, fact, attribute, or journal entry.</p> : null}
+      {items && CAMPAIGN_STATE_CATEGORIES.map((category) => {
+        const categoryItems = sortCampaignStateItems(items, category);
+        if (categoryItems.length === 0) return null;
+        return (
+          <section key={category} className="grid gap-2" aria-label={`${categoryLabels[category]} state`}>
+            <h4 className="text-sm font-medium">{categoryLabels[category]}</h4>
+            <ul className="grid list-none gap-2 p-0">
+              {categoryItems.map((item) => (
+                <li key={item.id} className="grid gap-2 rounded-xl border border-border p-3">
+                  <div className="grid gap-1">
+                    <h5 className="font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
+                    <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
+                    <p className="text-xs text-muted">
+                      {category === "journal" ? `Added ${formatDate(item.created_at)}` : `Updated ${formatDate(item.updated_at)}`}
+                    </p>
+                  </div>
+                  {confirmDeleteId === item.id ? (
+                    <div className="flex flex-wrap items-center gap-2" aria-label={`Confirm deleting ${item.subject}`}>
+                      <span className="text-sm text-muted">Delete this state item?</span>
+                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted" onClick={() => { void removeItem(item.id); }} disabled={stateBusy}>{stateBusy ? "Deleting…" : "Delete"}</button>
+                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setConfirmDeleteId(null)} disabled={stateBusy}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => openEditItem(item)} disabled={stateBusy}>Edit</button>
+                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setConfirmDeleteId(item.id)} disabled={stateBusy}>Delete</button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      })}
+    </section>
+  );
+}
+
+export function CampaignTimelineSection(props: {
+  campaign: Campaign;
+  session: Session;
+  active: boolean;
+  canEndSession: boolean;
+  sessions: Session[];
+  sessionsLoading: boolean;
+  sessionsError: string;
+  onReloadSessions: () => Promise<void>;
+  onSyncSession: (sessionId: string) => Promise<void>;
+}) {
+  const navigate = useNavigate();
+  const [nextTitle, setNextTitle] = useState("");
+  const [handoff, setHandoff] = useState("");
+  const [reviewHandoff, setReviewHandoff] = useState(false);
+  const [forkTarget, setForkTarget] = useState<string | null>(null);
+  const [forkName, setForkName] = useState("");
+  const [sessionBusy, setSessionBusy] = useState(false);
+  const [sessionError, setSessionError] = useState("");
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+
   const syncAndNavigate = async (sessionId: string) => {
     setPendingSessionId(sessionId);
     setSessionBusy(true);
@@ -265,7 +394,7 @@ export function CampaignManagement(props: {
       setReviewHandoff(false);
       setHandoff("");
       setNextTitle("");
-      await loadSessions();
+      await props.onReloadSessions();
       await syncAndNavigate(created.id);
     } catch (error) {
       setSessionError(errorMessage(error, "Could not start the next session."));
@@ -293,8 +422,8 @@ export function CampaignManagement(props: {
     }
   };
 
-  const activeSession = sessions.find((entry) => entry.id === props.campaign.active_session_id);
-  const orderedSessions = [...sessions].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const activeSession = props.sessions.find((entry) => entry.id === props.campaign.active_session_id);
+  const orderedSessions = [...props.sessions].sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   return (
     <>
@@ -311,124 +440,6 @@ export function CampaignManagement(props: {
           </Link>
         </section>
       )}
-
-      <RelationshipManagement campaign={props.campaign} sessions={sessions} />
-
-      <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-state-title">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-xs font-medium text-muted">Persistent campaign memory</p>
-            <h3 id="campaign-state-title" className="mbs-1 font-semibold">Campaign state</h3>
-          </div>
-          <button
-            type="button"
-            className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-            onClick={openNewItem}
-            disabled={stateBusy}
-          >
-            Add state
-          </button>
-        </div>
-        {!props.active && (
-          <>
-            <p className="text-sm text-muted">Current campaign state; not the state at this session&apos;s end.</p>
-            <Link
-              to={`/sessions/${encodeURIComponent(activeSession?.id ?? props.campaign.active_session_id)}`}
-              className="pressable inline-flex min-h-11 w-fit items-center rounded-lg border border-border px-3 text-sm text-foreground no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-            >
-              Open active session
-            </Link>
-          </>
-        )}
-
-        {stateError && (
-          <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
-            <p className="text-muted">{stateError}</p>
-            {items === null && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadState(); }}>Retry state load</button>}
-          </div>
-        )}
-        {stateLoading && items === null ? (
-          <p className="text-sm text-muted" role="status">Loading campaign state…</p>
-        ) : null}
-
-        {(creatingItem || editingId) && (
-          <form className="grid gap-3 rounded-xl border border-border bg-surface p-3" onSubmit={(event) => { void saveItem(event); }}>
-            <h4 className="font-medium">{editingId ? "Edit state" : "Add campaign state"}</h4>
-            <label className="grid gap-1 text-sm">
-              Category
-              <select className="min-h-11 rounded-lg border border-border bg-background px-3" value={formCategory} onChange={(event) => setFormCategory(event.target.value as CampaignStateCategory)}>
-                {CAMPAIGN_STATE_CATEGORIES.map((category) => <option key={category} value={category}>{categoryLabels[category]}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm">
-              Subject reference
-              <select
-                className="min-h-11 rounded-lg border border-border bg-background px-3"
-                value={subjectSelection}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setSubjectSelection(value);
-                  const option = subjectOptions.find((candidate) => candidate.value === value);
-                  if (option) setFormSubject(option.name);
-                }}
-              >
-                <option value="manual">Manual label</option>
-                {subjectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm">
-              Subject
-              <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} readOnly={Boolean(selectedSubjectOption)} required />
-            </label>
-            <label className="grid gap-1 text-sm">
-              Content
-              <textarea className="min-h-24 rounded-lg border border-border bg-background p-3" value={formContent} onChange={(event) => setFormContent(event.target.value)} required rows={4} />
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={stateBusy}>
-                {stateBusy ? "Saving…" : "Save state"}
-              </button>
-              <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={clearItemForm} disabled={stateBusy}>Cancel</button>
-            </div>
-          </form>
-        )}
-
-        {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No campaign state yet. Add a goal, fact, attribute, or journal entry.</p> : null}
-        {items && CAMPAIGN_STATE_CATEGORIES.map((category) => {
-          const categoryItems = sortCampaignStateItems(items, category);
-          if (categoryItems.length === 0) return null;
-          return (
-            <section key={category} className="grid gap-2" aria-label={`${categoryLabels[category]} state`}>
-              <h4 className="text-sm font-medium">{categoryLabels[category]}</h4>
-              <ul className="grid list-none gap-2 p-0">
-                {categoryItems.map((item) => (
-                  <li key={item.id} className="grid gap-2 rounded-xl border border-border p-3">
-                    <div className="grid gap-1">
-                      <h5 className="font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
-                      <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
-                      <p className="text-xs text-muted">
-                        {category === "journal" ? `Added ${formatDate(item.created_at)}` : `Updated ${formatDate(item.updated_at)}`}
-                      </p>
-                    </div>
-                    {confirmDeleteId === item.id ? (
-                      <div className="flex flex-wrap items-center gap-2" aria-label={`Confirm deleting ${item.subject}`}>
-                        <span className="text-sm text-muted">Delete this state item?</span>
-                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted" onClick={() => { void removeItem(item.id); }} disabled={stateBusy}>{stateBusy ? "Deleting…" : "Delete"}</button>
-                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setConfirmDeleteId(null)} disabled={stateBusy}>Cancel</button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => openEditItem(item)} disabled={stateBusy}>Edit</button>
-                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setConfirmDeleteId(item.id)} disabled={stateBusy}>Delete</button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          );
-        })}
-      </section>
 
       <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-sessions-title">
         <div>
@@ -452,13 +463,13 @@ export function CampaignManagement(props: {
           </section>
         )}
 
-        {sessionsError && (
+        {props.sessionsError && (
           <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
-            <p className="text-muted">{sessionsError}</p>
-            <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadSessions(); }}>Retry sessions</button>
+            <p className="text-muted">{props.sessionsError}</p>
+            <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onReloadSessions(); }}>Retry sessions</button>
           </div>
         )}
-        {sessionsLoading ? <p className="text-sm text-muted" role="status">Loading sessions…</p> : null}
+        {props.sessionsLoading ? <p className="text-sm text-muted" role="status">Loading sessions…</p> : null}
         {orderedSessions.length > 0 && (
           <ol className="grid list-none gap-2 p-0">
             {orderedSessions.map((entry) => {
@@ -494,7 +505,7 @@ export function CampaignManagement(props: {
             })}
           </ol>
         )}
-        {!sessionsLoading && sessions.length === 0 && !sessionsError && <p className="text-sm text-muted">No sessions found for this campaign.</p>}
+        {!props.sessionsLoading && props.sessions.length === 0 && !props.sessionsError && <p className="text-sm text-muted">No sessions found for this campaign.</p>}
       </section>
 
       {props.active && (

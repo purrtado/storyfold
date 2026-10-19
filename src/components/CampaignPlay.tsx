@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { BookOpen, ChevronRight, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import type { Campaign, CharacterSnapshot, Message, Session } from "../../shared/domain";
@@ -9,7 +9,8 @@ import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
-import { CampaignManagement } from "./CampaignManagement";
+import { CampaignStateSection, CampaignTimelineSection, useCampaignSessions } from "./CampaignManagement";
+import { RelationshipManagement } from "./RelationshipManagement";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
 import { isActiveCampaignSession } from "../lib/campaignLifecycle";
 
@@ -70,23 +71,217 @@ const characterSnapshotFields = [
   ["speaking_style", "Speaking style"],
 ] as const;
 
-function CampaignCharacterSnapshot(props: { character: CharacterSnapshot; role: string }) {
+function CapturedDisclosure(props: { label: string; children: ReactNode }) {
   return (
-    <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
-      <p className="text-xs font-medium text-muted">{props.role}</p>
-      <h3 className="font-semibold">{props.character.name}</h3>
-      <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.character.description}</p>
-      {characterSnapshotFields.filter(([field]) => props.character[field]).map(([field, label]) => (
-        <p key={field} className="whitespace-pre-wrap text-sm leading-6 text-muted">
-          <span className="font-medium text-foreground">{label}:</span> {props.character[field]}
-        </p>
-      ))}
-      {props.character.world_context && (
-        <p className="whitespace-pre-wrap text-sm leading-6 text-muted">
-          <span className="font-medium text-foreground">World-specific context:</span> {props.character.world_context}
-        </p>
-      )}
-    </section>
+    <details className="group rounded-xl border border-border">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-4 flex-none text-muted group-open:rotate-90" aria-hidden="true" />
+        <span className="truncate">{props.label}</span>
+      </summary>
+      <div className="border-bs border-border p-3">{props.children}</div>
+    </details>
+  );
+}
+
+function SnapshotDetails(props: { summary: string; character: CharacterSnapshot }) {
+  return (
+    <CapturedDisclosure label={props.summary}>
+      <div className="grid gap-2">
+        <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.character.description}</p>
+        {characterSnapshotFields.filter(([field]) => props.character[field]).map(([field, label]) => (
+          <p key={field} className="whitespace-pre-wrap text-sm leading-6 text-muted">
+            <span className="font-medium text-foreground">{label}:</span> {props.character[field]}
+          </p>
+        ))}
+        {props.character.world_context && (
+          <p className="whitespace-pre-wrap text-sm leading-6 text-muted">
+            <span className="font-medium text-foreground">World-specific context:</span> {props.character.world_context}
+          </p>
+        )}
+      </div>
+    </CapturedDisclosure>
+  );
+}
+
+const campaignTabs = [
+  { id: "session", label: "Session" },
+  { id: "state", label: "State" },
+  { id: "relationships", label: "Relationships" },
+  { id: "timeline", label: "Timeline" },
+] as const;
+
+type CampaignTabId = (typeof campaignTabs)[number]["id"];
+
+type SessionHandoffView = { tone: "Outgoing handoff" | "Incoming handoff"; note: string; text: string };
+
+function sessionHandoffView(session: Session, sessions: Session[]): SessionHandoffView | null {
+  if (session.closed_at) {
+    return session.handoff
+      ? { tone: "Outgoing handoff", note: "Written when this session ended; the next session opens from it.", text: session.handoff }
+      : null;
+  }
+  if (session.handoff) {
+    return { tone: "Incoming handoff", note: "Inherited from the forked source campaign; this session opens from it.", text: session.handoff };
+  }
+  const index = sessions.findIndex((entry) => entry.id === session.id);
+  const previous = index > 0 ? sessions[index - 1] : undefined;
+  if (previous?.handoff) {
+    return { tone: "Incoming handoff", note: `Carried in from “${previous.title}”.`, text: previous.handoff };
+  }
+  return null;
+}
+
+function CampaignDetailsSheet(props: {
+  campaign: Campaign;
+  session: Session;
+  active: boolean;
+  canEndSession: boolean;
+  onSyncSession: (sessionId: string) => Promise<void>;
+}) {
+  const [tab, setTab] = useState<CampaignTabId>("session");
+  const [mounted, setMounted] = useState<Record<CampaignTabId, boolean>>({ session: true, state: false, relationships: false, timeline: false });
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const tabRefs = useRef<Partial<Record<CampaignTabId, HTMLButtonElement | null>>>({});
+  const { sessions, loading: sessionsLoading, error: sessionsError, reload: reloadSessions } = useCampaignSessions(props.campaign.id, props.session.id);
+  const handoff = sessionHandoffView(props.session, sessions);
+
+  const activate = (id: CampaignTabId) => {
+    setTab(id);
+    setMounted((current) => current[id] ? current : { ...current, [id]: true });
+    scrollerRef.current?.scrollTo({ top: 0 });
+  };
+
+  const onTablistKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const index = campaignTabs.findIndex((entry) => entry.id === tab);
+    const next = event.key === "ArrowRight"
+      ? (index + 1) % campaignTabs.length
+      : event.key === "ArrowLeft"
+        ? (index + campaignTabs.length - 1) % campaignTabs.length
+        : event.key === "Home"
+          ? 0
+          : event.key === "End" ? campaignTabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    activate(campaignTabs[next].id);
+    tabRefs.current[campaignTabs[next].id]?.focus();
+  };
+
+  const tablist = campaignTabs.map((entry) => {
+    const selected = entry.id === tab;
+    return (
+      <button
+        key={entry.id}
+        ref={(node) => { tabRefs.current[entry.id] = node; }}
+        type="button"
+        role="tab"
+        id={`campaign-tab-${entry.id}`}
+        aria-selected={selected}
+        aria-controls={`campaign-panel-${entry.id}`}
+        tabIndex={selected ? 0 : -1}
+        onClick={() => activate(entry.id)}
+        className={`pressable relative min-h-11 flex-none rounded-lg px-3 text-sm font-medium ${selected
+          ? "text-foreground after:absolute after:inset-be-0 after:inset-is-2 after:inset-ie-2 after:block after:h-0.5 after:rounded-full after:bg-accent after:content-['']"
+          : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
+      >
+        {entry.label}
+      </button>
+    );
+  });
+
+  return (
+    <div className="flex h-full min-block-size-0 flex-col">
+      <div className="flex-none border-bs border-border p-5 pe-14">
+        <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Your context</p>
+        <h2 className="mbs-1 text-xl font-semibold">{props.campaign.name}</h2>
+      </div>
+      <div role="tablist" aria-label="Campaign details" className="flex overflow-x-auto flex-none px-3 [justify-content:safe_center]" onKeyDown={onTablistKeyDown}>
+        {tablist}
+      </div>
+      <div ref={scrollerRef} className="chat-scroll p-5">
+        <div role="tabpanel" id="campaign-panel-session" aria-labelledby="campaign-tab-session" hidden={tab !== "session"} tabIndex={0}>
+          <section className="grid gap-2 border-bs border-border pbs-4">
+            <p className="text-xs font-medium text-muted">{props.active ? "Current session" : "Archived session"}</p>
+            <h3 className="font-semibold">{props.session.title}</h3>
+          </section>
+          {handoff && (
+            <section className="mbs-5 grid gap-2 rounded-xl border border-border bg-surface p-3">
+              <h4 className="text-sm font-semibold">{handoff.tone}</h4>
+              <p className="text-xs text-muted">{handoff.note}</p>
+              <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{handoff.text}</p>
+            </section>
+          )}
+          <section className="mbs-5 grid gap-1 border-bs border-border pbs-4 text-sm" aria-label="Captured campaign names">
+            <p><span className="font-medium">World:</span> <span className="text-muted">{props.campaign.world_snapshot.name}</span></p>
+            <p><span className="font-medium">Playing as:</span> <span className="text-muted">{props.campaign.protagonist_snapshot.name}</span></p>
+            <p><span className="font-medium">Cast:</span> <span className="text-muted">{props.campaign.cast.map((character) => character.name).join(", ") || "None"}</span></p>
+          </section>
+          <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-label="Captured campaign context">
+            <CapturedDisclosure label={`World — ${props.campaign.world_snapshot.name}`}>
+              <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.campaign.world_snapshot.setting_brief}</p>
+            </CapturedDisclosure>
+            <SnapshotDetails summary={`Playing as — ${props.campaign.protagonist_snapshot.name}`} character={props.campaign.protagonist_snapshot} />
+            {props.campaign.cast.map((character) => (
+              <SnapshotDetails key={character.id} summary={character.name} character={character} />
+            ))}
+            <CapturedDisclosure label="Starting situation">
+              <p className="whitespace-pre-wrap text-sm leading-6">{props.campaign.starting_situation || "No starting situation specified."}</p>
+            </CapturedDisclosure>
+            <CapturedDisclosure label={`Captured compendium (${props.campaign.world_snapshot.entries.length})`}>
+              <div className="grid gap-3">
+                {props.campaign.world_snapshot.entries.length === 0 ? (
+                  <p className="text-sm text-muted">No compendium entries were included in this campaign.</p>
+                ) : (
+                  worldEntryGroups
+                    .map((group) => ({
+                      ...group,
+                      entries: props.campaign.world_snapshot.entries.filter((entry) => entry.kind === group.kind),
+                    }))
+                    .filter((group) => group.entries.length > 0)
+                    .map((group) => (
+                      <section key={group.kind} className="grid gap-2">
+                        <h4 className="text-sm font-medium">{group.label}</h4>
+                        <ul className="grid list-none gap-3 p-0">
+                          {group.entries.map((entry) => (
+                            <li key={entry.id} className="grid gap-1 border-bs border-border pbs-3 first:border-0 first:pbs-0">
+                              <p className="font-medium">{entry.name}</p>
+                              <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))
+                )}
+              </div>
+            </CapturedDisclosure>
+          </section>
+        </div>
+        {mounted.state && (
+          <div role="tabpanel" id="campaign-panel-state" aria-labelledby="campaign-tab-state" hidden={tab !== "state"} tabIndex={0}>
+            <CampaignStateSection campaign={props.campaign} active={props.active} />
+          </div>
+        )}
+        {mounted.relationships && (
+          <div role="tabpanel" id="campaign-panel-relationships" aria-labelledby="campaign-tab-relationships" hidden={tab !== "relationships"} tabIndex={0}>
+            <RelationshipManagement campaign={props.campaign} sessions={sessions} />
+          </div>
+        )}
+        {mounted.timeline && (
+          <div role="tabpanel" id="campaign-panel-timeline" aria-labelledby="campaign-tab-timeline" hidden={tab !== "timeline"} tabIndex={0}>
+            <CampaignTimelineSection
+              campaign={props.campaign}
+              session={props.session}
+              active={props.active}
+              canEndSession={props.canEndSession}
+              sessions={sessions}
+              sessionsLoading={sessionsLoading}
+              sessionsError={sessionsError}
+              onReloadSessions={reloadSessions}
+              onSyncSession={props.onSyncSession}
+            />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -332,68 +527,14 @@ export function CampaignPlay(props: {
           )}
 
           <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} title="Campaign details" closeLabel="Close campaign details" className="drawer fixed inset-bs-0 inset-be-0 end-0 start-auto z-40 w-[min(100vw,28rem)] border-s border-e-0 border-border bg-surface">
-            <div className="flex h-full min-block-size-0 flex-col">
-              <div className="flex-none border-bs border-border p-5 pe-14">
-                <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Your context</p>
-                <h2 className="mbs-1 text-xl font-semibold">{props.campaign.name}</h2>
-              </div>
-              <div className="chat-scroll flex-1 p-5">
-                <section className="grid gap-2 border-bs border-border pbs-4">
-                  <p className="text-xs font-medium text-muted">{isActiveSession ? "Current session" : "Archived session"}</p>
-                  <h3 className="font-semibold">{props.session.title}</h3>
-                </section>
-                <CampaignManagement
-                  key={props.campaign.id}
-                  campaign={props.campaign}
-                  session={props.session}
-                  active={isActiveSession}
-                  canEndSession={isActiveSession && !busy}
-                  onSyncSession={props.onSyncSession}
-                />
-                <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
-                  <p className="text-xs font-medium text-muted">World</p>
-                  <h3 className="font-semibold">{props.campaign.world_snapshot.name}</h3>
-                  <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.campaign.world_snapshot.setting_brief}</p>
-                </section>
-                <CampaignCharacterSnapshot character={props.campaign.protagonist_snapshot} role="Playing as" />
-                {props.campaign.cast.map((character) => (
-                  <CampaignCharacterSnapshot key={character.id} character={character} role="Narrator-controlled cast" />
-                ))}
-                <section className="mbs-5 grid gap-2 border-bs border-border pbs-4">
-                  <p className="text-xs font-medium text-muted">Campaign starting situation</p>
-                  <p className="whitespace-pre-wrap text-sm leading-6">{props.campaign.starting_situation || "No starting situation specified."}</p>
-                </section>
-                <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-captured-entries-title">
-                  <div>
-                    <p className="text-xs font-medium text-muted">Campaign grounding</p>
-                    <h3 id="campaign-captured-entries-title" className="mbs-1 font-semibold">Captured compendium</h3>
-                  </div>
-                  {props.campaign.world_snapshot.entries.length === 0 ? (
-                    <p className="text-sm text-muted">No compendium entries were included in this campaign.</p>
-                  ) : (
-                    worldEntryGroups
-                      .map((group) => ({
-                        ...group,
-                        entries: props.campaign!.world_snapshot.entries.filter((entry) => entry.kind === group.kind),
-                      }))
-                      .filter((group) => group.entries.length > 0)
-                      .map((group) => (
-                        <section key={group.kind} className="grid gap-2">
-                          <h4 className="text-sm font-medium">{group.label}</h4>
-                          <ul className="grid list-none gap-3 p-0">
-                            {group.entries.map((entry) => (
-                              <li key={entry.id} className="grid gap-1 border-bs border-border pbs-3 first:border-0 first:pbs-0">
-                                <p className="font-medium">{entry.name}</p>
-                                <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      ))
-                  )}
-                </section>
-              </div>
-            </div>
+            <CampaignDetailsSheet
+              key={props.campaign.id}
+              campaign={props.campaign}
+              session={props.session}
+              active={isActiveSession}
+              canEndSession={isActiveSession && !busy}
+              onSyncSession={props.onSyncSession}
+            />
           </Sheet>
         </>
       )}
