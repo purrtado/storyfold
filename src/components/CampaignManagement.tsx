@@ -456,13 +456,6 @@ export function CampaignTimelineSection(props: {
           {props.active && <p className="text-xs text-muted">You are viewing the active session.</p>}
         </div>
 
-        {props.session.handoff && (
-          <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-labelledby="session-handoff-title">
-            <h4 id="session-handoff-title" className="text-sm font-semibold">Handoff for this session</h4>
-            <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.session.handoff}</p>
-          </section>
-        )}
-
         {props.sessionsError && (
           <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
             <p className="text-muted">{props.sessionsError}</p>

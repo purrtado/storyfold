@@ -197,7 +197,7 @@ function CampaignDetailsSheet(props: {
       <div role="tablist" aria-label="Campaign details" className="flex overflow-x-auto flex-none px-3 [justify-content:safe_center]" onKeyDown={onTablistKeyDown}>
         {tablist}
       </div>
-      <div ref={scrollerRef} className="chat-scroll p-5">
+      <div ref={scrollerRef} className="chat-scroll flex-1 min-block-size-0 p-5">
         <div role="tabpanel" id="campaign-panel-session" aria-labelledby="campaign-tab-session" hidden={tab !== "session"} tabIndex={0}>
           <section className="grid gap-2 border-bs border-border pbs-4">
             <p className="text-xs font-medium text-muted">{props.active ? "Current session" : "Archived session"}</p>
