@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
+import { ChevronRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Campaign, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session } from "../../shared/domain";
 import { createRequestEpoch } from "../lib/requestEpoch";
@@ -137,6 +138,8 @@ function sortEvents(events: RelationshipEvent[]) {
   return [...events].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+const ADD_RELATIONSHIP_FOCUS = "add-relationship";
+
 function CurrentState({ document }: { document: RelationshipDocument }) {
   const hasContent = document.how_met.trim() || document.status.trim()
     || Object.keys(document.stats).length > 0 || document.known_facts.length > 0 || document.sections.length > 0;
@@ -148,11 +151,11 @@ function CurrentState({ document }: { document: RelationshipDocument }) {
       </div>
       {!hasContent ? <p className="text-sm text-muted">No current details recorded.</p> : (
         <div className="grid gap-3 text-sm">
-          {document.how_met.trim() && <div className="grid gap-1"><h5 className="text-xs font-medium text-muted">How they met</h5><p className="whitespace-pre-wrap break-words">{document.how_met}</p></div>}
-          {document.status.trim() && <div className="grid gap-1"><h5 className="text-xs font-medium text-muted">Status</h5><p className="whitespace-pre-wrap break-words">{document.status}</p></div>}
+          {document.how_met.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">How they met</p><p className="whitespace-pre-wrap break-words">{document.how_met}</p></div>}
+          {document.status.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">Status</p><p className="whitespace-pre-wrap break-words">{document.status}</p></div>}
           {Object.keys(document.stats).length > 0 && (
             <div className="grid gap-1">
-              <h5 className="text-xs font-medium text-muted">Stats</h5>
+              <p className="text-xs font-medium text-muted">Stats</p>
               <dl className="grid gap-1">
                 {Object.entries(document.stats).map(([name, stat]) => (
                   <div key={name} className="flex flex-wrap justify-between gap-x-3">
@@ -165,7 +168,7 @@ function CurrentState({ document }: { document: RelationshipDocument }) {
           )}
           {document.known_facts.length > 0 && (
             <div className="grid gap-1">
-              <h5 className="text-xs font-medium text-muted">Known facts</h5>
+              <p className="text-xs font-medium text-muted">Known facts</p>
               <ul className="grid list-disc gap-1 ps-5">
                 {document.known_facts.map((fact, index) => <li key={index} className="whitespace-pre-wrap break-words">{fact}</li>)}
               </ul>
@@ -173,7 +176,7 @@ function CurrentState({ document }: { document: RelationshipDocument }) {
           )}
           {document.sections.map((section) => (
             <div key={section.id} className="grid gap-1">
-              <h5 className="text-xs font-medium text-muted">{section.label}</h5>
+              <p className="text-xs font-medium text-muted">{section.label}</p>
               {section.type === "text" ? (
                 <p className="whitespace-pre-wrap break-words">{section.value as string}</p>
               ) : (
@@ -189,13 +192,15 @@ function CurrentState({ document }: { document: RelationshipDocument }) {
   );
 }
 
-function RelationshipCard(props: {
+function RelationshipRow(props: {
   campaignId: string;
   relationship: Relationship;
   sourceLabel: string;
   targetLabel: string;
   sessions: Session[];
   activeSessionTitle?: string;
+  editing: boolean;
+  editor?: ReactNode;
   onEdit: () => void;
   onDelete: () => void;
   deleteBusy: boolean;
@@ -204,7 +209,9 @@ function RelationshipCard(props: {
   deleteError: string;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
+  summaryRef: (element: HTMLElement | null) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const [events, setEvents] = useState<RelationshipEvent[] | null>(null);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState("");
@@ -225,20 +232,11 @@ function RelationshipCard(props: {
     }
   }, [props.campaignId, props.relationship.id]);
 
-  useEffect(() => {
-    let current = true;
-    setEvents(null);
-    setEventsLoading(true);
-    setEventsError("");
-    void fetchCampaignRelationshipEvents(props.campaignId, props.relationship.id).then((loaded) => {
-      if (current) setEvents(sortEvents(loaded));
-    }).catch((error: unknown) => {
-      if (current) setEventsError(errorMessage(error, "Could not load relationship history."));
-    }).finally(() => {
-      if (current) setEventsLoading(false);
-    });
-    return () => { current = false; };
-  }, [props.campaignId, props.relationship.id]);
+  const reveal = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (!event.currentTarget.open) return;
+    setExpanded(true);
+    if (events === null && !eventsLoading) void loadEvents();
+  };
 
   const appendEvent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -262,73 +260,97 @@ function RelationshipCard(props: {
 
   const sessionById = new Map(props.sessions.map((session) => [session.id, session]));
   const relationshipTitle = `${props.sourceLabel} → ${props.targetLabel}`;
+  const document = props.relationship.document;
+  const status = document.status.trim();
+  const statEntries = Object.entries(document.stats);
+  const statSummary = [
+    ...statEntries.slice(0, 2).map(([name, stat]) => `${name} ${stat.value}/${stat.max}`),
+    ...(statEntries.length > 2 ? [`+${statEntries.length - 2} more`] : []),
+  ].join(" · ");
   return (
-    <article className="grid min-w-0 gap-3 rounded-2xl border border-border p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <h4 className="min-w-0 flex-1 break-words font-semibold" aria-label={relationshipTitle}>
-          <span>{props.sourceLabel}</span> <span aria-hidden="true" className="text-muted">→</span> <span>{props.targetLabel}</span>
-        </h4>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={props.onEdit} disabled={props.actionsDisabled}>Edit</button>
-          <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={props.onDelete} disabled={props.deleteBusy || props.actionsDisabled}>Delete</button>
-        </div>
-      </div>
-      <p className="text-xs text-muted">Updated {formatDate(props.relationship.updated_at)} · Revision {props.relationship.revision}</p>
-      {props.confirmDelete && (
-        <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${relationshipTitle}`}>
-          <p className="text-sm">Delete this directed relationship?</p>
-          {props.deleteError && <p className="text-sm text-muted" role="alert">{props.deleteError}</p>}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={props.onConfirmDelete} disabled={props.deleteBusy || props.actionsDisabled}>{props.deleteBusy ? "Deleting…" : "Delete relationship"}</button>
-            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={props.onCancelDelete} disabled={props.deleteBusy || props.actionsDisabled}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      <CurrentState document={props.relationship.document} />
-
-      <section className="grid gap-3 rounded-xl border border-border p-3" aria-label="Historical relationship events">
-        <div>
-          <p className="text-xs font-semibold tracking-wide text-muted uppercase">History</p>
-          <h5 className="font-medium">Historical events</h5>
-          <p className="text-xs text-muted">Events are dated and tied to the session where they were recorded; they do not replace current state.</p>
-        </div>
-        {eventsError && (
-          <div className="grid gap-2" role="alert">
-            <p className="text-sm text-muted">{eventsError}</p>
-            <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadEvents(); }} disabled={eventsLoading}>Retry history</button>
+    <article className="grid min-w-0 rounded-2xl border border-border">
+      <details className="group" onToggle={reveal}>
+        <summary
+          ref={props.summaryRef}
+          className="flex cursor-pointer flex-wrap items-start gap-x-2 gap-y-1 rounded-t-2xl p-3 text-sm active:bg-raised group-not-open:rounded-2xl [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden"
+        >
+          <ChevronRight className="mbs-1 size-3.5 shrink-0 text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform group-open:rotate-90" aria-hidden="true" />
+          <span className="min-w-0 flex-1 break-words font-medium">
+            <span>{props.sourceLabel}</span> <span className="sr-only">points to</span> <span aria-hidden="true" className="text-muted">→</span> <span>{props.targetLabel}</span>
+          </span>
+          {(status || statSummary) && (
+            <span className="min-w-0 basis-full truncate text-muted">
+              {status || "No current status recorded"}
+              {statSummary && <span className="tabular-nums"> · {statSummary}</span>}
+            </span>
+          )}
+        </summary>
+        {expanded && (
+          <div className="grid min-w-0 gap-3 border-bs border-border p-3">
+            <p className="text-xs text-muted">Updated {formatDate(props.relationship.updated_at)} · Revision {props.relationship.revision}</p>
+            {props.editor}
+            {!props.editing && (
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={props.onEdit} disabled={props.actionsDisabled}>Edit</button>
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={props.onDelete} disabled={props.deleteBusy || props.actionsDisabled}>Delete</button>
+              </div>
+            )}
+            {props.confirmDelete && (
+              <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${relationshipTitle}`}>
+                <p className="text-sm">Delete this directed relationship?</p>
+                {props.deleteError && <p className="text-sm text-muted" role="alert">{props.deleteError}</p>}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={props.onConfirmDelete} disabled={props.deleteBusy || props.actionsDisabled}>{props.deleteBusy ? "Deleting…" : "Delete relationship"}</button>
+                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={props.onCancelDelete} disabled={props.deleteBusy || props.actionsDisabled}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {!props.editing && <CurrentState document={document} />}
+            <section className="grid gap-3 rounded-xl border border-border p-3" aria-label="Historical relationship events">
+              <div>
+                <p className="text-xs font-semibold tracking-wide text-muted uppercase">History</p>
+                <h4 className="font-medium">Historical events</h4>
+                <p className="text-xs text-muted">Events are dated and tied to the session where they were recorded; they do not replace current state.</p>
+              </div>
+              {eventsError && (
+                <div className="grid gap-2" role="alert">
+                  <p className="text-sm text-muted">{eventsError}</p>
+                  <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadEvents(); }} disabled={eventsLoading}>Retry history</button>
+                </div>
+              )}
+              {eventsLoading && events === null ? <p className="text-sm text-muted" role="status">Loading history…</p> : null}
+              {events && events.length === 0 && !eventsLoading && <p className="text-sm text-muted">No historical events recorded.</p>}
+              {events && events.length > 0 && (
+                <ol className="grid list-none gap-2 p-0">
+                  {events.map((entry) => {
+                    const session = sessionById.get(entry.session_id);
+                    const sessionLabel = session?.title ?? `Session ${entry.session_id.slice(0, 8)}`;
+                    return (
+                      <li key={entry.id} className="grid gap-1 border-is-2 border-border pis-3">
+                        <p className="whitespace-pre-wrap break-words text-sm">{entry.description}</p>
+                        <p className="text-xs text-muted">
+                          <time dateTime={entry.created_at}>{formatDate(entry.created_at)}</time>
+                          {" · "}
+                          <Link className="text-accent underline underline-offset-2" to={`/sessions/${encodeURIComponent(entry.session_id)}`}>{sessionLabel}</Link>
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+              <form className="grid gap-2 border-bs border-border pbs-3" onSubmit={(event) => { void appendEvent(event); }}>
+                <label className="grid gap-1 text-sm">
+                  Append historical event
+                  <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={eventDescription} onChange={(event) => setEventDescription(event.target.value)} required />
+                </label>
+                <p className="text-xs text-muted">New events attach to the campaign&apos;s active session{props.activeSessionTitle ? ` (“${props.activeSessionTitle}”)` : ""}, even when viewing an archived session.</p>
+                {eventError && <p className="text-sm text-muted" role="alert">{eventError}</p>}
+                <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={eventBusy || props.actionsDisabled || (eventsLoading && events === null)}>{eventBusy ? "Adding…" : "Add dated event"}</button>
+              </form>
+            </section>
           </div>
         )}
-        {eventsLoading && events === null ? <p className="text-sm text-muted" role="status">Loading history…</p> : null}
-        {events && events.length === 0 && !eventsLoading && <p className="text-sm text-muted">No historical events recorded.</p>}
-        {events && events.length > 0 && (
-          <ol className="grid list-none gap-2 p-0">
-            {events.map((entry) => {
-              const session = sessionById.get(entry.session_id);
-              const sessionLabel = session?.title ?? `Session ${entry.session_id.slice(0, 8)}`;
-              return (
-                <li key={entry.id} className="grid gap-1 border-is-2 border-border pis-3">
-                  <p className="whitespace-pre-wrap break-words text-sm">{entry.description}</p>
-                  <p className="text-xs text-muted">
-                    <time dateTime={entry.created_at}>{formatDate(entry.created_at)}</time>
-                    {" · "}
-                    <Link className="text-accent underline underline-offset-2" to={`/sessions/${encodeURIComponent(entry.session_id)}`}>{sessionLabel}</Link>
-                  </p>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-        <form className="grid gap-2 border-bs border-border pbs-3" onSubmit={(event) => { void appendEvent(event); }}>
-          <label className="grid gap-1 text-sm">
-            Append historical event
-            <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={eventDescription} onChange={(event) => setEventDescription(event.target.value)} required />
-          </label>
-          <p className="text-xs text-muted">New events attach to the campaign&apos;s active session{props.activeSessionTitle ? ` (“${props.activeSessionTitle}”)` : ""}, even when viewing an archived session.</p>
-          {eventError && <p className="text-sm text-muted" role="alert">{eventError}</p>}
-          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={eventBusy || props.actionsDisabled || (eventsLoading && events === null)}>{eventBusy ? "Adding…" : "Add dated event"}</button>
-        </form>
-      </section>
+      </details>
     </article>
   );
 }
@@ -358,6 +380,10 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
+  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+  const addRelationshipRef = useRef<HTMLButtonElement>(null);
+  const npcDisclosureRef = useRef<HTMLDetailsElement>(null);
+  const summaryRefs = useRef(new Map<string, HTMLElement>());
 
   const loadRelationships = useCallback(async () => {
     const requestId = requestEpoch.next();
@@ -435,6 +461,8 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     setDeleteErrors({});
     setSaving(false);
     setRefreshingLatest(false);
+    setPendingFocusId(null);
+    summaryRefs.current.clear();
     resetEditor();
     void loadRelationships();
     return () => requestEpoch.invalidate();
@@ -458,6 +486,7 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   const openEdit = (relationship: Relationship) => {
     const nextDocument = copyDocument(relationship.document);
     setCreatingRelationship(false);
+    setConfirmDeleteId(null);
     setEditingId(relationship.id);
     setSourceId(relationship.source_id);
     setTargetId(relationship.target_id);
@@ -526,12 +555,14 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
           document,
         });
         setRelationships((current) => [...current, created]);
+        setPendingFocusId(created.id);
       } else if (editingId && draftRevision !== null) {
         const updated = await updateCampaignRelationship(props.campaign.id, editingId, {
           document,
           revision: draftRevision,
         });
         setRelationships((current) => current.map((relationship) => relationship.id === updated.id ? updated : relationship));
+        setPendingFocusId(editingId);
       }
       resetEditor();
     } catch (error) {
@@ -584,6 +615,8 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
       const created = await createCampaignRelationshipSubject(props.campaign.id, name);
       setSubjects((current) => [...current, created]);
       setNpcName("");
+      if (npcDisclosureRef.current) npcDisclosureRef.current.open = false;
+      setPendingFocusId(ADD_RELATIONSHIP_FOCUS);
     } catch (error) {
       setNpcError(errorMessage(error, "Could not create campaign-local NPC."));
     } finally {
@@ -594,11 +627,14 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   const removeRelationship = async (relationshipId: string) => {
     setDeleteBusyId(relationshipId);
     setDeleteErrors((current) => ({ ...current, [relationshipId]: "" }));
+    const index = relationships.findIndex((relationship) => relationship.id === relationshipId);
+    const remaining = relationships.filter((relationship) => relationship.id !== relationshipId);
     try {
       await deleteCampaignRelationship(props.campaign.id, relationshipId);
-      setRelationships((current) => current.filter((relationship) => relationship.id !== relationshipId));
+      setRelationships(remaining);
       setConfirmDeleteId(null);
       if (editingId === relationshipId) resetEditor();
+      setPendingFocusId(index >= 0 && remaining.length > 0 ? remaining[Math.min(index, remaining.length - 1)].id : ADD_RELATIONSHIP_FOCUS);
     } catch (error) {
       setDeleteErrors((current) => ({ ...current, [relationshipId]: errorMessage(error, "Could not delete relationship."), }));
     } finally {
@@ -631,6 +667,166 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     }));
   };
 
+  const editorForm = (creatingRelationship || editingId) && (
+    <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
+      <div>
+        <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit current relationship state"}</h4>
+        <p className="text-xs text-muted">The direction is explicit; editing changes the current document, not its historical events.</p>
+      </div>
+      {creatingRelationship ? (
+        <div className="grid gap-3">
+          <label className="grid min-w-0 gap-1 text-sm">
+            Source
+            <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setEditorError(""); }} required>
+              <option value="">Choose source reference</option>
+              {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
+            </select>
+          </label>
+          <p className="text-center text-sm font-medium text-muted" aria-label="points to">→</p>
+          <label className="grid min-w-0 gap-1 text-sm">
+            Target
+            <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={targetId} onChange={(event) => { setTargetId(event.target.value); setEditorError(""); }} required>
+              <option value="">Choose target reference</option>
+              {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
+            </select>
+          </label>
+        </div>
+      ) : (
+        <p className="break-words rounded-lg border border-border p-3 text-sm font-medium">{subjectLabel(subjectMap.get(sourceId), sourceId)} <span aria-hidden="true" className="text-muted">→</span> {subjectLabel(subjectMap.get(targetId), targetId)}</p>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-bs border-border pbs-3">
+        <div>
+          <p className="text-sm font-medium">Document editor</p>
+          <p className="text-xs text-muted">Serialized document: {serializedDraftLength.toLocaleString()} characters. The server enforces a 16,000-character campaign-wide limit; drafts are never truncated.</p>
+        </div>
+        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={changeAdvancedMode}>
+          {advanced ? "Use native editor" : "Advanced JSON"}
+        </button>
+      </div>
+
+      {advanced ? (
+        <label className="grid gap-1 text-sm">
+          Relationship document JSON
+          <textarea className="min-h-80 rounded-lg border border-border bg-background p-3 font-mono text-xs leading-5" value={rawJson} onChange={(event) => { setRawJson(event.target.value); setEditorError(""); }} rows={18} spellCheck={false} aria-invalid={Boolean(rawValidationError || editorError)} />
+          {rawValidationError && <span className="text-xs text-muted" role="alert">{rawValidationError}</span>}
+        </label>
+      ) : (
+        <div className="grid gap-3">
+          <label className="grid gap-1 text-sm">
+            How they met
+            <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
+          </label>
+          <label className="grid gap-1 text-sm">
+            Current status
+            <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.status} onChange={(event) => updateDraft((current) => ({ ...current, status: event.target.value }))} />
+          </label>
+
+          <fieldset className="grid gap-2 rounded-xl border border-border p-3">
+            <legend className="px-1 text-sm font-medium">Numeric stats</legend>
+            {Object.entries(draft.stats).length === 0 && <p className="text-xs text-muted">No numeric stats recorded.</p>}
+            {Object.entries(draft.stats).map(([name, stat], index) => (
+              <div key={index} className="grid gap-2 rounded-lg border border-border p-2">
+                <label className="grid gap-1 text-sm">
+                  Stat name
+                  <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={name} onChange={(event) => updateStat(index, event.target.value, stat)} required />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["value", "min", "max"] as const).map((field) => (
+                    <label key={field} className="grid min-w-0 gap-1 text-xs text-muted">
+                      {field === "value" ? "Value" : field === "min" ? "Minimum" : "Maximum"}
+                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={stat[field]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateStat(index, name, { ...stat, [field]: value }); }} required />
+                    </label>
+                  ))}
+                </div>
+                <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: Object.fromEntries(Object.entries(current.stats).filter((_, entryIndex) => entryIndex !== index)) }))}>Remove stat</button>
+              </div>
+            ))}
+            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: { ...current.stats, "": { value: 0, min: 0, max: 0 } } }))} disabled={Object.keys(draft.stats).some((name) => !name.trim())}>Add stat</button>
+          </fieldset>
+
+          <fieldset className="grid gap-2 rounded-xl border border-border p-3">
+            <legend className="px-1 text-sm font-medium">Known facts</legend>
+            {draft.known_facts.map((fact, index) => (
+              <div key={index} className="flex min-w-0 items-start gap-2">
+                <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
+                <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: current.known_facts.filter((_, entryIndex) => entryIndex !== index) }))}>Remove</button>
+              </div>
+            ))}
+            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: [...current.known_facts, ""] }))}>Add known fact</button>
+          </fieldset>
+
+          <fieldset className="grid gap-3 rounded-xl border border-border p-3">
+            <legend className="px-1 text-sm font-medium">Custom sections</legend>
+            {draft.sections.map((section, index) => (
+              <div key={section.id} className="grid min-w-0 gap-2 rounded-lg border border-border p-3">
+                <label className="grid gap-1 text-sm">
+                  Section label
+                  <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={section.label} onChange={(event) => updateSection(index, (current) => ({ ...current, label: event.target.value }))} />
+                </label>
+                <label className="grid gap-1 text-sm">
+                  Section type
+                  <select className="min-h-10 rounded-lg border border-border bg-background px-3" value={section.type} onChange={(event) => {
+                    const type = event.target.value as "text" | "list";
+                    updateSection(index, (current) => ({ ...current, type, value: type === "text" ? (Array.isArray(current.value) ? current.value.join("\n") : current.value) : (Array.isArray(current.value) ? current.value : [current.value]) }));
+                  }}>
+                    <option value="text">Text</option>
+                    <option value="list">List</option>
+                  </select>
+                </label>
+                {section.type === "text" ? (
+                  <label className="grid gap-1 text-sm">
+                    Text value
+                    <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={section.value as string} onChange={(event) => updateSection(index, (current) => ({ ...current, value: event.target.value }))} />
+                  </label>
+                ) : (
+                  <div className="grid gap-2">
+                    <span className="text-sm">List values</span>
+                    {(section.value as string[]).map((item, itemIndex) => (
+                      <div key={itemIndex} className="flex min-w-0 items-start gap-2">
+                        <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`${section.label || "Custom section"} item ${itemIndex + 1}`} value={item} onChange={(event) => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).map((value, valueIndex) => valueIndex === itemIndex ? event.target.value : value) }))} />
+                        <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).filter((_, valueIndex) => valueIndex !== itemIndex) }))}>Remove</button>
+                      </div>
+                    ))}
+                    <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: [...current.value as string[], ""] }))}>Add list item</button>
+                  </div>
+                )}
+                <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: current.sections.filter((_, sectionIndex) => sectionIndex !== index) }))}>Remove section</button>
+              </div>
+            ))}
+            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: [...current.sections, { id: crypto.randomUUID(), label: "", type: "text", value: "" }] }))}>Add custom section</button>
+          </fieldset>
+        </div>
+      )}
+
+      {editorError && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="alert">{editorError}</p>}
+      {editorNotice && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="status">{editorNotice}</p>}
+      {conflict && (
+        <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void refreshLatestKeepingDraft(); }} disabled={refreshingLatest}>
+          {refreshingLatest ? "Checking latest…" : "Load latest version, keep my draft"}
+        </button>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving || refreshingLatest}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save current state"}</button>
+        <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={resetEditor} disabled={saving}>Cancel</button>
+      </div>
+    </form>
+  );
+
+  useEffect(() => {
+    if (!pendingFocusId) return;
+    if (pendingFocusId === ADD_RELATIONSHIP_FOCUS) {
+      addRelationshipRef.current?.focus();
+      setPendingFocusId(null);
+      return;
+    }
+    const summary = summaryRefs.current.get(pendingFocusId);
+    if (summary) {
+      summary.focus();
+      setPendingFocusId(null);
+    }
+  }, [pendingFocusId, relationships]);
+
   return (
     <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-relationships-title">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -639,21 +835,26 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
           <h3 id="campaign-relationships-title" className="mbs-1 font-semibold">Relationships</h3>
           <p className="mbs-1 text-sm leading-6 text-muted">Current relationship state is separate from dated historical events. Nothing is extracted automatically.</p>
         </div>
-        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={openCreate} disabled={loading || !subjects.length || saving || refreshingLatest || deleteBusyId !== null}>Add relationship</button>
+        <button ref={addRelationshipRef} type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={openCreate} disabled={loading || !subjects.length || saving || refreshingLatest || deleteBusyId !== null}>Add relationship</button>
       </div>
 
-      <form className="grid gap-2 rounded-xl border border-border bg-surface p-3" onSubmit={(event) => { void createNpc(event); }}>
-        <div>
-          <h4 className="font-medium">Campaign-local NPCs</h4>
-          <p className="text-xs text-muted">Create a campaign-only reference to use as either end of a relationship.</p>
-        </div>
-        <label className="grid gap-1 text-sm">
-          NPC name
-          <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={npcName} onChange={(event) => setNpcName(event.target.value)} required />
-        </label>
-        {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
-        <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading || refreshingLatest}>{subjectBusy ? "Creating…" : "Create local NPC"}</button>
-      </form>
+      {creatingRelationship && editorForm}
+
+      <details ref={npcDisclosureRef} className="group rounded-xl border border-border bg-surface">
+        <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 rounded-t-xl p-3 text-sm font-medium active:bg-raised group-not-open:rounded-xl [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="size-3.5 shrink-0 text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform group-open:rotate-90" aria-hidden="true" />
+          Add local NPC
+          <span className="min-w-0 flex-1 text-sm font-normal text-muted">Create a campaign-only reference to use as either end of a relationship.</span>
+        </summary>
+        <form className="grid gap-2 border-bs border-border p-3" onSubmit={(event) => { void createNpc(event); }}>
+          <label className="grid gap-1 text-sm">
+            NPC name
+            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={npcName} onChange={(event) => setNpcName(event.target.value)} required />
+          </label>
+          {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
+          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading || refreshingLatest}>{subjectBusy ? "Creating…" : "Create local NPC"}</button>
+        </form>
+      </details>
 
       {loadError && (
         <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
@@ -662,158 +863,12 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
         </div>
       )}
       {loading && <p className="text-sm text-muted" role="status">Loading relationships…</p>}
-      {!loading && !loadError && subjects.length === 0 && <p className="text-sm text-muted">No captured relationship references are available yet.</p>}
-
-      {(creatingRelationship || editingId) && (
-        <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
-          <div>
-            <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit current relationship state"}</h4>
-            <p className="text-xs text-muted">The direction is explicit; editing changes the current document, not its historical events.</p>
-          </div>
-          {creatingRelationship ? (
-            <div className="grid gap-3">
-              <label className="grid min-w-0 gap-1 text-sm">
-                Source
-                <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setEditorError(""); }} required>
-                  <option value="">Choose source reference</option>
-                  {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
-                </select>
-              </label>
-              <p className="text-center text-sm font-medium text-muted" aria-label="points to">→</p>
-              <label className="grid min-w-0 gap-1 text-sm">
-                Target
-                <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={targetId} onChange={(event) => { setTargetId(event.target.value); setEditorError(""); }} required>
-                  <option value="">Choose target reference</option>
-                  {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
-                </select>
-              </label>
-            </div>
-          ) : (
-            <p className="break-words rounded-lg border border-border p-3 text-sm font-medium">{subjectLabel(subjectMap.get(sourceId), sourceId)} <span aria-hidden="true" className="text-muted">→</span> {subjectLabel(subjectMap.get(targetId), targetId)}</p>
-          )}
-
-          <div className="flex flex-wrap items-center justify-between gap-2 border-bs border-border pbs-3">
-            <div>
-              <p className="text-sm font-medium">Document editor</p>
-              <p className="text-xs text-muted">Serialized document: {serializedDraftLength.toLocaleString()} characters. The server enforces a 16,000-character campaign-wide limit; drafts are never truncated.</p>
-            </div>
-            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={changeAdvancedMode}>
-              {advanced ? "Use native editor" : "Advanced JSON"}
-            </button>
-          </div>
-
-          {advanced ? (
-            <label className="grid gap-1 text-sm">
-              Relationship document JSON
-              <textarea className="min-h-80 rounded-lg border border-border bg-background p-3 font-mono text-xs leading-5" value={rawJson} onChange={(event) => { setRawJson(event.target.value); setEditorError(""); }} rows={18} spellCheck={false} aria-invalid={Boolean(rawValidationError || editorError)} />
-              {rawValidationError && <span className="text-xs text-muted" role="alert">{rawValidationError}</span>}
-            </label>
-          ) : (
-            <div className="grid gap-3">
-              <label className="grid gap-1 text-sm">
-                How they met
-                <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
-              </label>
-              <label className="grid gap-1 text-sm">
-                Current status
-                <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.status} onChange={(event) => updateDraft((current) => ({ ...current, status: event.target.value }))} />
-              </label>
-
-              <fieldset className="grid gap-2 rounded-xl border border-border p-3">
-                <legend className="px-1 text-sm font-medium">Numeric stats</legend>
-                {Object.entries(draft.stats).length === 0 && <p className="text-xs text-muted">No numeric stats recorded.</p>}
-                {Object.entries(draft.stats).map(([name, stat], index) => (
-                  <div key={index} className="grid gap-2 rounded-lg border border-border p-2">
-                    <label className="grid gap-1 text-sm">
-                      Stat name
-                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={name} onChange={(event) => updateStat(index, event.target.value, stat)} required />
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {(["value", "min", "max"] as const).map((field) => (
-                        <label key={field} className="grid min-w-0 gap-1 text-xs text-muted">
-                          {field === "value" ? "Value" : field === "min" ? "Minimum" : "Maximum"}
-                          <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={stat[field]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateStat(index, name, { ...stat, [field]: value }); }} required />
-                        </label>
-                      ))}
-                    </div>
-                    <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: Object.fromEntries(Object.entries(current.stats).filter((_, entryIndex) => entryIndex !== index)) }))}>Remove stat</button>
-                  </div>
-                ))}
-                <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: { ...current.stats, "": { value: 0, min: 0, max: 0 } } }))} disabled={Object.keys(draft.stats).some((name) => !name.trim())}>Add stat</button>
-              </fieldset>
-
-              <fieldset className="grid gap-2 rounded-xl border border-border p-3">
-                <legend className="px-1 text-sm font-medium">Known facts</legend>
-                {draft.known_facts.map((fact, index) => (
-                  <div key={index} className="flex min-w-0 items-start gap-2">
-                    <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
-                    <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: current.known_facts.filter((_, entryIndex) => entryIndex !== index) }))}>Remove</button>
-                  </div>
-                ))}
-                <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: [...current.known_facts, ""] }))}>Add known fact</button>
-              </fieldset>
-
-              <fieldset className="grid gap-3 rounded-xl border border-border p-3">
-                <legend className="px-1 text-sm font-medium">Custom sections</legend>
-                {draft.sections.map((section, index) => (
-                  <div key={section.id} className="grid min-w-0 gap-2 rounded-lg border border-border p-3">
-                    <label className="grid gap-1 text-sm">
-                      Section label
-                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={section.label} onChange={(event) => updateSection(index, (current) => ({ ...current, label: event.target.value }))} />
-                    </label>
-                    <label className="grid gap-1 text-sm">
-                      Section type
-                      <select className="min-h-10 rounded-lg border border-border bg-background px-3" value={section.type} onChange={(event) => {
-                        const type = event.target.value as "text" | "list";
-                        updateSection(index, (current) => ({ ...current, type, value: type === "text" ? (Array.isArray(current.value) ? current.value.join("\n") : current.value) : (Array.isArray(current.value) ? current.value : [current.value]) }));
-                      }}>
-                        <option value="text">Text</option>
-                        <option value="list">List</option>
-                      </select>
-                    </label>
-                    {section.type === "text" ? (
-                      <label className="grid gap-1 text-sm">
-                        Text value
-                        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={section.value as string} onChange={(event) => updateSection(index, (current) => ({ ...current, value: event.target.value }))} />
-                      </label>
-                    ) : (
-                      <div className="grid gap-2">
-                        <span className="text-sm">List values</span>
-                        {(section.value as string[]).map((item, itemIndex) => (
-                          <div key={itemIndex} className="flex min-w-0 items-start gap-2">
-                            <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`${section.label || "Custom section"} item ${itemIndex + 1}`} value={item} onChange={(event) => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).map((value, valueIndex) => valueIndex === itemIndex ? event.target.value : value) }))} />
-                            <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).filter((_, valueIndex) => valueIndex !== itemIndex) }))}>Remove</button>
-                          </div>
-                        ))}
-                        <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: [...current.value as string[], ""] }))}>Add list item</button>
-                      </div>
-                    )}
-                    <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: current.sections.filter((_, sectionIndex) => sectionIndex !== index) }))}>Remove section</button>
-                  </div>
-                ))}
-                <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: [...current.sections, { id: crypto.randomUUID(), label: "", type: "text", value: "" }] }))}>Add custom section</button>
-              </fieldset>
-            </div>
-          )}
-
-          {editorError && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="alert">{editorError}</p>}
-          {editorNotice && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="status">{editorNotice}</p>}
-          {conflict && (
-            <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void refreshLatestKeepingDraft(); }} disabled={refreshingLatest}>
-              {refreshingLatest ? "Checking latest…" : "Load latest version, keep my draft"}
-            </button>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving || refreshingLatest}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save current state"}</button>
-            <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={resetEditor} disabled={saving}>Cancel</button>
-          </div>
-        </form>
-      )}
+      {!loading && !loadError && subjects.length === 0 && <p className="text-sm text-muted">No captured relationship references are available yet. Open “Add local NPC” above to create one.</p>}
 
       {!loading && !loadError && relationships.length === 0 && <p className="rounded-xl border border-border p-3 text-sm text-muted">No relationships yet. Add one using the captured references or a campaign-local NPC.</p>}
       <div className="grid min-w-0 gap-3">
         {relationships.map((relationship) => (
-          <RelationshipCard
+          <RelationshipRow
             key={relationship.id}
             campaignId={props.campaign.id}
             relationship={relationship}
@@ -821,6 +876,8 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
             targetLabel={subjectLabels.get(relationship.target_id) ?? subjectLabel(subjectMap.get(relationship.target_id), relationship.target_id)}
             sessions={props.sessions}
             activeSessionTitle={activeSessionTitle}
+            editing={editingId === relationship.id}
+            editor={editingId === relationship.id ? editorForm : undefined}
             onEdit={() => openEdit(relationship)}
             onDelete={() => { setConfirmDeleteId(relationship.id); setDeleteErrors((current) => ({ ...current, [relationship.id]: "" })); }}
             deleteBusy={deleteBusyId === relationship.id}
@@ -829,6 +886,7 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
             deleteError={deleteErrors[relationship.id] ?? ""}
             onConfirmDelete={() => { void removeRelationship(relationship.id); }}
             onCancelDelete={() => setConfirmDeleteId(null)}
+            summaryRef={(element) => { if (element) summaryRefs.current.set(relationship.id, element); else summaryRefs.current.delete(relationship.id); }}
           />
         ))}
       </div>
