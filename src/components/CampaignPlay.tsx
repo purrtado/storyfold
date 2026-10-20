@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, ChevronRight, PanelRightOpen, Sparkles, X } from "lucide-react";
+import { PanelRightOpen, Sparkles, X } from "lucide-react";
 import type { Campaign, Message, Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import type { Generation } from "../lib/useChatGeneration";
@@ -199,6 +199,7 @@ export function CampaignPlay(props: {
     <div className="flex min-inline-size-0 flex-1 flex-col">
       <AppHeader
         title={props.campaign?.name ?? "Campaign"}
+        subtitle={props.session ? `${props.session.title}${isActiveSession ? "" : " · Read-only"}` : undefined}
         onOpenSidebar={props.onOpenSidebar}
         actions={panelProps && !docked && <button type="button" className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground" onClick={() => setDetailsOpen(true)}><PanelRightOpen className="size-4" aria-hidden="true" />Campaign</button>}
       />
@@ -212,28 +213,6 @@ export function CampaignPlay(props: {
         </section>
       ) : (
         <>
-          <header className="flex flex-none flex-wrap items-start justify-between gap-4 border-bs border-border px-4 py-4 [padding-inline:clamp(1rem,0.75rem+1vw,2rem)]">
-            <div className="min-w-0">
-              <nav aria-label="Breadcrumb" className="mbs-0 mbe-3 flex flex-wrap items-center gap-2 text-sm text-muted">
-                <Link to="/worlds" className="text-muted no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground">Worlds</Link>
-                <ChevronRight className="size-3.5" aria-hidden="true" />
-                <Link to={`/sessions/${encodeURIComponent(props.campaign.active_session_id)}`} className="text-muted no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground">{props.campaign.name}</Link>
-                <ChevronRight className="size-3.5" aria-hidden="true" />
-                <span aria-current="page">{props.session.title}</span>
-              </nav>
-              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">{isActiveSession ? "Active session" : "Read-only session"}</p>
-              <h1 className="mbs-1 text-xl font-semibold tracking-tight">{props.session.title}</h1>
-              <div className="mbs-2 flex flex-wrap items-center gap-2 text-sm text-muted">
-                <span>{props.campaign.world_snapshot.name}</span>
-                <ChevronRight className="size-3.5" aria-hidden="true" />
-                <span>Playing as {props.campaign.protagonist_snapshot.name}</span>
-              </div>
-            </div>
-            <Link to="/campaigns/new" className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-sm text-foreground no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
-              <BookOpen className="size-4" aria-hidden="true" />New campaign
-            </Link>
-          </header>
-
           {props.messagesError && (
             <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm" role="alert">
               <p className="flex-1 text-muted">{props.messagesError}</p>
