@@ -3,6 +3,7 @@ import { MenuIcon } from "./icons";
 
 export function AppHeader(props: {
   title: string;
+  subtitle?: string;
   onOpenSidebar?: () => void;
   actions?: ReactNode;
 }) {
@@ -18,7 +19,10 @@ export function AppHeader(props: {
           <MenuIcon />
         </button>
       )}
-      <h1 className="flex-1 truncate px-1 text-sm font-medium">{props.title}</h1>
+      <h1 className="flex min-w-0 flex-1 items-baseline gap-2 px-1 text-sm font-medium">
+        <span className="max-w-full flex-none truncate">{props.title}</span>
+        {props.subtitle && <span className="min-w-0 truncate font-normal text-muted">{props.subtitle}</span>}
+      </h1>
       {props.actions}
     </header>
   );

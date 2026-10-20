@@ -17,6 +17,7 @@ import {
   useWorlds,
 } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
+import { Avatar } from "./Avatar";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
 
 type Draft = {
@@ -45,7 +46,10 @@ function CharacterGroundingPreview(props: {
   return (
     <article className="grid gap-2 rounded-lg border border-border bg-background p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h4 className="font-semibold">{props.character.name}</h4>
+        <h4 className="flex items-center gap-2 font-semibold">
+          <Avatar name={props.character.name} imageId={props.character.avatar_id} className="size-6 text-[0.625rem]" />
+          {props.character.name}
+        </h4>
         <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted">{props.source}</span>
       </div>
       <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.character.description}</p>
@@ -354,7 +358,7 @@ export function NewCampaignPage(props: {
                       <select id="campaign-protagonist" className="min-h-11 rounded-lg border border-border bg-background px-3 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" value={draft.protagonistId} onChange={(event) => chooseProtagonist(event.target.value)}>
                         {characters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                       </select>
-                      {protagonist && <div className="rounded-lg bg-surface p-3"><p className="font-medium">{protagonist.name}</p><p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{protagonist.description}</p></div>}
+                      {protagonist && <div className="rounded-lg bg-surface p-3"><p className="flex items-center gap-2 font-medium"><Avatar name={protagonist.name} imageId={protagonist.avatar_id} className="size-6 text-[0.625rem]" />{protagonist.name}</p><p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{protagonist.description}</p></div>}
                       <Link className="text-sm font-medium text-accent underline underline-offset-2" to="/characters">Browse or edit characters</Link>
                     </section>
                   </div>
@@ -408,6 +412,7 @@ export function NewCampaignPage(props: {
                                   />
                                   <span className="grid min-w-0 flex-1 gap-1">
                                     <span className="flex flex-wrap items-center gap-2">
+                                      <Avatar name={character.name} imageId={character.avatar_id} className="size-6 text-[0.625rem]" />
                                       <span className="font-medium text-foreground">{character.name}</span>
                                       <span className="rounded-full border border-border px-2 py-0.5 text-xs">{isProtagonist ? "Playing as" : association ? "World cast" : "Global library"}</span>
                                     </span>

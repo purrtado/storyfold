@@ -325,6 +325,7 @@ describe("captured cast is immutable and drives narration", () => {
       baseline_motivations: "",
       speaking_style: "",
       world_context: "",
+      avatar_id: null,
     });
     expect(created.cast).toEqual([
       {
@@ -337,6 +338,7 @@ describe("captured cast is immutable and drives narration", () => {
         baseline_motivations: "",
         speaking_style: "",
         world_context: "Sworn to the pier.",
+        avatar_id: null,
       },
     ]);
 

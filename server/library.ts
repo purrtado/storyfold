@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type {
   Campaign,
   CampaignStateCategory,
@@ -165,11 +166,25 @@ export function updateWorld(db: Database, id: string, patch: Partial<WorldInput>
 }
 
 export function listCharacters(db: Database): Character[] {
-  return db.query<Character, []>("SELECT * FROM characters ORDER BY created_at, id").all();
+  return db
+    .query<Character, []>(
+      `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+       LEFT JOIN character_avatars ca ON ca.character_id = c.id
+       ORDER BY c.created_at, c.id`,
+    )
+    .all();
 }
 
 export function getCharacter(db: Database, id: string): Character | null {
-  return db.query<Character, [string]>("SELECT * FROM characters WHERE id = ?").get(id) ?? null;
+  return (
+    db
+      .query<Character, [string]>(
+        `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+         LEFT JOIN character_avatars ca ON ca.character_id = c.id
+         WHERE c.id = ?`,
+      )
+      .get(id) ?? null
+  );
 }
 
 export function createCharacter(db: Database, input: CharacterInput): Character {
@@ -183,6 +198,7 @@ export function createCharacter(db: Database, input: CharacterInput): Character 
     background: input.background ?? "",
     baseline_motivations: input.baseline_motivations ?? "",
     speaking_style: input.speaking_style ?? "",
+    avatar_id: null,
     created_at: now,
     updated_at: now,
   };
@@ -231,6 +247,113 @@ export function updateCharacter(
   return next;
 }
 
+/** Image formats accepted for character pictures, by magic-byte detection. */
+export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+
+export type ImageMime = (typeof IMAGE_MIME_TYPES)[number];
+
+export interface ImageRecord {
+  id: string;
+  mime: string;
+  data: Uint8Array<ArrayBuffer>;
+}
+
+/**
+ * Sniffs the image format from magic bytes; null when the bytes match none of
+ * the accepted formats (including SVG, which is never accepted because it can
+ * carry script).
+ */
+export function detectImageMime(bytes: Uint8Array): ImageMime | null {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x45 && // E
+    bytes[10] === 0x42 && // B
+    bytes[11] === 0x50 // P
+  ) {
+    return "image/webp";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 && // G
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x38 && // 8
+    bytes[4] === 0x37 && // 7 (GIF87a)
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    bytes[4] === 0x39 && // 9 (GIF89a)
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  return null;
+}
+
+export function getImage(db: Database, id: string): ImageRecord | null {
+  return (
+    db
+      .query<{ id: string; mime: string; data: Uint8Array<ArrayBuffer> }, [string]>(
+        "SELECT id, mime, data FROM images WHERE id = ?",
+      )
+      .get(id) ?? null
+  );
+}
+
+/**
+ * Stores the bytes content-addressed (lowercase hex sha256) and points the
+ * character at them in one transaction. Identical bytes are deduplicated by
+ * the primary key; the previous image row stays — there is no garbage
+ * collection, because past campaigns still reference their captured snapshot.
+ */
+export function setCharacterAvatar(
+  db: Database,
+  characterId: string,
+  bytes: Uint8Array,
+  mime: ImageMime,
+): Character | null {
+  if (detectImageMime(bytes) !== mime) {
+    throw new ValidationError("image data does not match its declared type");
+  }
+  const id = createHash("sha256").update(bytes).digest("hex");
+  const now = nowIso();
+  const store = db.transaction(() => {
+    db.query(
+      "INSERT INTO images (id, mime, data, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+    ).run(id, mime, bytes, now);
+    db.query(
+      `INSERT INTO character_avatars (character_id, image_id, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(character_id) DO UPDATE SET image_id = excluded.image_id, updated_at = excluded.updated_at`,
+    ).run(characterId, id, now);
+  });
+  store();
+  return getCharacter(db, characterId);
+}
+
+/** Clears the character's picture; the image row itself is kept. */
+export function clearCharacterAvatar(db: Database, characterId: string): Character | null {
+  db.query("DELETE FROM character_avatars WHERE character_id = ?").run(characterId);
+  return getCharacter(db, characterId);
+}
+
 export interface WorldCharacterInput {
   character_id: string;
   context: string;
@@ -256,9 +379,7 @@ export function parseWorldCharacterPatch(body: Record<string, unknown>): Partial
 }
 
 function worldCharacterFromRow(db: Database, row: WorldCharacterRow): WorldCharacter {
-  const character = db
-    .query<Character, [string]>("SELECT * FROM characters WHERE id = ?")
-    .get(row.character_id)!;
+  const character = getCharacter(db, row.character_id)!;
   return { ...row, character };
 }
 
@@ -512,6 +633,7 @@ function characterSnapshot(character: Character, worldContext: string): Characte
     baseline_motivations: character.baseline_motivations,
     speaking_style: character.speaking_style,
     world_context: worldContext,
+    avatar_id: character.avatar_id,
   };
 }
 
@@ -551,7 +673,11 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     if (castIds.length > 0) {
       const placeholders = castIds.map(() => "?").join(", ");
       for (const row of db
-        .query<Character, string[]>(`SELECT * FROM characters WHERE id IN (${placeholders})`)
+        .query<Character, string[]>(
+          `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+           LEFT JOIN character_avatars ca ON ca.character_id = c.id
+           WHERE c.id IN (${placeholders})`,
+        )
         .all(...castIds)) {
         castCharacters.set(row.id, row);
       }

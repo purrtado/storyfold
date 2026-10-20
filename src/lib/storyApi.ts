@@ -167,7 +167,10 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body !== undefined) headers.set("Content-Type", "application/json");
+  // Raw uploads (avatars) declare their own media type; JSON is the default.
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   let response: Response;
   try {
@@ -245,6 +248,33 @@ export async function updateCharacter(id: string, input: CharacterPatch): Promis
       method: "PATCH",
       body: JSON.stringify(input),
     })
+  ).character;
+}
+
+export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
+export const AVATAR_ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,image/gif";
+
+/** Uploads the picture's raw bytes; the server rejects >2 MiB and format mismatches. */
+export async function uploadCharacterAvatar(characterId: string, file: File): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/characters/${encodeURIComponent(characterId)}/avatar`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    )
+  ).character;
+}
+
+export async function deleteCharacterAvatar(characterId: string): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/characters/${encodeURIComponent(characterId)}/avatar`,
+      { method: "DELETE" },
+    )
   ).character;
 }
 
