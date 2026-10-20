@@ -852,7 +852,7 @@ export function CharacterRoster(props: {
                   {(["value", "min", "max"] as const).map((field) => (
                     <label key={field} className="grid min-w-0 gap-1 text-xs text-muted">
                       {field === "value" ? "Value" : field === "min" ? "Minimum" : "Maximum"}
-                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={stat[field]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateStat(index, name, { ...stat, [field]: value }); }} required />
+                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={Number.isNaN(stat[field]) ? "" : stat[field]} onChange={(event) => updateStat(index, name, { ...stat, [field]: event.currentTarget.valueAsNumber })} required />
                     </label>
                   ))}
                 </div>

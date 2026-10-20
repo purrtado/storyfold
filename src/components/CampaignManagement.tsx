@@ -362,6 +362,9 @@ export function CampaignTimelineSection(props: {
   const [sessionError, setSessionError] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [errorFlow, setErrorFlow] = useState<"next" | "fork">("next");
+  const nextFailed = errorFlow === "next" && Boolean(sessionError || pendingSessionId);
+  const forkFailed = errorFlow === "fork" && Boolean(sessionError || pendingSessionId);
 
   const syncAndNavigate = async (sessionId: string) => {
     setPendingSessionId(sessionId);
@@ -379,6 +382,7 @@ export function CampaignTimelineSection(props: {
   };
 
   const createNextSession = async () => {
+    setErrorFlow("next");
     setPendingSessionId(null);
     setSessionBusy(true);
     setSessionError("");
@@ -401,6 +405,7 @@ export function CampaignTimelineSection(props: {
   const forkFromSession = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!forkTarget) return;
+    setErrorFlow("fork");
     if (!forkName.trim()) {
       setSessionError("Enter a name for the forked campaign.");
       return;
@@ -424,7 +429,7 @@ export function CampaignTimelineSection(props: {
     <>
       {props.active && (
         <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="next-session-title">
-          {!ending && !sessionError && !pendingSessionId ? (
+          {!ending && !nextFailed ? (
             <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm font-medium [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEnding(true)} disabled={!props.canEndSession}>
               <span id="next-session-title">End session and start the next</span>
             </button>
@@ -435,13 +440,13 @@ export function CampaignTimelineSection(props: {
                 <p className="mbs-1 text-sm leading-6 text-muted">Write a handoff, review it, then create the next session. The current session closes when you confirm.</p>
               </div>
 
-              {sessionError && (
+              {nextFailed && sessionError && (
                 <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
                   <p className="text-muted">{sessionError}</p>
                   {pendingSessionId && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void syncAndNavigate(pendingSessionId); }} disabled={sessionBusy}>Retry opening new session</button>}
                 </div>
               )}
-              {pendingSessionId && sessionBusy && <p className="text-sm text-muted" role="status">Refreshing campaign and opening the new session…</p>}
+              {nextFailed && pendingSessionId && sessionBusy && <p className="text-sm text-muted" role="status">Refreshing campaign and opening the new session…</p>}
 
               {reviewHandoff ? (
                 <div className="grid gap-3 rounded-xl border border-border bg-surface p-3">
@@ -456,7 +461,7 @@ export function CampaignTimelineSection(props: {
                   </div>
                 </div>
               ) : (
-                <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
+                <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); setErrorFlow("next"); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
                   <label className="grid gap-1 text-sm">
                     Next session title
                     <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={nextTitle} onChange={(event) => setNextTitle(event.target.value)} required />
@@ -500,6 +505,12 @@ export function CampaignTimelineSection(props: {
           <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
             <p className="text-muted">{props.sessionsError}</p>
             <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onReloadSessions(); }}>Retry sessions</button>
+          </div>
+        )}
+        {forkFailed && sessionError && (
+          <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
+            <p className="text-muted">{sessionError}</p>
+            {pendingSessionId && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void syncAndNavigate(pendingSessionId); }} disabled={sessionBusy}>Retry opening forked campaign</button>}
           </div>
         )}
         {props.sessionsLoading ? <p className="text-sm text-muted" role="status">Loading sessions…</p> : null}

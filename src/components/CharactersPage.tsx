@@ -339,7 +339,7 @@ export function CharactersPage(props: {
                       <Avatar name={editor.value.name} imageId={editor.avatarId} className="size-16 text-xl" />
                       <div className="grid content-start gap-2">
                         <div className="flex flex-wrap gap-2">
-                          <label className="pressable inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
+                          <label className="pressable inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
                             Upload picture
                             <input
                               type="file"
