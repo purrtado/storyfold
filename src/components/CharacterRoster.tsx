@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { Campaign, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session } from "../../shared/domain";
+import type { Campaign, CharacterSnapshot, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session } from "../../shared/domain";
+import { Avatar } from "./Avatar";
+import { StatBars } from "./StatBar";
 import { createRequestEpoch } from "../lib/requestEpoch";
 import {
   ApiError,
@@ -138,8 +140,6 @@ function sortEvents(events: RelationshipEvent[]) {
   return [...events].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
-const ADD_RELATIONSHIP_FOCUS = "add-relationship";
-
 function CurrentState({ document }: { document: RelationshipDocument }) {
   const hasContent = document.how_met.trim() || document.status.trim()
     || Object.keys(document.stats).length > 0 || document.known_facts.length > 0 || document.sections.length > 0;
@@ -154,16 +154,9 @@ function CurrentState({ document }: { document: RelationshipDocument }) {
           {document.how_met.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">How they met</p><p className="whitespace-pre-wrap break-words">{document.how_met}</p></div>}
           {document.status.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">Status</p><p className="whitespace-pre-wrap break-words">{document.status}</p></div>}
           {Object.keys(document.stats).length > 0 && (
-            <div className="grid gap-1">
+            <div className="grid gap-1.5">
               <p className="text-xs font-medium text-muted">Stats</p>
-              <dl className="grid gap-1">
-                {Object.entries(document.stats).map(([name, stat]) => (
-                  <div key={name} className="flex flex-wrap justify-between gap-x-3">
-                    <dt className="break-words text-muted">{name}</dt>
-                    <dd className="tabular-nums">{stat.value} <span className="text-muted">({stat.min}–{stat.max})</span></dd>
-                  </div>
-                ))}
-              </dl>
+              <StatBars stats={document.stats} />
             </div>
           )}
           {document.known_facts.length > 0 && (
@@ -355,7 +348,124 @@ function RelationshipRow(props: {
   );
 }
 
-export function RelationshipManagement(props: { campaign: Campaign; sessions: Session[] }) {
+const characterSnapshotFields = [
+  ["appearance", "Appearance"],
+  ["personality", "Personality"],
+  ["background", "Background"],
+  ["baseline_motivations", "Motivations"],
+  ["speaking_style", "Speaking style"],
+] as const;
+
+type RosterEntry = {
+  id: string;
+  name: string;
+  role: string;
+  imageId: string | null;
+  description: string;
+  profile: CharacterSnapshot | null;
+};
+
+function rosterEntries(campaign: Campaign, subjects: RelationshipSubject[]): RosterEntry[] {
+  const fromSnapshot = (character: CharacterSnapshot, role: string): RosterEntry => ({
+    id: character.id,
+    name: character.name,
+    role,
+    imageId: character.avatar_id,
+    description: character.description,
+    profile: character,
+  });
+  return [
+    fromSnapshot(campaign.protagonist_snapshot, "You"),
+    ...campaign.cast.map((character) => fromSnapshot(character, "Cast")),
+    ...campaign.world_snapshot.entries
+      .filter((entry) => entry.kind === "local_npc")
+      .map((entry) => ({ id: entry.id, name: entry.name, role: "Compendium NPC", imageId: null, description: entry.description, profile: null })),
+    ...subjects
+      .filter((subject) => subject.kind === "local_character")
+      .map((subject) => ({ id: subject.id, name: subject.name, role: "Local NPC", imageId: null, description: "", profile: null })),
+  ];
+}
+
+function Profile({ entry }: { entry: RosterEntry }) {
+  const fields = entry.profile ? characterSnapshotFields.filter(([field]) => entry.profile![field]) : [];
+  if (!entry.description && fields.length === 0 && !entry.profile?.world_context) return null;
+  return (
+    <section className="grid gap-2 text-sm" aria-label={`${entry.name} profile`}>
+      {entry.description && <p className="whitespace-pre-wrap leading-6">{entry.description}</p>}
+      {(fields.length > 0 || entry.profile?.world_context) && (
+        <dl className="grid gap-2">
+          {fields.map(([field, label]) => (
+            <div key={field} className="grid gap-0.5">
+              <dt className="text-xs font-medium text-muted">{label}</dt>
+              <dd className="whitespace-pre-wrap leading-6">{entry.profile![field]}</dd>
+            </div>
+          ))}
+          {entry.profile?.world_context && (
+            <div className="grid gap-0.5">
+              <dt className="text-xs font-medium text-muted">In this world</dt>
+              <dd className="whitespace-pre-wrap leading-6">{entry.profile.world_context}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function CharacterCard(props: {
+  entry: RosterEntry;
+  you: boolean;
+  open: boolean;
+  onToggle: () => void;
+  status: string;
+  stats: { label: string; stats: RelationshipDocument["stats"] }[];
+  toggleRef: (element: HTMLButtonElement | null) => void;
+  children: ReactNode;
+}) {
+  const panelId = `character-panel-${props.entry.id}`;
+  return (
+    <article className="grid min-w-0 rounded-2xl border border-border bg-background" aria-label={props.entry.name}>
+      <button
+        ref={props.toggleRef}
+        type="button"
+        aria-expanded={props.open}
+        aria-controls={panelId}
+        onClick={props.onToggle}
+        className="flex min-w-0 items-center gap-3 rounded-2xl p-3 text-start active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+      >
+        <Avatar name={props.entry.name} imageId={props.entry.imageId} className={props.you ? "size-14 text-lg" : "size-11 text-sm"} />
+        <span className="grid min-w-0 flex-1 gap-0.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={`truncate font-semibold ${props.you ? "text-base" : "text-sm"}`}>{props.entry.name}</span>
+            <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.entry.role}</span>
+          </span>
+          {props.status
+            ? <span className="truncate text-sm text-muted">{props.status}</span>
+            : props.you && props.entry.description && <span className="line-clamp-2 text-sm text-muted">{props.entry.description}</span>}
+        </span>
+        <ChevronDown className={`size-4 flex-none text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform ${props.open ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+      {props.stats.length > 0 && (
+        <div className="grid gap-3 px-3 pbe-3">
+          {props.stats.map((group) => (
+            <div key={group.label} className="grid gap-1.5">
+              {props.stats.length > 1 && <p className="text-xs font-medium text-muted">{group.label}</p>}
+              <StatBars stats={group.stats} />
+            </div>
+          ))}
+        </div>
+      )}
+      {props.open && <div id={panelId} className="grid min-w-0 gap-3 border-bs border-border p-3">{props.children}</div>}
+    </article>
+  );
+}
+
+export function CharacterRoster(props: {
+  campaign: Campaign;
+  sessions: Session[];
+  openId: string | null;
+  onOpenChange: (id: string | null) => void;
+}) {
   const [requestEpoch] = useState(createRequestEpoch);
   const [subjects, setSubjects] = useState<RelationshipSubject[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -381,9 +491,10 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
-  const addRelationshipRef = useRef<HTMLButtonElement>(null);
+  const [createCardId, setCreateCardId] = useState<string | null>(null);
   const npcDisclosureRef = useRef<HTMLDetailsElement>(null);
   const summaryRefs = useRef(new Map<string, HTMLElement>());
+  const cardRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const loadRelationships = useCallback(async () => {
     const requestId = requestEpoch.next();
@@ -425,10 +536,11 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     () => new Map<string, RelationshipSubject>(subjects.map((subject): [string, RelationshipSubject] => [subject.id, subject])),
     [subjects],
   );
-  const protagonistSourceId = useMemo(() => {
-    const protagonistId = props.campaign.protagonist_snapshot.id;
-    return subjects.some((subject) => subject.id === protagonistId && subject.kind === "character") ? protagonistId : "";
-  }, [props.campaign.protagonist_snapshot.id, subjects]);
+  const protagonistId = props.campaign.protagonist_snapshot.id;
+  const roster = useMemo(() => rosterEntries(props.campaign, subjects), [props.campaign, subjects]);
+  const rosterNames = useMemo(() => new Map(roster.map((entry) => [entry.id, entry.name])), [roster]);
+  const cardOwner = (relationship: Relationship) =>
+    relationship.source_id === protagonistId ? relationship.target_id : relationship.source_id;
   const activeSessionTitle = props.sessions.find((session) => session.id === props.campaign.active_session_id)?.title;
   const rawDocument = advanced ? parseDocumentJson(rawJson) : null;
   const rawValidationError = rawDocument?.error ?? "";
@@ -438,6 +550,7 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
 
   const resetEditor = useCallback(() => {
     setCreatingRelationship(false);
+    setCreateCardId(null);
     setEditingId(null);
     setSourceId("");
     setTargetId("");
@@ -468,11 +581,12 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
     return () => requestEpoch.invalidate();
   }, [loadRelationships, requestEpoch, resetEditor]);
 
-  const openCreate = () => {
+  const openCreate = (cardId: string) => {
     setCreatingRelationship(true);
+    setCreateCardId(cardId);
     setEditingId(null);
-    setSourceId(protagonistSourceId);
-    setTargetId("");
+    setSourceId(subjectMap.has(cardId) ? cardId : "");
+    setTargetId(cardId === protagonistId ? "" : protagonistId);
     const nextDocument = emptyDocument();
     setDraft(nextDocument);
     setDraftRevision(null);
@@ -616,7 +730,8 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
       setSubjects((current) => [...current, created]);
       setNpcName("");
       if (npcDisclosureRef.current) npcDisclosureRef.current.open = false;
-      setPendingFocusId(ADD_RELATIONSHIP_FOCUS);
+      props.onOpenChange(created.id);
+      setPendingFocusId(`card:${created.id}`);
     } catch (error) {
       setNpcError(errorMessage(error, "Could not create campaign-local NPC."));
     } finally {
@@ -627,14 +742,16 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
   const removeRelationship = async (relationshipId: string) => {
     setDeleteBusyId(relationshipId);
     setDeleteErrors((current) => ({ ...current, [relationshipId]: "" }));
-    const index = relationships.findIndex((relationship) => relationship.id === relationshipId);
+    const deleted = relationships.find((relationship) => relationship.id === relationshipId);
     const remaining = relationships.filter((relationship) => relationship.id !== relationshipId);
     try {
       await deleteCampaignRelationship(props.campaign.id, relationshipId);
       setRelationships(remaining);
       setConfirmDeleteId(null);
       if (editingId === relationshipId) resetEditor();
-      setPendingFocusId(index >= 0 && remaining.length > 0 ? remaining[Math.min(index, remaining.length - 1)].id : ADD_RELATIONSHIP_FOCUS);
+      const owner = deleted ? cardOwner(deleted) : protagonistId;
+      const sibling = remaining.find((relationship) => cardOwner(relationship) === owner);
+      setPendingFocusId(sibling ? sibling.id : `card:${owner}`);
     } catch (error) {
       setDeleteErrors((current) => ({ ...current, [relationshipId]: errorMessage(error, "Could not delete relationship."), }));
     } finally {
@@ -815,46 +932,47 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
 
   useEffect(() => {
     if (!pendingFocusId) return;
-    if (pendingFocusId === ADD_RELATIONSHIP_FOCUS) {
-      addRelationshipRef.current?.focus();
-      setPendingFocusId(null);
-      return;
-    }
-    const summary = summaryRefs.current.get(pendingFocusId);
-    if (summary) {
-      summary.focus();
+    const target = pendingFocusId.startsWith("card:")
+      ? cardRefs.current.get(pendingFocusId.slice(5))
+      : summaryRefs.current.get(pendingFocusId);
+    if (target) {
+      target.focus();
       setPendingFocusId(null);
     }
-  }, [pendingFocusId, relationships]);
+  }, [pendingFocusId, relationships, subjects]);
+
+  useEffect(() => {
+    if (props.openId) cardRefs.current.get(props.openId)?.scrollIntoView({ block: "nearest" });
+  }, [props.openId]);
+
+  const rosterIds = new Set(roster.map((entry) => entry.id));
+  const orphans = relationships.filter((relationship) => !rosterIds.has(cardOwner(relationship)));
+  const actionsDisabled = saving || refreshingLatest || deleteBusyId !== null;
+  const relationshipRow = (relationship: Relationship) => (
+    <RelationshipRow
+      key={relationship.id}
+      campaignId={props.campaign.id}
+      relationship={relationship}
+      sourceLabel={relationship.source_id === protagonistId ? "You" : rosterNames.get(relationship.source_id) ?? subjectLabel(subjectMap.get(relationship.source_id), relationship.source_id)}
+      targetLabel={relationship.target_id === protagonistId ? "You" : rosterNames.get(relationship.target_id) ?? subjectLabel(subjectMap.get(relationship.target_id), relationship.target_id)}
+      sessions={props.sessions}
+      activeSessionTitle={activeSessionTitle}
+      editing={editingId === relationship.id}
+      editor={editingId === relationship.id ? editorForm : undefined}
+      onEdit={() => openEdit(relationship)}
+      onDelete={() => { setConfirmDeleteId(relationship.id); setDeleteErrors((current) => ({ ...current, [relationship.id]: "" })); }}
+      deleteBusy={deleteBusyId === relationship.id}
+      actionsDisabled={actionsDisabled}
+      confirmDelete={confirmDeleteId === relationship.id}
+      deleteError={deleteErrors[relationship.id] ?? ""}
+      onConfirmDelete={() => { void removeRelationship(relationship.id); }}
+      onCancelDelete={() => setConfirmDeleteId(null)}
+      summaryRef={(element) => { if (element) summaryRefs.current.set(relationship.id, element); else summaryRefs.current.delete(relationship.id); }}
+    />
+  );
 
   return (
-    <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-relationships-title">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="text-xs font-medium text-muted">Directed campaign relationships</p>
-          <h3 id="campaign-relationships-title" className="mbs-1 font-semibold">Relationships</h3>
-          <p className="mbs-1 text-sm leading-6 text-muted">Current relationship state is separate from dated historical events. Nothing is extracted automatically.</p>
-        </div>
-        <button ref={addRelationshipRef} type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={openCreate} disabled={loading || !subjects.length || saving || refreshingLatest || deleteBusyId !== null}>Add relationship</button>
-      </div>
-
-      {creatingRelationship && editorForm}
-
-      <details ref={npcDisclosureRef} className="group rounded-xl border border-border bg-surface">
-        <summary className="flex cursor-pointer items-center gap-2 rounded-t-xl p-3 text-sm font-medium active:bg-raised group-not-open:rounded-xl [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
-          <ChevronRight className="size-3.5 shrink-0 text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform group-open:rotate-90" aria-hidden="true" />
-          Add local NPC
-        </summary>
-        <form className="grid gap-2 border-bs border-border p-3" onSubmit={(event) => { void createNpc(event); }}>
-          <label className="grid gap-1 text-sm">
-            NPC name
-            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={npcName} onChange={(event) => setNpcName(event.target.value)} required />
-          </label>
-          {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
-          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading || refreshingLatest}>{subjectBusy ? "Creating…" : "Create local NPC"}</button>
-        </form>
-      </details>
-
+    <section className="grid gap-3" aria-label="Characters">
       {loadError && (
         <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
           <p className="text-muted">{loadError}</p>
@@ -862,33 +980,72 @@ export function RelationshipManagement(props: { campaign: Campaign; sessions: Se
         </div>
       )}
       {loading && <p className="text-sm text-muted" role="status">Loading relationships…</p>}
-      {!loading && !loadError && subjects.length === 0 && <p className="text-sm text-muted">No captured relationship references are available yet. Open “Add local NPC” above to create one.</p>}
 
-      {!loading && !loadError && relationships.length === 0 && <p className="rounded-xl border border-border p-3 text-sm text-muted">No relationships yet. Add one using the captured references or a campaign-local NPC.</p>}
-      <div className="grid min-w-0 gap-3">
-        {relationships.map((relationship) => (
-          <RelationshipRow
-            key={relationship.id}
-            campaignId={props.campaign.id}
-            relationship={relationship}
-            sourceLabel={subjectLabels.get(relationship.source_id) ?? subjectLabel(subjectMap.get(relationship.source_id), relationship.source_id)}
-            targetLabel={subjectLabels.get(relationship.target_id) ?? subjectLabel(subjectMap.get(relationship.target_id), relationship.target_id)}
-            sessions={props.sessions}
-            activeSessionTitle={activeSessionTitle}
-            editing={editingId === relationship.id}
-            editor={editingId === relationship.id ? editorForm : undefined}
-            onEdit={() => openEdit(relationship)}
-            onDelete={() => { setConfirmDeleteId(relationship.id); setDeleteErrors((current) => ({ ...current, [relationship.id]: "" })); }}
-            deleteBusy={deleteBusyId === relationship.id}
-            actionsDisabled={saving || refreshingLatest || deleteBusyId !== null}
-            confirmDelete={confirmDeleteId === relationship.id}
-            deleteError={deleteErrors[relationship.id] ?? ""}
-            onConfirmDelete={() => { void removeRelationship(relationship.id); }}
-            onCancelDelete={() => setConfirmDeleteId(null)}
-            summaryRef={(element) => { if (element) summaryRefs.current.set(relationship.id, element); else summaryRefs.current.delete(relationship.id); }}
-          />
-        ))}
-      </div>
+      {roster.map((entry) => {
+        const you = entry.id === protagonistId;
+        const owned = relationships.filter((relationship) => cardOwner(relationship) === entry.id);
+        const towardYou = you ? undefined : owned.find((relationship) => relationship.target_id === protagonistId);
+        const fromYou = you ? undefined : owned.find((relationship) => relationship.source_id === protagonistId);
+        const stats = [
+          ...(towardYou && Object.keys(towardYou.document.stats).length > 0 ? [{ label: "How they see you", stats: towardYou.document.stats }] : []),
+          ...(fromYou && Object.keys(fromYou.document.stats).length > 0 ? [{ label: "How you see them", stats: fromYou.document.stats }] : []),
+        ];
+        const open = props.openId === entry.id;
+        return (
+          <CharacterCard
+            key={entry.id}
+            entry={entry}
+            you={you}
+            open={open}
+            onToggle={() => props.onOpenChange(open ? null : entry.id)}
+            status={towardYou?.document.status.trim() || fromYou?.document.status.trim() || ""}
+            stats={stats}
+            toggleRef={(element) => { if (element) cardRefs.current.set(entry.id, element); else cardRefs.current.delete(entry.id); }}
+          >
+            <Profile entry={entry} />
+            {owned.length > 0 && (
+              <section className="grid min-w-0 gap-2" aria-label={`${entry.name} relationships`}>
+                <p className="text-xs font-semibold tracking-wide text-muted uppercase">Relationships</p>
+                {owned.map(relationshipRow)}
+              </section>
+            )}
+            {createCardId === entry.id && editorForm}
+            {createCardId !== entry.id && (
+              <button
+                type="button"
+                className="pressable inline-flex min-h-10 w-fit items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                onClick={() => openCreate(entry.id)}
+                disabled={loading || Boolean(loadError) || actionsDisabled}
+              >
+                <Plus className="size-4" aria-hidden="true" />Add relationship
+              </button>
+            )}
+          </CharacterCard>
+        );
+      })}
+
+      {orphans.length > 0 && (
+        <section className="grid min-w-0 gap-2" aria-label="Other relationships">
+          <p className="text-xs font-semibold tracking-wide text-muted uppercase">Other relationships</p>
+          {orphans.map(relationshipRow)}
+        </section>
+      )}
+
+      <details ref={npcDisclosureRef} className="group rounded-xl border border-dashed border-border">
+        <summary className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-3 text-sm text-muted active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
+          <Plus className="size-4 shrink-0" aria-hidden="true" />
+          Add someone you met
+        </summary>
+        <form className="grid gap-2 border-bs border-border p-3" onSubmit={(event) => { void createNpc(event); }}>
+          <label className="grid gap-1 text-sm">
+            Name
+            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={npcName} onChange={(event) => setNpcName(event.target.value)} required />
+          </label>
+          <p className="text-xs text-muted">Adds a campaign-only character you can track relationships with.</p>
+          {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
+          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading || refreshingLatest}>{subjectBusy ? "Adding…" : "Add character"}</button>
+        </form>
+      </details>
     </section>
   );
 }

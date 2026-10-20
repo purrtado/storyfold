@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { CAMPAIGN_STATE_CATEGORIES, type Campaign, type CampaignStateCategory, type CampaignStateItem, type CampaignStateSubjectKind, type Session } from "../../shared/domain";
 import {
@@ -228,19 +229,16 @@ export function CampaignStateSection(props: {
   };
 
   return (
-    <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-state-title">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-xs font-medium text-muted">Persistent campaign memory</p>
-          <h3 id="campaign-state-title" className="mbs-1 font-semibold">Campaign state</h3>
-        </div>
+    <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-label="Campaign notes">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm text-muted">Goals, knowledge, and journal the narrator keeps in mind.</p>
         <button
           type="button"
-          className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          className="pressable inline-flex min-h-10 flex-none items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
           onClick={openNewItem}
           disabled={stateBusy}
         >
-          Add state
+          <Plus className="size-4" aria-hidden="true" />Add note
         </button>
       </div>
       {!props.active && (
@@ -267,7 +265,7 @@ export function CampaignStateSection(props: {
 
       {(creatingItem || editingId) && (
         <form className="grid gap-3 rounded-xl border border-border bg-surface p-3" onSubmit={(event) => { void saveItem(event); }}>
-          <h4 className="font-medium">{editingId ? "Edit state" : "Add campaign state"}</h4>
+          <h4 className="font-medium">{editingId ? "Edit note" : "Add note"}</h4>
           <label className="grid gap-1 text-sm">
             Category
             <select className="min-h-11 rounded-lg border border-border bg-background px-3" value={formCategory} onChange={(event) => setFormCategory(event.target.value as CampaignStateCategory)}>
@@ -300,40 +298,37 @@ export function CampaignStateSection(props: {
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={stateBusy}>
-              {stateBusy ? "Saving…" : "Save state"}
+              {stateBusy ? "Saving…" : "Save note"}
             </button>
             <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={clearItemForm} disabled={stateBusy}>Cancel</button>
           </div>
         </form>
       )}
 
-      {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No campaign state yet. Add a goal, fact, attribute, or journal entry.</p> : null}
+      {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No notes yet. Add a goal, fact, attribute, or journal entry.</p> : null}
       {items && CAMPAIGN_STATE_CATEGORIES.map((category) => {
         const categoryItems = sortCampaignStateItems(items, category);
         if (categoryItems.length === 0) return null;
         return (
           <section key={category} className="grid gap-2" aria-label={`${categoryLabels[category]} state`}>
-            <h4 className="text-sm font-medium">{categoryLabels[category]}</h4>
-            <ul className="grid list-none gap-2 p-0">
+            <h4 className="text-xs font-semibold tracking-wide text-muted uppercase">{categoryLabels[category]}</h4>
+            <ul className="grid list-none divide-y divide-border rounded-xl border border-border bg-background p-0">
               {categoryItems.map((item) => (
-                <li key={item.id} className="grid gap-2 rounded-xl border border-border p-3">
-                  <div className="grid gap-1">
-                    <h5 className="font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
-                    <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
-                    <p className="text-xs text-muted">
-                      {category === "journal" ? `Added ${formatDate(item.created_at)}` : `Updated ${formatDate(item.updated_at)}`}
-                    </p>
+                <li key={item.id} className="grid gap-2 p-3">
+                  <div className="flex items-start gap-2">
+                    <div className="grid min-w-0 flex-1 gap-0.5">
+                      <h5 className="text-sm font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
+                      <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
+                      {category === "journal" && <p className="text-xs text-muted">{formatDate(item.created_at)}</p>}
+                    </div>
+                    <button type="button" className="pressable inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground" onClick={() => openEditItem(item)} disabled={stateBusy} aria-label={`Edit note about ${item.subject}`}><Pencil className="size-4" aria-hidden="true" /></button>
+                    <button type="button" className="pressable inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground" onClick={() => setConfirmDeleteId(item.id)} disabled={stateBusy} aria-label={`Delete note about ${item.subject}`}><Trash2 className="size-4" aria-hidden="true" /></button>
                   </div>
-                  {confirmDeleteId === item.id ? (
-                    <div className="flex flex-wrap items-center gap-2" aria-label={`Confirm deleting ${item.subject}`}>
-                      <span className="text-sm text-muted">Delete this state item?</span>
+                  {confirmDeleteId === item.id && (
+                    <div className="flex flex-wrap items-center gap-2" role="group" aria-label={`Confirm deleting ${item.subject}`}>
+                      <span className="text-sm text-muted">Delete this note?</span>
                       <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted" onClick={() => { void removeItem(item.id); }} disabled={stateBusy}>{stateBusy ? "Deleting…" : "Delete"}</button>
                       <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setConfirmDeleteId(null)} disabled={stateBusy}>Cancel</button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => openEditItem(item)} disabled={stateBusy}>Edit</button>
-                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setConfirmDeleteId(item.id)} disabled={stateBusy}>Delete</button>
                     </div>
                   )}
                 </li>
@@ -366,6 +361,7 @@ export function CampaignTimelineSection(props: {
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const [ending, setEnding] = useState(false);
 
   const syncAndNavigate = async (sessionId: string) => {
     setPendingSessionId(sessionId);
@@ -422,11 +418,67 @@ export function CampaignTimelineSection(props: {
     }
   };
 
-  const activeSession = props.sessions.find((entry) => entry.id === props.campaign.active_session_id);
   const orderedSessions = [...props.sessions].sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   return (
     <>
+      {props.active && (
+        <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="next-session-title">
+          {!ending && !sessionError && !pendingSessionId ? (
+            <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm font-medium [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEnding(true)} disabled={!props.canEndSession}>
+              <span id="next-session-title">End session and start the next</span>
+            </button>
+          ) : (
+            <>
+              <div>
+                <h3 id="next-session-title" className="font-semibold">Start the next session</h3>
+                <p className="mbs-1 text-sm leading-6 text-muted">Write a handoff, review it, then create the next session. The current session closes when you confirm.</p>
+              </div>
+
+              {sessionError && (
+                <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
+                  <p className="text-muted">{sessionError}</p>
+                  {pendingSessionId && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void syncAndNavigate(pendingSessionId); }} disabled={sessionBusy}>Retry opening new session</button>}
+                </div>
+              )}
+              {pendingSessionId && sessionBusy && <p className="text-sm text-muted" role="status">Refreshing campaign and opening the new session…</p>}
+
+              {reviewHandoff ? (
+                <div className="grid gap-3 rounded-xl border border-border bg-surface p-3">
+                  <h4 className="font-medium">Review next session</h4>
+                  <p className="text-sm font-medium">{nextTitle.trim()}</p>
+                  <blockquote className="whitespace-pre-wrap border-is-2 border-border pis-3 text-sm leading-6 text-muted">{handoff.trim()}</blockquote>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => { void createNextSession(); }} disabled={!props.canEndSession || sessionBusy}>
+                      {sessionBusy ? "Starting…" : "Confirm and start next session"}
+                    </button>
+                    <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm" onClick={() => { setReviewHandoff(false); setSessionError(""); }} disabled={sessionBusy}>Edit handoff</button>
+                  </div>
+                </div>
+              ) : (
+                <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
+                  <label className="grid gap-1 text-sm">
+                    Next session title
+                    <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={nextTitle} onChange={(event) => setNextTitle(event.target.value)} required />
+                  </label>
+                  <label className="grid gap-1 text-sm">
+                    Handoff to carry forward
+                    <textarea className="min-h-28 rounded-lg border border-border bg-background p-3" value={handoff} onChange={(event) => setHandoff(event.target.value)} required rows={5} />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="submit" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={!props.canEndSession || sessionBusy}>
+                      Review handoff
+                    </button>
+                    <button type="button" className="pressable min-h-11 rounded-lg px-4 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setEnding(false); setSessionError(""); }} disabled={sessionBusy}>Cancel</button>
+                  </div>
+                </form>
+              )}
+            </>
+          )}
+          {!props.canEndSession && <p className="text-xs text-muted">Wait for narration and transcript loading to finish before ending the session.</p>}
+        </section>
+      )}
+
       {props.campaign.forked_from_session_id && (
         <section className="mbs-5 grid gap-2 border-bs border-border pbs-4" aria-labelledby="campaign-origin-title">
           <p className="text-xs font-medium text-muted">Campaign provenance</p>
@@ -442,19 +494,7 @@ export function CampaignTimelineSection(props: {
       )}
 
       <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-sessions-title">
-        <div>
-          <p className="text-xs font-medium text-muted">Campaign timeline</p>
-          <h3 id="campaign-sessions-title" className="mbs-1 font-semibold">Sessions</h3>
-        </div>
-        <div className="grid gap-1 rounded-xl border border-border p-3">
-          <p className="text-xs font-medium text-muted">Active session</p>
-          {activeSession ? (
-            <Link to={`/sessions/${encodeURIComponent(activeSession.id)}`} className="font-medium text-accent underline underline-offset-2">{activeSession.title}</Link>
-          ) : (
-            <Link to={`/sessions/${encodeURIComponent(props.campaign.active_session_id)}`} className="font-medium text-accent underline underline-offset-2">Open active session</Link>
-          )}
-          {props.active && <p className="text-xs text-muted">You are viewing the active session.</p>}
-        </div>
+        <h3 id="campaign-sessions-title" className="text-xs font-semibold tracking-wide text-muted uppercase">Sessions</h3>
 
         {props.sessionsError && (
           <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
@@ -500,53 +540,6 @@ export function CampaignTimelineSection(props: {
         )}
         {!props.sessionsLoading && props.sessions.length === 0 && !props.sessionsError && <p className="text-sm text-muted">No sessions found for this campaign.</p>}
       </section>
-
-      {props.active && (
-        <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="next-session-title">
-          <div>
-            <p className="text-xs font-medium text-muted">Close this session with a checkpoint</p>
-            <h3 id="next-session-title" className="mbs-1 font-semibold">Start the next session</h3>
-            <p className="mbs-1 text-sm leading-6 text-muted">Write a handoff, review it, then create the next session. The current session closes when you confirm.</p>
-          </div>
-
-          {sessionError && (
-            <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
-              <p className="text-muted">{sessionError}</p>
-              {pendingSessionId && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void syncAndNavigate(pendingSessionId); }} disabled={sessionBusy}>Retry opening new session</button>}
-            </div>
-          )}
-          {pendingSessionId && sessionBusy && <p className="text-sm text-muted" role="status">Refreshing campaign and opening the new session…</p>}
-
-          {reviewHandoff ? (
-            <div className="grid gap-3 rounded-xl border border-border bg-surface p-3">
-              <h4 className="font-medium">Review next session</h4>
-              <p className="text-sm font-medium">{nextTitle.trim()}</p>
-              <blockquote className="whitespace-pre-wrap border-is-2 border-border pis-3 text-sm leading-6 text-muted">{handoff.trim()}</blockquote>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => { void createNextSession(); }} disabled={!props.canEndSession || sessionBusy}>
-                  {sessionBusy ? "Starting…" : "Confirm and start next session"}
-                </button>
-                <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm" onClick={() => { setReviewHandoff(false); setSessionError(""); }} disabled={sessionBusy}>Edit handoff</button>
-              </div>
-            </div>
-          ) : (
-            <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
-              <label className="grid gap-1 text-sm">
-                Next session title
-                <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={nextTitle} onChange={(event) => setNextTitle(event.target.value)} required />
-              </label>
-              <label className="grid gap-1 text-sm">
-                Handoff to carry forward
-                <textarea className="min-h-28 rounded-lg border border-border bg-background p-3" value={handoff} onChange={(event) => setHandoff(event.target.value)} required rows={5} />
-              </label>
-              <button type="submit" className="pressable min-h-11 w-fit rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={!props.canEndSession || sessionBusy}>
-                Review handoff
-              </button>
-              {!props.canEndSession && <p className="text-xs text-muted">Wait for narration and transcript loading to finish before ending the session.</p>}
-            </form>
-          )}
-        </section>
-      )}
     </>
   );
 }
