@@ -24,6 +24,7 @@ import {
   ValidationError,
   associateWorldCharacter,
   beginNextSession,
+  clearCharacterAvatar,
   createCampaignStateItem,
   createCampaign,
   createCharacter,
@@ -35,6 +36,7 @@ import {
   forkCampaignFromSession,
   getCampaign,
   getCharacter,
+  getImage,
   getSession,
   getWorld,
   listCampaignSessions,
@@ -44,6 +46,7 @@ import {
   listWorldCharacters,
   listWorldEntries,
   listWorlds,
+  IMAGE_MIME_TYPES,
   parseCampaignInput,
   parseCampaignStateInput,
   parseCampaignStatePatch,
@@ -57,6 +60,7 @@ import {
   parseWorldEntryPatch,
   parseWorldInput,
   parseWorldPatch,
+  setCharacterAvatar,
   updateCampaignStateItem,
   updateCharacter,
   updateWorld,
@@ -76,6 +80,7 @@ import {
   updateRelationship,
 } from "./relationships";
 import {
+  AVATAR_BODY_MAX_BYTES,
   BODY_LIMITS,
   hasTrustedOrigin,
   isJsonContentType,
@@ -84,6 +89,7 @@ import {
   jsonResponse,
   preflightResponse,
   readJsonBody,
+  readRawBody,
   trustedOrigin,
   withCors,
 } from "./security";
@@ -271,6 +277,63 @@ async function handleCharacters(request: Request, id: string | undefined, db: Da
     }
   }
   return jsonError(405, "Method not allowed");
+}
+
+/**
+ * Character pictures are raw byte uploads, not multipart: the declared content
+ * type must be one of the four accepted image formats, the magic bytes must
+ * agree with it (SVG and everything else is rejected), and the body caps at
+ * 2 MiB — the avatar route's own limit, not the JSON body cap. PUT is not in
+ * the generic mutating set, so the trusted-Origin rule is enforced here.
+ */
+async function handleCharacterAvatar(
+  request: Request,
+  id: string | undefined,
+  db: Database,
+): Promise<Response> {
+  if (!hasTrustedOrigin(request)) return jsonError(403, "Origin not allowed");
+  if (id === undefined) return notFound("Unknown character");
+  const existing = getCharacter(db, id);
+  if (!existing) return notFound("Unknown character");
+
+  if (request.method === "PUT") {
+    const declared = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (!(IMAGE_MIME_TYPES as readonly string[]).includes(declared)) {
+      return jsonError(415, "Content-Type must be image/png, image/jpeg, image/webp, or image/gif");
+    }
+    const body = await readRawBody(request, AVATAR_BODY_MAX_BYTES);
+    if (!body.ok) return body.response;
+    if (body.data.byteLength === 0) return jsonError(400, "Request body required");
+    try {
+      const character = setCharacterAvatar(db, id, body.data, declared as (typeof IMAGE_MIME_TYPES)[number]);
+      return character ? jsonResponse({ character }) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    const character = clearCharacterAvatar(db, id);
+    return character ? jsonResponse({ character }) : notFound("Unknown character");
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+/**
+ * Images are content-addressed and immutable, so they cache forever; the
+ * response mime is the stored one, never re-sniffed.
+ */
+function handleImageGet(request: Request, id: string | undefined, db: Database): Response {
+  if (request.method !== "GET") return jsonError(405, "Method not allowed");
+  if (id === undefined) return notFound("Unknown image");
+  const image = getImage(db, id);
+  if (!image) return notFound("Unknown image");
+  return new Response(image.data, {
+    headers: {
+      "content-type": image.mime,
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 /**
@@ -678,7 +741,11 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
     }
     return handleWorlds(request, segments[2], ctx.db);
   }
-  if (resource === "characters") return handleCharacters(request, segments[2], ctx.db);
+  if (resource === "characters") {
+    if (segments[3] === "avatar") return handleCharacterAvatar(request, segments[2], ctx.db);
+    return handleCharacters(request, segments[2], ctx.db);
+  }
+  if (resource === "images") return handleImageGet(request, segments[2], ctx.db);
   if (resource === "campaigns") {
     if (segments[3] === "state") return handleCampaignState(request, segments[2], segments[4], ctx);
     if (segments[3] === "sessions") return handleCampaignSessions(request, segments[2], ctx);

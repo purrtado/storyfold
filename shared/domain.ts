@@ -45,6 +45,8 @@ export interface Character {
   background: string;
   baseline_motivations: string;
   speaking_style: string;
+  /** Content-addressed image id (sha256 hex), null when no picture was uploaded. */
+  avatar_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +67,8 @@ export interface CharacterSnapshot {
   baseline_motivations: string;
   speaking_style: string;
   world_context: string;
+  /** Captured image id at campaign creation; never re-resolved against the library. */
+  avatar_id: string | null;
 }
 
 /** Association of a global character with a world plus freeform world-specific context. */

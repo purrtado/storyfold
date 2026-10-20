@@ -197,6 +197,19 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE UNIQUE INDEX IF NOT EXISTS messages_one_pending
   ON messages(session_id) WHERE role = 'assistant' AND status = 'pending';
+
+CREATE TABLE IF NOT EXISTS images (
+  id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')),
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_avatars (
+  character_id TEXT PRIMARY KEY REFERENCES characters(id),
+  image_id TEXT NOT NULL REFERENCES images(id),
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function nowIso(): string {
@@ -319,7 +332,20 @@ function parseCharacterSnapshot(text: string): CharacterSnapshot {
   if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
     throw new Error("corrupt campaign snapshot");
   }
+  normalizeSnapshotAvatar(snapshot);
   return value as CharacterSnapshot;
+}
+
+/**
+ * Snapshots written before avatars existed lack `avatar_id`; it is filled with
+ * null at this single parse boundary so the wire shape is always
+ * `string | null`. A present value must be text or null.
+ */
+function normalizeSnapshotAvatar(snapshot: Record<string, unknown>): void {
+  if (snapshot.avatar_id !== undefined && typeof snapshot.avatar_id !== "string" && snapshot.avatar_id !== null) {
+    throw new Error("corrupt campaign snapshot");
+  }
+  snapshot.avatar_id = snapshot.avatar_id ?? null;
 }
 
 function parseCastSnapshot(text: string): CharacterSnapshot[] {
@@ -344,6 +370,7 @@ function parseCastSnapshot(text: string): CharacterSnapshot[] {
     if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
       throw new Error("corrupt campaign snapshot");
     }
+    normalizeSnapshotAvatar(snapshot);
     return member as CharacterSnapshot;
   });
 }
