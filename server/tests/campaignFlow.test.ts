@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Campaign, Message, Session } from "../../shared/domain";
-import { openDatabase } from "../db";
+import { newId, nowIso, openDatabase } from "../db";
 import {
   beginNextSession,
+  CAMPAIGN_STATE_GROUNDING_LIMIT,
   createCampaign,
   createCharacter,
   createWorld,
@@ -135,6 +136,35 @@ function heldUpstream(model: string, deltas: string[]): typeof fetch {
       }),
       { status: 200, headers: { "content-type": "text/event-stream" } },
     )) as typeof fetch;
+}
+
+/** A JSON body the server can only finish reading once the test releases it. */
+function stalledJsonBody(payload: unknown): { body: ReadableStream<Uint8Array>; release: () => void } {
+  const text = JSON.stringify(payload);
+  const encoder = new TextEncoder();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(encoder.encode(text.slice(0, 1)));
+      await gate;
+      controller.enqueue(encoder.encode(text.slice(1)));
+      controller.close();
+    },
+  });
+  return { body, release };
+}
+
+function sendStalled(url: string, method: string, body: ReadableStream<Uint8Array>): Promise<Response> {
+  return fetch(`${base.url}${url}`, {
+    method,
+    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+    body,
+    // `duplex` is required for streaming request bodies but missing from the TS lib type.
+    duplex: "half",
+  } as RequestInit);
 }
 
 async function stopRun(serverBase: string, sessionId: string): Promise<void> {
@@ -281,6 +311,100 @@ describe("campaign state items", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("campaign state grounding cap", () => {
+  test("at-cap state is accepted; over-cap create and update are refused with nothing saved", async () => {
+    const seeded = await seedCampaign("StateCap", "State cap situation.");
+    const url = `/api/campaigns/${seeded.campaign.id}/state`;
+    const atCap = await json(url, "POST", {
+      category: "goal",
+      subject: "L",
+      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1),
+    });
+    expect(atCap.status).toBe(201);
+    const atCapPayload = (await atCap.json()) as { id: string }; // JSON API envelope
+    const item = atCapPayload;
+
+    const overCreate = await json(url, "POST", {
+      category: "journal",
+      subject: "One more",
+      content: "y",
+    });
+    expect(overCreate.status).toBe(400);
+    const createError = (await overCreate.json()) as { code?: string; error?: string }; // JSON API error envelope
+    expect(createError.code).toBe("invalid_input");
+    expect(createError.error).toContain("16000");
+    expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
+
+    const overUpdate = await json(`${url}/${item.id}`, "PATCH", {
+      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT),
+    });
+    expect(overUpdate.status).toBe(400);
+    const updateError = (await overUpdate.json()) as { code?: string }; // JSON API error envelope
+    expect(updateError.code).toBe("invalid_input");
+    const items = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
+    expect(items).toHaveLength(1);
+    expect(items[0].content).toBe("x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1));
+
+    // Freeing capacity re-opens writes: shrink, then accumulate back to the cap.
+    const shrink = await json(`${url}/${item.id}`, "PATCH", { content: "Short now." });
+    expect(shrink.status).toBe(200);
+    const remaining = CAMPAIGN_STATE_GROUNDING_LIMIT - ("L".length + "Short now.".length);
+    const refill = await json(url, "POST", {
+      category: "journal",
+      subject: "Refill",
+      content: "y".repeat(remaining - "Refill".length),
+    });
+    expect(refill.status).toBe(201);
+  });
+
+  test("a legacy over-cap campaign accepts shrinking writes and rejects growing ones", async () => {
+    const seeded = await seedCampaign("LegacyCap", "Legacy cap situation.");
+    const url = `/api/campaigns/${seeded.campaign.id}/state`;
+
+    // Rows written before the cap existed, seeded directly into the database.
+    const db = openDatabase(databasePath);
+    const insert = db.query(
+      "INSERT INTO campaign_state_items (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
+    );
+    const now = nowIso();
+    const firstId = newId();
+    const secondId = newId();
+    insert.run(firstId, seeded.campaign.id, "goal", "First", "x".repeat(10_000), now, now);
+    insert.run(secondId, seeded.campaign.id, "journal", "Second", "y".repeat(10_000), now, now);
+    db.close();
+    // 10,005 + 10,006 = 20,011 characters, above the 16,000 cap.
+    const items = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
+    expect(items).toHaveLength(2);
+
+    // Growing the total past the cap is still refused, and nothing is saved.
+    const grow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_500) });
+    expect(grow.status).toBe(400);
+    const growError = (await grow.json()) as { code?: string }; // JSON API error envelope
+    expect(growError.code).toBe("invalid_input");
+    const afterGrow = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
+    expect(afterGrow.find((item) => item.id === firstId)!.content).toHaveLength(10_000);
+
+    // New items stay refused while the campaign sits above the cap.
+    const add = await json(url, "POST", { category: "goal", subject: "Third", content: "z" });
+    expect(add.status).toBe(400);
+
+    // Shrinking is accepted even though the campaign remains over the cap.
+    const shrink = await json(`${url}/${secondId}`, "PATCH", { content: "y".repeat(9_000) });
+    expect(shrink.status).toBe(200);
+    const growAgain = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_400) });
+    expect(growAgain.status).toBe(400);
+
+    // Worked back under the cap, ordinary rules resume: growth up to the cap succeeds.
+    const under = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(5_000) });
+    expect(under.status).toBe(200);
+    const regrow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(6_900) });
+    expect(regrow.status).toBe(200);
+    const final = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
+    // Both rows share one created_at, so list order falls back to id order.
+    expect(final.map((item) => item.content.length).sort((a, b) => a - b)).toEqual([6_900, 9_000]);
   });
 });
 
@@ -555,6 +679,121 @@ describe("pending-run exclusivity", () => {
         handoff: "The draft settled interrupted.",
       });
       expect(after.status).toBe(201);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("stale busy guards", () => {
+  test("state writes re-check pending narration after their body is read", async () => {
+    const seeded = await seedCampaign("StateRace", "State race situation.");
+    const item = (await (
+      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+        category: "goal",
+        subject: "Original goal",
+        content: "Unchanged.",
+      })
+    ).json()) as { id: string };
+
+    // Hold both mutating bodies mid-flight: the routes have already captured
+    // the campaign (and its active session) before the body read.
+    const create = stalledJsonBody({ category: "goal", subject: "Raced create", content: "Should not save." });
+    const patch = stalledJsonBody({ content: "Should not save." });
+    const createResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/state`, "POST", create.body);
+    const patchResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/state/${item.id}`, "PATCH", patch.body);
+    // Real delay, not fake timers: Bun.serve exposes no signal for "the route
+    // captured the campaign and is now awaiting the body", and the pass-after
+    // assertion below holds for any interleaving — this wait only widens the
+    // pre-fix window so the regression is actually exercised.
+    await Bun.sleep(100);
+
+    // While the bodies are stalled, close the session and start pending
+    // narration on the new active session.
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "Next",
+      handoff: "Closed mid-body.",
+    });
+    expect(closed.status).toBe(201);
+    const closedPayload = (await closed.json()) as { session: Session }; // JSON API envelope
+    const next = closedPayload.session;
+
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      // The SSE response stays open unconsumed so the run stays pending.
+      const pending = await postMessage(server.url, next.id, "Narrate while the bodies stall.");
+      expect(pending.status).toBe(200);
+
+      create.release();
+      patch.release();
+      const created = await createResponse;
+      expect(created.status).toBe(409);
+      const createdError = (await created.json()) as { code?: string }; // JSON API error envelope
+      expect(createdError.code).toBe("busy");
+      const patched = await patchResponse;
+      expect(patched.status).toBe(409);
+      const patchedError = (await patched.json()) as { code?: string }; // JSON API error envelope
+      expect(patchedError.code).toBe("busy");
+
+      const items = (await stateItems(seeded.campaign.id)) as Array<{ subject: string; content: string }>;
+      expect(items).toHaveLength(1);
+      expect(items[0]).toEqual(expect.objectContaining({ subject: "Original goal", content: "Unchanged." }));
+
+      await stopRun(server.url, next.id);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a session close re-checks pending narration after its body is read", async () => {
+    const seeded = await seedCampaign("CloseRace", "Close race situation.");
+
+    // Hold the close's body mid-flight: the route has already captured the
+    // campaign's then-active session.
+    const close = stalledJsonBody({ title: "Next", handoff: "Should not close." });
+    const closeResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", close.body);
+    // Real delay, not fake timers: Bun.serve exposes no signal for "the route
+    // captured the campaign and is now awaiting the body", and the pass-after
+    // assertion below holds for any interleaving — this wait only widens the
+    // pre-fix window so the regression is actually exercised.
+    await Bun.sleep(100);
+
+    // While the body is stalled, close that session and start pending
+    // narration on the new active session.
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "Intermediate",
+      handoff: "Closed before the stalled body lands.",
+    });
+    expect(closed.status).toBe(201);
+    const closedPayload = (await closed.json()) as { session: Session }; // JSON API envelope
+    const next = closedPayload.session;
+
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      // The SSE response stays open unconsumed so the run stays pending.
+      const pending = await postMessage(server.url, next.id, "Narrate while the close stalls.");
+      expect(pending.status).toBe(200);
+
+      close.release();
+      const response = await closeResponse;
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { code?: string }).code).toBe("busy");
+
+      const sessions = await campaignSessions(seeded.campaign.id);
+      expect(sessions).toHaveLength(2);
+      expect(sessions[sessions.length - 1]).toEqual(
+        expect.objectContaining({ id: next.id, closed_at: null, handoff: null }),
+      );
+
+      await stopRun(server.url, next.id);
     } finally {
       await server.stop();
     }

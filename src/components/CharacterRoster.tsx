@@ -140,13 +140,13 @@ function sortEvents(events: RelationshipEvent[]) {
   return [...events].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
-function CurrentState({ document }: { document: RelationshipDocument }) {
+function CurrentState({ document, label = "Current state" }: { document: RelationshipDocument; label?: string }) {
   const hasContent = document.how_met.trim() || document.status.trim()
     || Object.keys(document.stats).length > 0 || document.known_facts.length > 0 || document.sections.length > 0;
   return (
-    <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-label="Current relationship state">
+    <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-label={label}>
       <div>
-        <p className="text-xs font-semibold tracking-wide text-muted uppercase">Current state</p>
+        <p className="text-xs font-semibold tracking-wide text-muted uppercase">{label}</p>
         <p className="text-xs text-muted">Latest editable snapshot</p>
       </div>
       {!hasContent ? <p className="text-sm text-muted">No current details recorded.</p> : (
@@ -193,6 +193,7 @@ function RelationshipRow(props: {
   sessions: Session[];
   activeSessionTitle?: string;
   editing: boolean;
+  showLatest: boolean;
   editor?: ReactNode;
   onEdit: () => void;
   onDelete: () => void;
@@ -298,7 +299,12 @@ function RelationshipRow(props: {
                 </div>
               </div>
             )}
-            {!props.editing && <CurrentState document={document} />}
+            {(!props.editing || props.showLatest) && (
+              <CurrentState
+                document={document}
+                label={props.editing ? `Latest saved version (revision ${props.relationship.revision})` : undefined}
+              />
+            )}
             <section className="grid gap-3 rounded-xl border border-border p-3" aria-label="Historical relationship events">
               <div>
                 <p className="text-xs font-semibold tracking-wide text-muted uppercase">History</p>
@@ -479,6 +485,7 @@ export function CharacterRoster(props: {
   const [targetId, setTargetId] = useState("");
   const [draft, setDraft] = useState<RelationshipDocument>(emptyDocument);
   const [draftRevision, setDraftRevision] = useState<number | null>(null);
+  const [showLatest, setShowLatest] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [editorError, setEditorError] = useState("");
@@ -552,6 +559,7 @@ export function CharacterRoster(props: {
     setCreatingRelationship(false);
     setCreateCardId(null);
     setEditingId(null);
+    setShowLatest(false);
     setSourceId("");
     setTargetId("");
     setDraft(emptyDocument());
@@ -585,6 +593,7 @@ export function CharacterRoster(props: {
     setCreatingRelationship(true);
     setCreateCardId(cardId);
     setEditingId(null);
+    setShowLatest(false);
     setSourceId(subjectMap.has(cardId) ? cardId : "");
     setTargetId(cardId === protagonistId ? "" : protagonistId);
     const nextDocument = emptyDocument();
@@ -602,6 +611,7 @@ export function CharacterRoster(props: {
     setCreatingRelationship(false);
     setConfirmDeleteId(null);
     setEditingId(relationship.id);
+    setShowLatest(false);
     setSourceId(relationship.source_id);
     setTargetId(relationship.target_id);
     setDraft(nextDocument);
@@ -682,6 +692,7 @@ export function CharacterRoster(props: {
     } catch (error) {
       if (error instanceof ApiError && error.code === "conflict") {
         setConflict(true);
+        setShowLatest(false);
         setEditorError("This relationship changed on the server. Your draft is still here; check the latest version before saving again.");
       } else {
         setEditorError(errorMessage(error, "Could not save relationship."));
@@ -695,6 +706,7 @@ export function CharacterRoster(props: {
     if (!editingId) return;
     setRefreshingLatest(true);
     setEditorError("");
+    setShowLatest(false);
     setEditorNotice("");
     try {
       const loaded = await fetchCampaignRelationships(props.campaign.id);
@@ -702,9 +714,10 @@ export function CharacterRoster(props: {
       setRelationships(loaded.relationships);
       const latest = loaded.relationships.find((relationship) => relationship.id === editingId);
       if (latest) {
+        setShowLatest(true);
         setDraftRevision(latest.revision);
         setConflict(false);
-        setEditorNotice("Latest server state is shown below; your draft was preserved. Review both before saving again.");
+        setEditorNotice("Latest saved version is shown below; your draft was preserved. Review both before saving again.");
       } else {
         setConflict(false);
         setEditorError("This relationship was deleted on the server. Your draft is preserved, but it can no longer update that record.");
@@ -958,6 +971,7 @@ export function CharacterRoster(props: {
       sessions={props.sessions}
       activeSessionTitle={activeSessionTitle}
       editing={editingId === relationship.id}
+      showLatest={editingId === relationship.id && showLatest}
       editor={editingId === relationship.id ? editorForm : undefined}
       onEdit={() => openEdit(relationship)}
       onDelete={() => { setConfirmDeleteId(relationship.id); setDeleteErrors((current) => ({ ...current, [relationship.id]: "" })); }}
