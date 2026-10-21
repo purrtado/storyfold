@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Campaign, Message, Session } from "../../shared/domain";
-import { openDatabase } from "../db";
+import { newId, nowIso, openDatabase } from "../db";
 import {
   beginNextSession,
   CAMPAIGN_STATE_GROUNDING_LIMIT,
@@ -358,6 +358,53 @@ describe("campaign state grounding cap", () => {
       content: "y".repeat(remaining - "Refill".length),
     });
     expect(refill.status).toBe(201);
+  });
+
+  test("a legacy over-cap campaign accepts shrinking writes and rejects growing ones", async () => {
+    const seeded = await seedCampaign("LegacyCap", "Legacy cap situation.");
+    const url = `/api/campaigns/${seeded.campaign.id}/state`;
+
+    // Rows written before the cap existed, seeded directly into the database.
+    const db = openDatabase(databasePath);
+    const insert = db.query(
+      "INSERT INTO campaign_state_items (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
+    );
+    const now = nowIso();
+    const firstId = newId();
+    const secondId = newId();
+    insert.run(firstId, seeded.campaign.id, "goal", "First", "x".repeat(10_000), now, now);
+    insert.run(secondId, seeded.campaign.id, "journal", "Second", "y".repeat(10_000), now, now);
+    db.close();
+    // 10,005 + 10,006 = 20,011 characters, above the 16,000 cap.
+    const items = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
+    expect(items).toHaveLength(2);
+
+    // Growing the total past the cap is still refused, and nothing is saved.
+    const grow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_500) });
+    expect(grow.status).toBe(400);
+    const growError = (await grow.json()) as { code?: string }; // JSON API error envelope
+    expect(growError.code).toBe("invalid_input");
+    const afterGrow = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
+    expect(afterGrow.find((item) => item.id === firstId)!.content).toHaveLength(10_000);
+
+    // New items stay refused while the campaign sits above the cap.
+    const add = await json(url, "POST", { category: "goal", subject: "Third", content: "z" });
+    expect(add.status).toBe(400);
+
+    // Shrinking is accepted even though the campaign remains over the cap.
+    const shrink = await json(`${url}/${secondId}`, "PATCH", { content: "y".repeat(9_000) });
+    expect(shrink.status).toBe(200);
+    const growAgain = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_400) });
+    expect(growAgain.status).toBe(400);
+
+    // Worked back under the cap, ordinary rules resume: growth up to the cap succeeds.
+    const under = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(5_000) });
+    expect(under.status).toBe(200);
+    const regrow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(6_900) });
+    expect(regrow.status).toBe(200);
+    const final = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
+    // Both rows share one created_at, so list order falls back to id order.
+    expect(final.map((item) => item.content.length).sort((a, b) => a - b)).toEqual([6_900, 9_000]);
   });
 });
 

@@ -1113,14 +1113,18 @@ function assertCampaignStateCapacity(
   db: Database,
   campaignId: string,
   next: { subject: string; content: string },
-  replacingId?: string,
+  replacingSize = 0,
 ): void {
   const totals = db
-    .query<{ total: number }, [string, string]>(
-      "SELECT COALESCE(SUM(length(subject) + length(content)), 0) AS total FROM campaign_state_items WHERE campaign_id = ? AND id != ?",
+    .query<{ total: number }, [string]>(
+      "SELECT COALESCE(SUM(length(subject) + length(content)), 0) AS total FROM campaign_state_items WHERE campaign_id = ?",
     )
-    .get(campaignId, replacingId ?? "")!;
-  if (totals.total + next.subject.length + next.content.length > CAMPAIGN_STATE_GROUNDING_LIMIT) {
+    .get(campaignId)!;
+  const nextLength = next.subject.length + next.content.length;
+  // Only writes that grow the total are capped: a campaign seeded before the
+  // cap existed can sit above it, and shrinking (or total-neutral) edits must
+  // stay possible so it can be worked back under.
+  if (nextLength > replacingSize && totals.total - replacingSize + nextLength > CAMPAIGN_STATE_GROUNDING_LIMIT) {
     throw new ValidationError(
       `campaign state exceeds ${CAMPAIGN_STATE_GROUNDING_LIMIT} characters of subject+content; shorten or delete existing items first`,
     );
@@ -1204,7 +1208,7 @@ export function updateCampaignStateItem(
   if (!existing) return null;
   const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
   validateSubjectRef(campaign, next);
-  assertCampaignStateCapacity(db, campaignId, next, itemId);
+  assertCampaignStateCapacity(db, campaignId, next, existing.subject.length + existing.content.length);
   db.query(
     "UPDATE campaign_state_items SET category = ?, subject = ?, subject_kind = ?, subject_id = ?, content = ?, updated_at = ? WHERE id = ?",
   ).run(
