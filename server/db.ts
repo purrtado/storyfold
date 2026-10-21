@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   cast_snapshot TEXT NOT NULL CHECK (json_valid(cast_snapshot)),
   starting_situation TEXT NOT NULL,
   active_session_id TEXT NOT NULL,
+  forked_from_campaign_id TEXT REFERENCES campaigns(id),
+  forked_from_session_id TEXT REFERENCES sessions(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (active_session_id, id) REFERENCES sessions(id, campaign_id)
@@ -74,12 +76,110 @@ CREATE TABLE IF NOT EXISTS campaigns (
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  ordinal INTEGER NOT NULL,
   title TEXT NOT NULL,
+  handoff TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (campaign_id, ordinal)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_id);
+
+CREATE TABLE IF NOT EXISTS campaign_state_items (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  subject TEXT NOT NULL,
+  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
+  subject_id TEXT,
+  content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_id);
+CREATE INDEX IF NOT EXISTS campaign_state_items_campaign ON campaign_state_items(campaign_id);
+
+CREATE TABLE IF NOT EXISTS session_state_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  subject TEXT NOT NULL,
+  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
+  subject_id TEXT,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS session_state_checkpoints_session ON session_state_checkpoints(session_id);
+
+CREATE TABLE IF NOT EXISTS relationship_subjects (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (id, campaign_id)
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  source_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (json_valid(document)),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (source_id != target_id),
+  UNIQUE (campaign_id, source_id, target_id),
+  UNIQUE (id, campaign_id)
+);
+
+CREATE INDEX IF NOT EXISTS relationships_campaign ON relationships(campaign_id);
+
+CREATE TABLE IF NOT EXISTS relationship_events (
+  id TEXT PRIMARY KEY,
+  relationship_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  description TEXT NOT NULL,
+  origin_event_id TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (relationship_id, campaign_id) REFERENCES relationships(id, campaign_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS relationship_events_order
+  ON relationship_events(relationship_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS session_relationship_subject_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  subject_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (session_id, subject_id)
+);
+
+CREATE INDEX IF NOT EXISTS relationship_subject_checkpoints_session
+  ON session_relationship_subject_checkpoints(session_id);
+
+CREATE TABLE IF NOT EXISTS session_relationship_checkpoints (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  source_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (json_valid(document)),
+  revision INTEGER NOT NULL,
+  events TEXT NOT NULL CHECK (json_valid(events)),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS relationship_checkpoints_session
+  ON session_relationship_checkpoints(session_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -97,6 +197,19 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE UNIQUE INDEX IF NOT EXISTS messages_one_pending
   ON messages(session_id) WHERE role = 'assistant' AND status = 'pending';
+
+CREATE TABLE IF NOT EXISTS images (
+  id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')),
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_avatars (
+  character_id TEXT PRIMARY KEY REFERENCES characters(id),
+  image_id TEXT NOT NULL REFERENCES images(id),
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function nowIso(): string {
@@ -142,6 +255,8 @@ export interface CampaignRecord {
   cast_snapshot: string;
   starting_situation: string;
   active_session_id: string;
+  forked_from_campaign_id: string | null;
+  forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -217,7 +332,20 @@ function parseCharacterSnapshot(text: string): CharacterSnapshot {
   if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
     throw new Error("corrupt campaign snapshot");
   }
+  normalizeSnapshotAvatar(snapshot);
   return value as CharacterSnapshot;
+}
+
+/**
+ * Snapshots written before avatars existed lack `avatar_id`; it is filled with
+ * null at this single parse boundary so the wire shape is always
+ * `string | null`. A present value must be text or null.
+ */
+function normalizeSnapshotAvatar(snapshot: Record<string, unknown>): void {
+  if (snapshot.avatar_id !== undefined && typeof snapshot.avatar_id !== "string" && snapshot.avatar_id !== null) {
+    throw new Error("corrupt campaign snapshot");
+  }
+  snapshot.avatar_id = snapshot.avatar_id ?? null;
 }
 
 function parseCastSnapshot(text: string): CharacterSnapshot[] {
@@ -242,6 +370,7 @@ function parseCastSnapshot(text: string): CharacterSnapshot[] {
     if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
       throw new Error("corrupt campaign snapshot");
     }
+    normalizeSnapshotAvatar(snapshot);
     return member as CharacterSnapshot;
   });
 }

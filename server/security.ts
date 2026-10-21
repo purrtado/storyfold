@@ -25,6 +25,8 @@ for (const interfaces of Object.values(networkInterfaces())) {
 
 const JSON_BODY_MAX_BYTES = 64 * 1024;
 const CHAT_BODY_MAX_BYTES = 1024 * 1024;
+/** Uploaded character pictures cap at 2 MiB, independent of the JSON body caps. */
+export const AVATAR_BODY_MAX_BYTES = 2 * 1024 * 1024;
 
 const NO_STORE_HEADERS: Record<string, string> = {
   "content-type": "application/json",
@@ -161,6 +163,53 @@ export async function readJsonBody(request: Request, limitBytes: number): Promis
   } catch {
     return { ok: false, response: jsonError(400, "Invalid JSON body") };
   }
+}
+
+export type RawBodyResult =
+  | { ok: true; data: Uint8Array }
+  | { ok: false; response: Response };
+
+/**
+ * Reads a raw (non-JSON) body with a hard byte cap, covering both a
+ * lying/misleading Content-Length header and unlimited chunked transfers.
+ * Unlike JSON, an entirely absent body is fine — callers decide whether an
+ * empty upload is meaningful.
+ */
+export async function readRawBody(request: Request, limitBytes: number): Promise<RawBodyResult> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const declared = Number(contentLength);
+    if (!Number.isInteger(declared) || declared < 0) {
+      return { ok: false, response: jsonError(400, "Invalid Content-Length header") };
+    }
+    if (declared > limitBytes) {
+      return { ok: false, response: jsonError(413, "Request body too large") };
+    }
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return { ok: true, data: new Uint8Array(0) };
+
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > limitBytes) {
+      await reader.cancel().catch(() => {});
+      return { ok: false, response: jsonError(413, "Request body too large") };
+    }
+    chunks.push(value);
+  }
+
+  const merged = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, data: merged };
 }
 
 export const BODY_LIMITS = {

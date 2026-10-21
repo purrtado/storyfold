@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type {
   Campaign,
+  CampaignStateCategory,
+  CampaignStateItem,
+  CampaignStateSubjectKind,
   Character,
   CharacterSnapshot,
   Session,
@@ -10,9 +14,10 @@ import type {
   WorldEntryKind,
   WorldEntrySnapshot,
 } from "../shared/domain";
-import { WORLD_ENTRY_KINDS } from "../shared/domain";
+import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
 import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
+import { checkpointRelationships, createCampaignLocalSubjects, forkRelationships } from "./relationships";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -161,11 +166,25 @@ export function updateWorld(db: Database, id: string, patch: Partial<WorldInput>
 }
 
 export function listCharacters(db: Database): Character[] {
-  return db.query<Character, []>("SELECT * FROM characters ORDER BY created_at, id").all();
+  return db
+    .query<Character, []>(
+      `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+       LEFT JOIN character_avatars ca ON ca.character_id = c.id
+       ORDER BY c.created_at, c.id`,
+    )
+    .all();
 }
 
 export function getCharacter(db: Database, id: string): Character | null {
-  return db.query<Character, [string]>("SELECT * FROM characters WHERE id = ?").get(id) ?? null;
+  return (
+    db
+      .query<Character, [string]>(
+        `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+         LEFT JOIN character_avatars ca ON ca.character_id = c.id
+         WHERE c.id = ?`,
+      )
+      .get(id) ?? null
+  );
 }
 
 export function createCharacter(db: Database, input: CharacterInput): Character {
@@ -179,6 +198,7 @@ export function createCharacter(db: Database, input: CharacterInput): Character 
     background: input.background ?? "",
     baseline_motivations: input.baseline_motivations ?? "",
     speaking_style: input.speaking_style ?? "",
+    avatar_id: null,
     created_at: now,
     updated_at: now,
   };
@@ -227,6 +247,113 @@ export function updateCharacter(
   return next;
 }
 
+/** Image formats accepted for character pictures, by magic-byte detection. */
+export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+
+export type ImageMime = (typeof IMAGE_MIME_TYPES)[number];
+
+export interface ImageRecord {
+  id: string;
+  mime: string;
+  data: Uint8Array<ArrayBuffer>;
+}
+
+/**
+ * Sniffs the image format from magic bytes; null when the bytes match none of
+ * the accepted formats (including SVG, which is never accepted because it can
+ * carry script).
+ */
+export function detectImageMime(bytes: Uint8Array): ImageMime | null {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x45 && // E
+    bytes[10] === 0x42 && // B
+    bytes[11] === 0x50 // P
+  ) {
+    return "image/webp";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 && // G
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x38 && // 8
+    bytes[4] === 0x37 && // 7 (GIF87a)
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    bytes[4] === 0x39 && // 9 (GIF89a)
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  return null;
+}
+
+export function getImage(db: Database, id: string): ImageRecord | null {
+  return (
+    db
+      .query<{ id: string; mime: string; data: Uint8Array<ArrayBuffer> }, [string]>(
+        "SELECT id, mime, data FROM images WHERE id = ?",
+      )
+      .get(id) ?? null
+  );
+}
+
+/**
+ * Stores the bytes content-addressed (lowercase hex sha256) and points the
+ * character at them in one transaction. Identical bytes are deduplicated by
+ * the primary key; the previous image row stays — there is no garbage
+ * collection, because past campaigns still reference their captured snapshot.
+ */
+export function setCharacterAvatar(
+  db: Database,
+  characterId: string,
+  bytes: Uint8Array,
+  mime: ImageMime,
+): Character | null {
+  if (detectImageMime(bytes) !== mime) {
+    throw new ValidationError("image data does not match its declared type");
+  }
+  const id = createHash("sha256").update(bytes).digest("hex");
+  const now = nowIso();
+  const store = db.transaction(() => {
+    db.query(
+      "INSERT INTO images (id, mime, data, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+    ).run(id, mime, bytes, now);
+    db.query(
+      `INSERT INTO character_avatars (character_id, image_id, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(character_id) DO UPDATE SET image_id = excluded.image_id, updated_at = excluded.updated_at`,
+    ).run(characterId, id, now);
+  });
+  store();
+  return getCharacter(db, characterId);
+}
+
+/** Clears the character's picture; the image row itself is kept. */
+export function clearCharacterAvatar(db: Database, characterId: string): Character | null {
+  db.query("DELETE FROM character_avatars WHERE character_id = ?").run(characterId);
+  return getCharacter(db, characterId);
+}
+
 export interface WorldCharacterInput {
   character_id: string;
   context: string;
@@ -252,9 +379,7 @@ export function parseWorldCharacterPatch(body: Record<string, unknown>): Partial
 }
 
 function worldCharacterFromRow(db: Database, row: WorldCharacterRow): WorldCharacter {
-  const character = db
-    .query<Character, [string]>("SELECT * FROM characters WHERE id = ?")
-    .get(row.character_id)!;
+  const character = getCharacter(db, row.character_id)!;
   return { ...row, character };
 }
 
@@ -508,6 +633,7 @@ function characterSnapshot(character: Character, worldContext: string): Characte
     baseline_motivations: character.baseline_motivations,
     speaking_style: character.speaking_style,
     world_context: worldContext,
+    avatar_id: character.avatar_id,
   };
 }
 
@@ -547,7 +673,11 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     if (castIds.length > 0) {
       const placeholders = castIds.map(() => "?").join(", ");
       for (const row of db
-        .query<Character, string[]>(`SELECT * FROM characters WHERE id IN (${placeholders})`)
+        .query<Character, string[]>(
+          `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+           LEFT JOIN character_avatars ca ON ca.character_id = c.id
+           WHERE c.id IN (${placeholders})`,
+        )
         .all(...castIds)) {
         castCharacters.set(row.id, row);
       }
@@ -633,7 +763,7 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     );
 
     db.query(
-      "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO sessions (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at) VALUES (?, ?, 1, ?, NULL, NULL, ?, ?)",
     ).run(sessionId, campaignId, "Opening session", now, now);
 
     const campaign = campaignFromRow(
@@ -658,5 +788,445 @@ export function getCampaign(db: Database, id: string): Campaign | null {
 }
 
 export function getSession(db: Database, id: string): Session | null {
-  return db.query<Session, [string]>("SELECT * FROM sessions WHERE id = ?").get(id) ?? null;
+  const row = getSessionRecord(db, id);
+  return row ? sessionFromRow(row) : null;
+}
+
+/** Storage shape of a session row: ordinal orders the campaign's sequence. */
+export interface SessionRecord extends Session {
+  ordinal: number;
+}
+
+export function sessionFromRow(row: SessionRecord): Session {
+  const { ordinal: _ordinal, ...session } = row;
+  return session;
+}
+
+export function getSessionRecord(db: Database, id: string): SessionRecord | null {
+  return db.query<SessionRecord, [string]>("SELECT * FROM sessions WHERE id = ?").get(id) ?? null;
+}
+
+export function listCampaignSessions(db: Database, campaignId: string): Session[] {
+  return db
+    .query<SessionRecord, [string]>("SELECT * FROM sessions WHERE campaign_id = ? ORDER BY ordinal")
+    .all(campaignId)
+    .map(sessionFromRow);
+}
+
+/**
+ * The handoff that grounds this session: an inherited fork handoff, or the
+ * handoff written at the close of the latest completed session before it
+ * (null for a campaign's opening session).
+ */
+export function sessionGroundingHandoff(db: Database, campaignId: string, sessionId: string): string | null {
+  const session = getSessionRecord(db, sessionId);
+  if (!session || session.campaign_id !== campaignId) return null;
+  if (session.handoff !== null) return session.handoff;
+  const previous = db
+    .query<{ handoff: string | null }, [string, number]>(
+      `SELECT handoff FROM sessions
+       WHERE campaign_id = ? AND closed_at IS NOT NULL AND ordinal < ?
+       ORDER BY ordinal DESC LIMIT 1`,
+    )
+    .get(campaignId, session.ordinal);
+  return previous?.handoff ?? null;
+}
+
+export class SessionClosedError extends Error {}
+
+export class SessionNotClosedError extends Error {}
+
+export interface SessionCreateInput {
+  title: string;
+  handoff: string;
+}
+
+export function parseSessionCreateInput(body: Record<string, unknown>): SessionCreateInput {
+  return {
+    title: requiredText(body.title, "title"),
+    handoff: requiredText(body.handoff, "handoff"),
+  };
+}
+
+export interface BeginNextSessionResult {
+  closed: Session;
+  session: Session;
+}
+
+/**
+ * Closes the campaign's open session with the reviewed handoff, checkpoints
+ * the campaign's current state at that boundary, and opens the next session —
+ * one transaction, so active_session_id moves atomically and a closed session
+ * is immutable thereafter. Refuses nothing here about pending runs: the route
+ * guards that synchronously before calling, and this transaction never awaits.
+ */
+export function beginNextSession(
+  db: Database,
+  campaignId: string,
+  input: SessionCreateInput,
+): BeginNextSessionResult | null {
+  const begin = db.transaction(
+    (id: string, title: string, handoff: string): BeginNextSessionResult | null => {
+      const campaign = getCampaign(db, id);
+      if (!campaign) return null;
+      const active = getSessionRecord(db, campaign.active_session_id);
+      if (!active || active.closed_at !== null) {
+        throw new ValidationError("campaign has no open session to close");
+      }
+
+      const now = nowIso();
+      const closed: Session = { ...sessionFromRow(active), handoff, closed_at: now, updated_at: now };
+      db.query("UPDATE sessions SET handoff = ?, closed_at = ?, updated_at = ? WHERE id = ?").run(
+        handoff,
+        now,
+        now,
+        active.id,
+      );
+
+      // Checkpoint copies the campaign state by value at this boundary, keyed
+      // to the closed session; later campaign edits never rewrite it.
+      const checkpointItems = listCampaignState(db, id);
+      for (const item of checkpointItems) {
+        db.query(
+          `INSERT INTO session_state_checkpoints
+             (id, session_id, campaign_id, category, subject, subject_kind, subject_id, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          newId(),
+          active.id,
+          id,
+          item.category,
+          item.subject,
+          item.subject_kind,
+          item.subject_id,
+          item.content,
+          item.created_at,
+        );
+      }
+      checkpointRelationships(db, id, active.id);
+
+      const sessionId = newId();
+      db.query(
+        `INSERT INTO sessions
+           (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`,
+      ).run(sessionId, id, active.ordinal + 1, title, now, now);
+      db.query("UPDATE campaigns SET active_session_id = ?, updated_at = ? WHERE id = ?").run(
+        sessionId,
+        now,
+        id,
+      );
+
+      return {
+        closed,
+        session: sessionFromRow(getSessionRecord(db, sessionId)!),
+      };
+    },
+  );
+  return begin.immediate(campaignId, input.title, input.handoff);
+}
+
+export interface ForkInput {
+  name: string;
+}
+
+export function parseForkInput(body: Record<string, unknown>): ForkInput {
+  return { name: requiredText(body.name, "name") };
+}
+
+export interface CreatedFork {
+  campaign: Campaign;
+  session: Session;
+}
+
+/**
+ * Forks a completed session's boundary into a new independent campaign: the
+ * captured world/protagonist/cast snapshots and starting situation are copied
+ * by value, the closed session's state checkpoint becomes the new campaign's
+ * state, and its handoff grounds the new opening session. The origin ids are
+ * recorded for provenance; the origin is never re-resolved afterwards.
+ */
+export function forkCampaignFromSession(
+  db: Database,
+  sessionId: string,
+  input: ForkInput,
+): CreatedFork | null {
+  const fork = db.transaction((id: string, name: string): CreatedFork | null => {
+    const source = getSessionRecord(db, id);
+    if (!source) return null;
+    if (source.closed_at === null) throw new SessionNotClosedError("only completed sessions can fork");
+    const origin = getCampaign(db, source.campaign_id);
+    if (!origin) return null;
+
+    const now = nowIso();
+    const campaignId = newId();
+    const forkSessionId = newId();
+
+    db.query(
+      `INSERT INTO campaigns
+         (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
+          cast_snapshot, starting_situation, active_session_id,
+          forked_from_campaign_id, forked_from_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      campaignId,
+      name,
+      origin.world_id,
+      origin.protagonist_id,
+      JSON.stringify(origin.world_snapshot),
+      JSON.stringify(origin.protagonist_snapshot),
+      JSON.stringify(origin.cast),
+      origin.starting_situation,
+      forkSessionId,
+      origin.id,
+      source.id,
+      now,
+      now,
+    );
+
+    db.query(
+      `INSERT INTO sessions
+         (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
+       VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
+    ).run(forkSessionId, campaignId, source.title, source.handoff ?? "", now, now);
+
+    const copiedSubjectIds = createCampaignLocalSubjects(db, source.id, campaignId);
+    forkRelationships(db, source.id, campaignId, copiedSubjectIds);
+    const checkpoint = db
+      .query<
+        {
+          category: string;
+          subject: string;
+          subject_kind: string | null;
+          subject_id: string | null;
+          content: string;
+          created_at: string;
+        },
+        [string]
+      >(
+        "SELECT category, subject, subject_kind, subject_id, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
+      )
+      .all(source.id);
+    for (const item of checkpoint) {
+      db.query(
+        `INSERT INTO campaign_state_items
+           (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        newId(),
+        campaignId,
+        item.category,
+        item.subject,
+        item.subject_kind,
+        item.subject_id,
+        item.content,
+        item.created_at,
+        now,
+      );
+    }
+
+    return {
+      campaign: getCampaign(db, campaignId)!,
+      session: sessionFromRow(getSessionRecord(db, forkSessionId)!),
+    };
+  });
+  return fork.immediate(sessionId, input.name);
+}
+
+export function listCampaignState(db: Database, campaignId: string): CampaignStateItem[] {
+  return db
+    .query<CampaignStateItem, [string]>(
+      "SELECT * FROM campaign_state_items WHERE campaign_id = ? ORDER BY created_at, id",
+    )
+    .all(campaignId);
+}
+
+export interface CampaignStateInput {
+  category: CampaignStateCategory;
+  subject: string;
+  subject_kind: CampaignStateSubjectKind | null;
+  subject_id: string | null;
+  content: string;
+}
+
+function parseStateCategory(value: unknown): CampaignStateCategory {
+  if (typeof value !== "string" || !CAMPAIGN_STATE_CATEGORIES.includes(value as CampaignStateCategory)) {
+    throw new ValidationError(`category must be one of: ${CAMPAIGN_STATE_CATEGORIES.join(", ")}`);
+  }
+  return value as CampaignStateCategory;
+}
+
+function parseSubjectKind(value: unknown): CampaignStateSubjectKind | null {
+  if (value === undefined || value === null) return null;
+  if (value === "character" || value === "entry") return value;
+  throw new ValidationError("subject_kind must be 'character' or 'entry' or null");
+}
+
+function parseSubjectId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ValidationError("subject_id must be a non-empty string when provided");
+  }
+  return value;
+}
+
+/**
+ * A subject may be a free-text label (both fields null) or refer to a captured
+ * snapshot of this campaign: kind 'character' resolves against the captured
+ * protagonist and cast ids, 'entry' against the captured compendium entries.
+ * The live library is never consulted, so the reference survives library edits
+ * and deletes exactly like every other captured grounding.
+ */
+function validateSubjectRef(
+  campaign: Campaign,
+  subject: { subject_kind: CampaignStateSubjectKind | null; subject_id: string | null },
+): void {
+  if (subject.subject_kind === null || subject.subject_id === null) {
+    if (subject.subject_kind !== null || subject.subject_id !== null) {
+      throw new ValidationError("subject_kind and subject_id must be set together");
+    }
+    return;
+  }
+  const captured =
+    subject.subject_kind === "character"
+      ? [campaign.protagonist_snapshot.id, ...campaign.cast.map((member) => member.id)]
+      : campaign.world_snapshot.entries.map((entry) => entry.id);
+  if (!captured.includes(subject.subject_id)) {
+    throw new ValidationError(
+      `subject_id does not match a captured ${subject.subject_kind} of this campaign`,
+    );
+  }
+}
+
+/**
+ * Aggregate cap on the campaign state injected into the narrator prompt,
+ * mirroring RELATIONSHIP_GROUNDING_LIMIT: characters, not tokens — this bounds
+ * authored input size and is not a model context-window guarantee. Counted as
+ * summed subject + content length across the campaign's items; those are the
+ * two fields the prompt renders verbatim per item
+ * (`- category — subject: content`), while the category and per-item
+ * separators are fixed and add nothing the cap needs to bound.
+ */
+export const CAMPAIGN_STATE_GROUNDING_LIMIT = 16_000;
+
+function assertCampaignStateCapacity(
+  db: Database,
+  campaignId: string,
+  next: { subject: string; content: string },
+  replacingSize = 0,
+): void {
+  const totals = db
+    .query<{ total: number }, [string]>(
+      "SELECT COALESCE(SUM(length(subject) + length(content)), 0) AS total FROM campaign_state_items WHERE campaign_id = ?",
+    )
+    .get(campaignId)!;
+  const nextLength = next.subject.length + next.content.length;
+  // Only writes that grow the total are capped: a campaign seeded before the
+  // cap existed can sit above it, and shrinking (or total-neutral) edits must
+  // stay possible so it can be worked back under.
+  if (nextLength > replacingSize && totals.total - replacingSize + nextLength > CAMPAIGN_STATE_GROUNDING_LIMIT) {
+    throw new ValidationError(
+      `campaign state exceeds ${CAMPAIGN_STATE_GROUNDING_LIMIT} characters of subject+content; shorten or delete existing items first`,
+    );
+  }
+}
+
+export function parseCampaignStateInput(body: Record<string, unknown>): CampaignStateInput {
+  return {
+    category: parseStateCategory(body.category),
+    subject: requiredText(body.subject, "subject"),
+    subject_kind: parseSubjectKind(body.subject_kind),
+    subject_id: parseSubjectId(body.subject_id),
+    content: requiredText(body.content, "content"),
+  };
+}
+
+/** PATCH applies only the provided fields; at least one must be present. */
+export function parseCampaignStatePatch(body: Record<string, unknown>): Partial<CampaignStateInput> {
+  const patch: Partial<CampaignStateInput> = {};
+  if (body.category !== undefined) patch.category = parseStateCategory(body.category);
+  if (body.subject !== undefined) patch.subject = requiredText(body.subject, "subject");
+  if (body.subject_kind !== undefined) patch.subject_kind = parseSubjectKind(body.subject_kind);
+  if (body.subject_id !== undefined) patch.subject_id = parseSubjectId(body.subject_id);
+  if (body.content !== undefined) patch.content = requiredText(body.content, "content");
+  if (Object.keys(patch).length === 0) {
+    throw new ValidationError("at least one of category, subject, subject_kind, subject_id, content is required");
+  }
+  return patch;
+}
+
+export function createCampaignStateItem(
+  db: Database,
+  campaignId: string,
+  input: CampaignStateInput,
+): CampaignStateItem | null {
+  const campaign = getCampaign(db, campaignId);
+  if (!campaign) return null;
+  validateSubjectRef(campaign, input);
+  assertCampaignStateCapacity(db, campaignId, input);
+  const now = nowIso();
+  const item: CampaignStateItem = {
+    id: newId(),
+    campaign_id: campaignId,
+    ...input,
+    created_at: now,
+    updated_at: now,
+  };
+  db.query(
+    `INSERT INTO campaign_state_items
+       (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    item.id,
+    campaignId,
+    item.category,
+    item.subject,
+    item.subject_kind,
+    item.subject_id,
+    item.content,
+    item.created_at,
+    item.updated_at,
+  );
+  return item;
+}
+
+export function updateCampaignStateItem(
+  db: Database,
+  campaignId: string,
+  itemId: string,
+  patch: Partial<CampaignStateInput>,
+): CampaignStateItem | null {
+  const campaign = getCampaign(db, campaignId);
+  if (!campaign) return null;
+  // Null covers both an unknown campaign and an item from another campaign.
+  const existing =
+    db
+      .query<CampaignStateItem, [string, string]>(
+        "SELECT * FROM campaign_state_items WHERE id = ? AND campaign_id = ?",
+      )
+      .get(itemId, campaignId) ?? null;
+  if (!existing) return null;
+  const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
+  validateSubjectRef(campaign, next);
+  assertCampaignStateCapacity(db, campaignId, next, existing.subject.length + existing.content.length);
+  db.query(
+    "UPDATE campaign_state_items SET category = ?, subject = ?, subject_kind = ?, subject_id = ?, content = ?, updated_at = ? WHERE id = ?",
+  ).run(
+    next.category,
+    next.subject,
+    next.subject_kind,
+    next.subject_id,
+    next.content,
+    next.updated_at,
+    itemId,
+  );
+  return next;
+}
+
+export function deleteCampaignStateItem(db: Database, campaignId: string, itemId: string): boolean {
+  return (
+    db
+      .query("DELETE FROM campaign_state_items WHERE id = ? AND campaign_id = ?")
+      .run(itemId, campaignId).changes > 0
+  );
 }

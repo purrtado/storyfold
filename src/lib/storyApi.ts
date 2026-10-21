@@ -1,4 +1,136 @@
-import type { Campaign, Character, Message, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignStateItem, Character, Message, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+export type CampaignFork = { campaign: Campaign; session: Session };
+export type CampaignRelationships = {
+  subjects: RelationshipSubject[];
+  relationships: Relationship[];
+};
+
+export async function fetchCampaignRelationships(campaignId: string): Promise<CampaignRelationships> {
+  return request<CampaignRelationships>(`/api/campaigns/${encodeURIComponent(campaignId)}/relationships`);
+}
+
+export async function createCampaignRelationshipSubject(
+  campaignId: string,
+  name: string,
+): Promise<RelationshipSubject> {
+  return (await request<{ subject: RelationshipSubject }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationship-subjects`,
+    { method: "POST", body: JSON.stringify({ name }) },
+  )).subject;
+}
+
+export async function createCampaignRelationship(
+  campaignId: string,
+  input: { source_id: string; target_id: string; document: RelationshipDocument },
+): Promise<Relationship> {
+  return (await request<{ relationship: Relationship }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
+    { method: "POST", body: JSON.stringify(input) },
+  )).relationship;
+}
+
+export async function updateCampaignRelationship(
+  campaignId: string,
+  relationshipId: string,
+  input: { document: RelationshipDocument; revision: number },
+): Promise<Relationship> {
+  return (await request<{ relationship: Relationship }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  )).relationship;
+}
+
+export async function deleteCampaignRelationship(
+  campaignId: string,
+  relationshipId: string,
+): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchCampaignRelationshipEvents(
+  campaignId: string,
+  relationshipId: string,
+): Promise<RelationshipEvent[]> {
+  return (await request<{ events: RelationshipEvent[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
+  )).events;
+}
+
+export async function createCampaignRelationshipEvent(
+  campaignId: string,
+  relationshipId: string,
+  description: string,
+): Promise<RelationshipEvent> {
+  return (await request<{ event: RelationshipEvent }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
+    { method: "POST", body: JSON.stringify({ description }) },
+  )).event;
+}
+
+export type CampaignStateInput = Pick<
+  CampaignStateItem,
+  "category" | "subject" | "subject_kind" | "subject_id" | "content"
+>;
+
+export async function fetchCampaignState(campaignId: string): Promise<CampaignStateItem[]> {
+  return (await request<{ items: CampaignStateItem[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state`,
+  )).items;
+}
+
+export async function createCampaignStateItem(
+  campaignId: string,
+  input: CampaignStateInput,
+): Promise<CampaignStateItem> {
+  return request<CampaignStateItem>(`/api/campaigns/${encodeURIComponent(campaignId)}/state`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateCampaignStateItem(
+  campaignId: string,
+  itemId: string,
+  input: CampaignStateInput,
+): Promise<CampaignStateItem> {
+  return request<CampaignStateItem>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export async function deleteCampaignStateItem(campaignId: string, itemId: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchCampaignSessions(campaignId: string): Promise<Session[]> {
+  return (await request<{ sessions: Session[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
+  )).sessions;
+}
+
+export async function createCampaignSession(
+  campaignId: string,
+  input: { title: string; handoff: string },
+): Promise<Session> {
+  return (await request<{ session: Session }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
+    { method: "POST", body: JSON.stringify(input) },
+  )).session;
+}
+
+export async function forkSession(sessionId: string, name: string): Promise<CampaignFork> {
+  return request<CampaignFork>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
 
 export type WorldInput = Pick<
   World,
@@ -35,7 +167,10 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body !== undefined) headers.set("Content-Type", "application/json");
+  // Raw uploads (avatars) declare their own media type; JSON is the default.
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   let response: Response;
   try {
@@ -113,6 +248,33 @@ export async function updateCharacter(id: string, input: CharacterPatch): Promis
       method: "PATCH",
       body: JSON.stringify(input),
     })
+  ).character;
+}
+
+export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
+export const AVATAR_ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,image/gif";
+
+/** Uploads the picture's raw bytes; the server rejects >2 MiB and format mismatches. */
+export async function uploadCharacterAvatar(characterId: string, file: File): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/characters/${encodeURIComponent(characterId)}/avatar`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    )
+  ).character;
+}
+
+export async function deleteCharacterAvatar(characterId: string): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/characters/${encodeURIComponent(characterId)}/avatar`,
+      { method: "DELETE" },
+    )
   ).character;
 }
 

@@ -2,9 +2,18 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Pencil, Plus, Search, UserRound } from "lucide-react";
 import type { Character } from "../../shared/domain";
-import { createCharacter, updateCharacter, type CharacterInput } from "../lib/storyApi";
+import {
+  AVATAR_ACCEPTED_TYPES,
+  AVATAR_MAX_BYTES,
+  createCharacter,
+  deleteCharacterAvatar,
+  updateCharacter,
+  uploadCharacterAvatar,
+  type CharacterInput,
+} from "../lib/storyApi";
 import { charactersLibrary, refreshCharacters, useCharacters } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
+import { Avatar } from "./Avatar";
 
 const emptyCharacter: CharacterInput = {
   name: "",
@@ -32,9 +41,11 @@ export function CharactersPage(props: {
   const characters = library.items;
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
-  const [editor, setEditor] = useState<{ id: string | null; value: CharacterInput } | null>(null);
+  const [editor, setEditor] = useState<{ id: string | null; avatarId: string | null; value: CharacterInput } | null>(null);
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
   const editorOpenerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -62,13 +73,15 @@ export function CharactersPage(props: {
   }, [characters, query]);
 
   const openNew = () => {
-    setEditor({ id: null, value: { ...emptyCharacter } });
+    setEditor({ id: null, avatarId: null, value: { ...emptyCharacter } });
     setSaveError("");
+    setAvatarError("");
   };
 
   const openEdit = (character: Character) => {
     setEditor({
       id: character.id,
+      avatarId: character.avatar_id,
       value: {
         name: character.name,
         description: character.description,
@@ -80,6 +93,46 @@ export function CharactersPage(props: {
       },
     });
     setSaveError("");
+    setAvatarError("");
+  };
+
+  const pickAvatar = async (file: File | undefined) => {
+    if (!editor?.id || avatarBusy) return;
+    setAvatarError("");
+    if (!file) return;
+    if (file.size > AVATAR_MAX_BYTES) {
+      setAvatarError("Pictures are limited to 2 MiB.");
+      return;
+    }
+    if (file.type && !AVATAR_ACCEPTED_TYPES.split(",").includes(file.type)) {
+      setAvatarError("Use a PNG, JPEG, WebP, or GIF picture.");
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const saved = await uploadCharacterAvatar(editor.id, file);
+      charactersLibrary.applySaved(saved, editor.id);
+      setEditor((current) => (current?.id === editor.id ? { ...current, avatarId: saved.avatar_id } : current));
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Could not upload this picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    if (!editor?.id || avatarBusy) return;
+    setAvatarError("");
+    setAvatarBusy(true);
+    try {
+      const saved = await deleteCharacterAvatar(editor.id);
+      charactersLibrary.applySaved(saved, editor.id);
+      setEditor((current) => (current?.id === editor.id ? { ...current, avatarId: saved.avatar_id } : current));
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Could not remove this picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -220,7 +273,7 @@ export function CharactersPage(props: {
                   <li key={character.id}>
                     <article className="flex h-full flex-col gap-4 rounded-xl border border-border bg-raised p-5">
                       <div className="flex items-start gap-3">
-                        <span className="grid size-11 shrink-0 place-items-center rounded-full border border-accent/20 bg-accent-soft text-accent"><UserRound className="size-5" aria-hidden="true" /></span>
+                        <Avatar name={character.name} imageId={character.avatar_id} className="size-11 text-base" />
                         <div className="min-w-0 flex-1">
                           <h2 className="text-lg font-semibold leading-snug">{character.name}</h2>
                           <p className="mbs-2 line-clamp-5 whitespace-pre-wrap text-sm leading-6 text-muted">{character.description}</p>
@@ -281,6 +334,39 @@ export function CharactersPage(props: {
                       <textarea required rows={5} value={editor.value.description} onChange={(event) => setEditor({ ...editor, value: { ...editor.value, description: event.target.value } })} className="min-h-32 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
                     </label>
                   </div>
+                  {editor.id !== null && (
+                    <div className="flex flex-wrap items-center gap-4">
+                      <Avatar name={editor.value.name} imageId={editor.avatarId} className="size-16 text-xl" />
+                      <div className="grid content-start gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          <label className="pressable inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
+                            Upload picture
+                            <input
+                              type="file"
+                              accept={AVATAR_ACCEPTED_TYPES}
+                              disabled={avatarBusy}
+                              className="sr-only"
+                              onChange={(event) => {
+                                void pickAvatar(event.target.files?.[0]);
+                                event.target.value = "";
+                              }}
+                            />
+                          </label>
+                          {editor.avatarId && (
+                            <button
+                              type="button"
+                              disabled={avatarBusy}
+                              className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                              onClick={() => void removeAvatar()}
+                            >
+                              Remove picture
+                            </button>
+                          )}
+                        </div>
+                        {avatarError && <p className="text-sm text-muted" role="alert">{avatarError}</p>}
+                      </div>
+                    </div>
+                  )}
                   {detailFields.map(({ name, label }) => (
                     <label key={name} className="grid gap-2 text-sm font-medium">
                       {label} <span className="font-normal text-muted">Optional</span>

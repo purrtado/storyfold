@@ -2,7 +2,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useRef, type ReactNode } from "react";
 import { CloseIcon } from "./icons";
 
-// Radix sheet for the navigation and campaign-details drawers. Without a
+// Radix sheet for the navigation drawer and the narrow-screen campaign panel. Without a
 // Dialog.Trigger, focus restoration to the opener is handled here.
 export function Sheet(props: {
   open: boolean;

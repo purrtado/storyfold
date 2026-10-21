@@ -1,18 +1,36 @@
 import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Campaign, CharacterSnapshot, Message } from "../shared/domain";
+import type { Campaign, CampaignStateItem, CharacterSnapshot, Message } from "../shared/domain";
 import { newId, nowIso } from "./db";
-import { ValidationError } from "./library";
+import {
+  SessionClosedError,
+  listCampaignState,
+  sessionGroundingHandoff,
+  ValidationError,
+} from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { relationshipNarrationContext, type RelationshipPrompt } from "./relationships";
 
 export const NARRATOR_NAME = "Narrator";
+
+/**
+ * Server-enforced cap on one session's completed history, counted as the plain
+ * summed content length of the player inputs and completed narration sent to
+ * the model — independent of the 32,000-character authored grounding limit.
+ * Nothing is ever truncated: at the limit the session is refused further input
+ * and the player begins the next session with a reviewed handoff.
+ */
+export const HISTORY_CHARACTER_LIMIT = 100_000;
 
 /** A reply is already being generated for this session; nothing was saved. */
 export class BusyError extends Error {}
 
 /** The session already contains completed opening narration. */
 export class AlreadyOpenedError extends Error {}
+
+/** Accepting this input would push completed history past the limit. */
+export class ContextLimitError extends Error {}
 
 export interface ReservedTurn {
   playerId: string | null;
@@ -90,7 +108,16 @@ export class PlayService {
   reservePlayerTurn(sessionId: string, content: string, speakerName: string): ReservedTurn {
     const reserve = this.db.transaction(
       (id: string, text: string, speaker: string): ReservedTurn => {
+        this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
+        const completed = this.completedHistoryCharacters(id);
+        if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
+          throw new ContextLimitError(
+            `This session's completed history is ${completed} characters and this input would pass the ` +
+              `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
+              "with a handoff.",
+          );
+        }
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
@@ -103,16 +130,24 @@ export class PlayService {
     return reserve.immediate(sessionId, content, speakerName);
   }
 
-  /** Opening narration reserves only the pending row; no player input exists. */
+  /**
+   * Opening narration reserves only the pending row; no player input exists.
+   * Every active session may open exactly once — the campaign's first from the
+   * starting situation, later ones (and a fork's opening session) from their
+   * leading handoff — so a fresh session is never stuck before its first turn.
+   * Retries stay possible while only failed/interrupted drafts exist. All
+   * guards sit inside the reservation transaction: a second /opening that
+   * raced the first can never reserve after the first settled complete.
+   */
   reserveOpening(sessionId: string): ReservedTurn {
-    const opened = this.db
-      .query<Message, [string]>(
-        "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
-      )
-      .get(sessionId);
-    if (opened) throw new AlreadyOpenedError("This campaign has already opened");
-
     const reserve = this.db.transaction((id: string): ReservedTurn => {
+      this.requireOpenSession(id);
+      const completedOpening = this.db
+        .query<Message, [string]>(
+          "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
+        )
+        .get(id);
+      if (completedOpening) throw new AlreadyOpenedError("This session has already opened");
       if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
       const pendingId = newId();
       this.insertMessage(
@@ -130,7 +165,22 @@ export class PlayService {
     return reserve.immediate(sessionId);
   }
 
-  private hasPending(sessionId: string): boolean {
+  /**
+   * Write-side half of the read-only closed-session invariant, checked inside
+   * the reservation transaction: a close that raced an in-flight play request
+   * (between the route's early check and the provider-settings await) loses.
+   */
+  private requireOpenSession(sessionId: string): void {
+    const session = this.db
+      .query<{ closed_at: string | null }, [string]>("SELECT closed_at FROM sessions WHERE id = ?")
+      .get(sessionId);
+    if (!session || session.closed_at !== null) {
+      throw new SessionClosedError("This session is closed; play continues in the campaign's active session");
+    }
+  }
+
+  /** True while a narration run is being generated for this session. */
+  hasPending(sessionId: string): boolean {
     return (
       this.db
         .query<unknown, [string]>(
@@ -138,6 +188,16 @@ export class PlayService {
         )
         .get(sessionId) !== null
     );
+  }
+
+  /** Same rows the model sees: player inputs plus completed narration. */
+  private completedHistoryCharacters(sessionId: string): number {
+    const row = this.db
+      .query<{ total: number | null }, [string]>(
+        "SELECT SUM(length(content)) AS total FROM messages WHERE session_id = ? AND (role = 'user' OR status = 'complete')",
+      )
+      .get(sessionId);
+    return row?.total ?? 0;
   }
 
   private nextPosition(sessionId: string): number {
@@ -173,18 +233,32 @@ export class PlayService {
    * compendium use exclusively what was captured at creation — the live
    * library is never consulted, so edits and deletes to characters, world
    * casts, or world entries cannot rewrite an existing campaign's grounding.
-   * The campaign's starting situation is used as written — a deliberately
-   * blank one stays blank; the world's suggestion is never reapplied. Only a
-   * story without prior narration asks the model to start a scene; an opening
-   * retried after accepted player turns continues the story.
+   * A session grounded by a handoff never sees the starting situation: the
+   * handoff replaces it verbatim (a fork inherits the closed source session's
+   * handoff; a later session the one written at the previous close). The
+   * campaign's current manual state is included as written — journals in
+   * captured order. Only a story without prior narration asks the model to
+   * start a scene; an opening retried after accepted player turns continues
+   * the story.
    */
-  narratorSystemPrompt(campaign: Campaign, opening: boolean, hasHistory: boolean): string {
+  narratorSystemPrompt(
+    campaign: Campaign,
+    state: CampaignStateItem[],
+    handoff: string | null,
+    opening: boolean,
+    hasHistory: boolean,
+    relationships: RelationshipPrompt[] = [],
+  ): string {
     const world = campaign.world_snapshot;
     const protagonist = campaign.protagonist_snapshot;
     const situation =
-      campaign.starting_situation.trim().length > 0
-        ? campaign.starting_situation
-        : "No starting situation was given; open with a scene that fits the world.";
+      handoff !== null
+        ? `Handoff from the previous session: ${handoff}`
+        : `Starting situation: ${
+            campaign.starting_situation.trim().length > 0
+              ? campaign.starting_situation
+              : "No starting situation was given; open with a scene that fits the world."
+          }`;
     const cast =
       campaign.cast.length > 0
         ? [
@@ -201,12 +275,31 @@ export class PlayService {
             "Respect these definitions as written.",
           ]
         : [];
+    const stateLines =
+      state.length > 0
+        ? [
+            "Current campaign state:",
+            ...state.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`),
+          ]
+        : [];
+    const relationshipLines =
+      relationships.length > 0
+        ? [
+            "Current directional relationships (campaign-owned; use as canon, without inventing automatic changes):",
+            ...relationships.map(({ source_name, target_name, document, recent_events }) =>
+              `- ${source_name} → ${target_name}: how met: ${document.how_met}; status: ${document.status}; ` +
+              `stats: ${JSON.stringify(document.stats)}; known facts: ${JSON.stringify(document.known_facts)}; ` +
+              `sections: ${JSON.stringify(document.sections)}` +
+              (recent_events.length > 0 ? `; recent events: ${JSON.stringify(recent_events)}` : ""),
+            ),
+          ]
+        : [];
     return [
       "You are the narrator of an ongoing interactive story.",
       "",
       `World — ${world.name}: ${world.setting_brief}`,
       "",
-      `Starting situation: ${situation}`,
+      situation,
       "",
       `The player controls their character, ${protagonist.name}: ${characterDefinition(protagonist)}`,
       `Whenever the player speaks or acts, it is ${protagonist.name} acting.`,
@@ -215,12 +308,18 @@ export class PlayService {
       "",
       ...compendium,
       "",
+      ...stateLines,
+      "",
+      ...relationshipLines,
+      "",
       "Narrate the world and every other character yourself; never narrate",
       `${protagonist.name}'s decisions, words, or thoughts.`,
       "",
       hasHistory
         ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
-        : "There is no prior narration: begin the story now with an opening scene.",
+        : handoff !== null
+          ? "There is no prior narration in this session: continue the story from the handoff."
+          : "There is no prior narration: begin the story now with an opening scene.",
       ...(opening && hasHistory
         ? ["An opening was requested after earlier turns: continue, do not restart."]
         : []),
@@ -292,11 +391,21 @@ export class PlayService {
     // after accepted player turns must continue, never restart.
     const opening = options.playerId === null;
     const history = this.modelHistory(sessionId);
+    const state = listCampaignState(this.db, options.campaign.id);
+    const handoff = sessionGroundingHandoff(this.db, options.campaign.id, sessionId);
+    const relationships = relationshipNarrationContext(this.db, options.campaign);
 
     const { stream: upstream } = startZaiRun({
       model: options.settings.model,
       apiKey: options.settings.apiKey,
-      systemPrompt: this.narratorSystemPrompt(options.campaign, opening, history.length > 0),
+      systemPrompt: this.narratorSystemPrompt(
+        options.campaign,
+        state,
+        handoff,
+        opening,
+        history.length > 0,
+        relationships,
+      ),
       messages:
         history.length > 0
           ? history

@@ -45,6 +45,8 @@ export interface Character {
   background: string;
   baseline_motivations: string;
   speaking_style: string;
+  /** Content-addressed image id (sha256 hex), null when no picture was uploaded. */
+  avatar_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +67,8 @@ export interface CharacterSnapshot {
   baseline_motivations: string;
   speaking_style: string;
   world_context: string;
+  /** Captured image id at campaign creation; never re-resolved against the library. */
+  avatar_id: string | null;
 }
 
 /** Association of a global character with a world plus freeform world-specific context. */
@@ -86,6 +90,74 @@ export interface World {
   updated_at: string;
 }
 
+export const CAMPAIGN_STATE_CATEGORIES = [
+  "goal",
+  "knowledge",
+  "internal",
+  "attribute",
+  "journal",
+] as const;
+
+export type CampaignStateCategory = (typeof CAMPAIGN_STATE_CATEGORIES)[number];
+
+/** What a state item's subject refers to: null on both fields means a free-text label. */
+export type CampaignStateSubjectKind = "character" | "entry";
+
+/**
+ * Campaign-owned manual state. `subject` is display text: the name of a
+ * captured character/world entry or any campaign-local label. When the subject
+ * refers to a captured snapshot, `subject_kind` plus `subject_id` identify it —
+ * validated at write time against the campaign's captured snapshots and never
+ * re-resolved against the live library. `content` is the tracked value, and
+ * journal entries are read chronologically by created_at, which never changes
+ * after creation.
+ */
+export interface CampaignStateItem {
+  id: string;
+  campaign_id: string;
+  category: CampaignStateCategory;
+  subject: string;
+  subject_kind: CampaignStateSubjectKind | null;
+  subject_id: string | null;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RelationshipDocument {
+  how_met: string;
+  status: string;
+  stats: Record<string, { value: number; min: number; max: number }>;
+  known_facts: string[];
+  sections: { id: string; label: string; type: "text" | "list"; value: string | string[] }[];
+}
+
+export interface RelationshipSubject {
+  id: string;
+  name: string;
+  kind: "character" | "entry" | "local_character";
+}
+
+export interface Relationship {
+  id: string;
+  campaign_id: string;
+  source_id: string;
+  target_id: string;
+  document: RelationshipDocument;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RelationshipEvent {
+  id: string;
+  relationship_id: string;
+  campaign_id: string;
+  session_id: string;
+  description: string;
+  created_at: string;
+}
+
 export interface Campaign {
   id: string;
   name: string;
@@ -97,6 +169,9 @@ export interface Campaign {
   cast: CharacterSnapshot[];
   starting_situation: string;
   active_session_id: string;
+  /** Set when this campaign was forked from a completed session checkpoint. */
+  forked_from_campaign_id: string | null;
+  forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +180,14 @@ export interface Session {
   id: string;
   campaign_id: string;
   title: string;
+  /**
+   * The reviewable handoff written when this session was closed, or the
+   * inherited handoff grounding a forked campaign's opening session; null
+   * while a sequentially created session is still open.
+   */
+  handoff: string | null;
+  /** Set when the session was closed by beginning the next one; read-only after. */
+  closed_at: string | null;
   created_at: string;
   updated_at: string;
 }

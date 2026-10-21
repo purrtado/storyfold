@@ -124,7 +124,7 @@ describe("schema invariants", () => {
     });
     const extra = crypto.randomUUID();
     db.query(
-      "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'Second', ?, ?)",
+      "INSERT INTO sessions (id, campaign_id, ordinal, title, created_at, updated_at) VALUES (?, ?, 2, 'Second', ?, ?)",
     ).run(extra, campaign.id, NOW, NOW);
     const sessions = db
       .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE campaign_id = ?")

@@ -13,6 +13,7 @@ import { fetchCampaigns, fetchSession, fetchSessionMessages } from "./lib/storyA
 import { refreshLibraries, warmLibraries } from "./lib/libraryCache";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
+import { updateCampaignSessionCache } from "./lib/campaignLifecycle";
 
 export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -33,8 +34,10 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [modelOverrides, setModelOverrides] = useState<Record<string, string>>({});
   const campaignLoads = useRef(false);
+  const campaignListRequest = useRef(0);
   const sessionLoads = useRef(new Set<string>());
   const messageRequestSequence = useRef(new Map<string, number>());
+  const sessionTransitionVersion = useRef(0);
   const automaticOpeningAttempts = useRef(new Set<string>());
   const { preference, setPreference } = useTheme();
   const { pathname } = useLocation();
@@ -46,21 +49,28 @@ export default function App() {
   const refreshCampaigns = useCallback(async () => {
     if (campaignLoads.current) return;
     campaignLoads.current = true;
+    const requestId = ++campaignListRequest.current;
     setCampaignsLoading(true);
     setCampaignsError("");
     try {
-      setCampaigns(await fetchCampaigns());
+      const loaded = await fetchCampaigns();
+      if (campaignListRequest.current === requestId) setCampaigns(loaded);
     } catch (error) {
-      setCampaignsError(error instanceof Error ? error.message : "Could not load campaigns.");
+      if (campaignListRequest.current === requestId) {
+        setCampaignsError(error instanceof Error ? error.message : "Could not load campaigns.");
+      }
     } finally {
-      campaignLoads.current = false;
-      setCampaignsLoading(false);
+      if (campaignListRequest.current === requestId) {
+        campaignLoads.current = false;
+        setCampaignsLoading(false);
+      }
     }
   }, []);
 
   const refreshSession = useCallback(async (sessionId: string) => {
     if (sessionLoads.current.has(sessionId)) return;
     sessionLoads.current.add(sessionId);
+    const transitionVersion = sessionTransitionVersion.current;
     setSessionsLoading((current) => ({ ...current, [sessionId]: true }));
     setSessionErrors((current) => {
       const next = { ...current };
@@ -69,15 +79,54 @@ export default function App() {
     });
     try {
       const details = await fetchSession(sessionId);
-      setSessions((current) => ({ ...current, [sessionId]: details }));
+      if (sessionTransitionVersion.current === transitionVersion) {
+        setSessions((current) => ({ ...current, [sessionId]: details }));
+      }
     } catch (error) {
-      setSessionErrors((current) => ({
-        ...current,
-        [sessionId]: error instanceof Error ? error.message : "Could not load this session.",
-      }));
+      if (sessionTransitionVersion.current === transitionVersion) {
+        setSessionErrors((current) => ({
+          ...current,
+          [sessionId]: error instanceof Error ? error.message : "Could not load this session.",
+        }));
+      }
     } finally {
       sessionLoads.current.delete(sessionId);
-      setSessionsLoading((current) => ({ ...current, [sessionId]: false }));
+      if (sessionTransitionVersion.current === transitionVersion) {
+        setSessionsLoading((current) => ({ ...current, [sessionId]: false }));
+      }
+    }
+  }, []);
+  const syncCampaignSession = useCallback(async (sessionId: string) => {
+    const transitionVersion = ++sessionTransitionVersion.current;
+    campaignLoads.current = true;
+    const requestId = ++campaignListRequest.current;
+    setCampaignsLoading(true);
+    setCampaignsError("");
+    try {
+      const details = await fetchSession(sessionId);
+      if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
+      setSessions((current) => updateCampaignSessionCache(current, sessionId, details));
+      setSessionErrors((current) => {
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      setSessionsLoading({});
+
+      const loadedCampaigns = await fetchCampaigns();
+      if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
+      setCampaigns(loadedCampaigns);
+    } catch (error) {
+      if (campaignListRequest.current !== requestId || sessionTransitionVersion.current !== transitionVersion) return;
+      const message = error instanceof Error ? error.message : "Could not refresh the campaign.";
+      setCampaignsError(message);
+      setSessionsLoading({});
+      throw error;
+    } finally {
+      if (campaignListRequest.current === requestId) {
+        campaignLoads.current = false;
+        setCampaignsLoading(false);
+      }
     }
   }, []);
 
@@ -309,6 +358,7 @@ export default function App() {
               onRefreshMessages={refreshSessionMessages}
               onRetrySession={refreshSession}
               onDismissGeneration={dismiss}
+              onSyncSession={syncCampaignSession}
             />
           ) : <Navigate to="/worlds" replace />}
         />
