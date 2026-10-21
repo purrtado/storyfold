@@ -1098,6 +1098,35 @@ function validateSubjectRef(
   }
 }
 
+/**
+ * Aggregate cap on the campaign state injected into the narrator prompt,
+ * mirroring RELATIONSHIP_GROUNDING_LIMIT: characters, not tokens — this bounds
+ * authored input size and is not a model context-window guarantee. Counted as
+ * summed subject + content length across the campaign's items; those are the
+ * two fields the prompt renders verbatim per item
+ * (`- category — subject: content`), while the category and per-item
+ * separators are fixed and add nothing the cap needs to bound.
+ */
+export const CAMPAIGN_STATE_GROUNDING_LIMIT = 16_000;
+
+function assertCampaignStateCapacity(
+  db: Database,
+  campaignId: string,
+  next: { subject: string; content: string },
+  replacingId?: string,
+): void {
+  const totals = db
+    .query<{ total: number }, [string, string]>(
+      "SELECT COALESCE(SUM(length(subject) + length(content)), 0) AS total FROM campaign_state_items WHERE campaign_id = ? AND id != ?",
+    )
+    .get(campaignId, replacingId ?? "")!;
+  if (totals.total + next.subject.length + next.content.length > CAMPAIGN_STATE_GROUNDING_LIMIT) {
+    throw new ValidationError(
+      `campaign state exceeds ${CAMPAIGN_STATE_GROUNDING_LIMIT} characters of subject+content; shorten or delete existing items first`,
+    );
+  }
+}
+
 export function parseCampaignStateInput(body: Record<string, unknown>): CampaignStateInput {
   return {
     category: parseStateCategory(body.category),
@@ -1130,6 +1159,7 @@ export function createCampaignStateItem(
   const campaign = getCampaign(db, campaignId);
   if (!campaign) return null;
   validateSubjectRef(campaign, input);
+  assertCampaignStateCapacity(db, campaignId, input);
   const now = nowIso();
   const item: CampaignStateItem = {
     id: newId(),
@@ -1174,6 +1204,7 @@ export function updateCampaignStateItem(
   if (!existing) return null;
   const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
   validateSubjectRef(campaign, next);
+  assertCampaignStateCapacity(db, campaignId, next, itemId);
   db.query(
     "UPDATE campaign_state_items SET category = ?, subject = ?, subject_kind = ?, subject_id = ?, content = ?, updated_at = ? WHERE id = ?",
   ).run(

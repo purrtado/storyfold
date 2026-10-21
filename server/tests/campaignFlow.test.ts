@@ -4,6 +4,7 @@ import type { Campaign, Message, Session } from "../../shared/domain";
 import { openDatabase } from "../db";
 import {
   beginNextSession,
+  CAMPAIGN_STATE_GROUNDING_LIMIT,
   createCampaign,
   createCharacter,
   createWorld,
@@ -310,6 +311,53 @@ describe("campaign state items", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("campaign state grounding cap", () => {
+  test("at-cap state is accepted; over-cap create and update are refused with nothing saved", async () => {
+    const seeded = await seedCampaign("StateCap", "State cap situation.");
+    const url = `/api/campaigns/${seeded.campaign.id}/state`;
+    const atCap = await json(url, "POST", {
+      category: "goal",
+      subject: "L",
+      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1),
+    });
+    expect(atCap.status).toBe(201);
+    const atCapPayload = (await atCap.json()) as { id: string }; // JSON API envelope
+    const item = atCapPayload;
+
+    const overCreate = await json(url, "POST", {
+      category: "journal",
+      subject: "One more",
+      content: "y",
+    });
+    expect(overCreate.status).toBe(400);
+    const createError = (await overCreate.json()) as { code?: string; error?: string }; // JSON API error envelope
+    expect(createError.code).toBe("invalid_input");
+    expect(createError.error).toContain("16000");
+    expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
+
+    const overUpdate = await json(`${url}/${item.id}`, "PATCH", {
+      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT),
+    });
+    expect(overUpdate.status).toBe(400);
+    const updateError = (await overUpdate.json()) as { code?: string }; // JSON API error envelope
+    expect(updateError.code).toBe("invalid_input");
+    const items = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
+    expect(items).toHaveLength(1);
+    expect(items[0].content).toBe("x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1));
+
+    // Freeing capacity re-opens writes: shrink, then accumulate back to the cap.
+    const shrink = await json(`${url}/${item.id}`, "PATCH", { content: "Short now." });
+    expect(shrink.status).toBe(200);
+    const remaining = CAMPAIGN_STATE_GROUNDING_LIMIT - ("L".length + "Short now.".length);
+    const refill = await json(url, "POST", {
+      category: "journal",
+      subject: "Refill",
+      content: "y".repeat(remaining - "Refill".length),
+    });
+    expect(refill.status).toBe(201);
   });
 });
 
