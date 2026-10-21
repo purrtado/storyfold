@@ -137,6 +137,35 @@ function heldUpstream(model: string, deltas: string[]): typeof fetch {
     )) as typeof fetch;
 }
 
+/** A JSON body the server can only finish reading once the test releases it. */
+function stalledJsonBody(payload: unknown): { body: ReadableStream<Uint8Array>; release: () => void } {
+  const text = JSON.stringify(payload);
+  const encoder = new TextEncoder();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(encoder.encode(text.slice(0, 1)));
+      await gate;
+      controller.enqueue(encoder.encode(text.slice(1)));
+      controller.close();
+    },
+  });
+  return { body, release };
+}
+
+function sendStalled(url: string, method: string, body: ReadableStream<Uint8Array>): Promise<Response> {
+  return fetch(`${base.url}${url}`, {
+    method,
+    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+    body,
+    // `duplex` is required for streaming request bodies but missing from the TS lib type.
+    duplex: "half",
+  } as RequestInit);
+}
+
 async function stopRun(serverBase: string, sessionId: string): Promise<void> {
   const response = await fetch(`${serverBase}/api/sessions/${sessionId}/stop`, {
     method: "POST",
@@ -555,6 +584,121 @@ describe("pending-run exclusivity", () => {
         handoff: "The draft settled interrupted.",
       });
       expect(after.status).toBe(201);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("stale busy guards", () => {
+  test("state writes re-check pending narration after their body is read", async () => {
+    const seeded = await seedCampaign("StateRace", "State race situation.");
+    const item = (await (
+      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+        category: "goal",
+        subject: "Original goal",
+        content: "Unchanged.",
+      })
+    ).json()) as { id: string };
+
+    // Hold both mutating bodies mid-flight: the routes have already captured
+    // the campaign (and its active session) before the body read.
+    const create = stalledJsonBody({ category: "goal", subject: "Raced create", content: "Should not save." });
+    const patch = stalledJsonBody({ content: "Should not save." });
+    const createResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/state`, "POST", create.body);
+    const patchResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/state/${item.id}`, "PATCH", patch.body);
+    // Real delay, not fake timers: Bun.serve exposes no signal for "the route
+    // captured the campaign and is now awaiting the body", and the pass-after
+    // assertion below holds for any interleaving — this wait only widens the
+    // pre-fix window so the regression is actually exercised.
+    await Bun.sleep(100);
+
+    // While the bodies are stalled, close the session and start pending
+    // narration on the new active session.
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "Next",
+      handoff: "Closed mid-body.",
+    });
+    expect(closed.status).toBe(201);
+    const closedPayload = (await closed.json()) as { session: Session }; // JSON API envelope
+    const next = closedPayload.session;
+
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      // The SSE response stays open unconsumed so the run stays pending.
+      const pending = await postMessage(server.url, next.id, "Narrate while the bodies stall.");
+      expect(pending.status).toBe(200);
+
+      create.release();
+      patch.release();
+      const created = await createResponse;
+      expect(created.status).toBe(409);
+      const createdError = (await created.json()) as { code?: string }; // JSON API error envelope
+      expect(createdError.code).toBe("busy");
+      const patched = await patchResponse;
+      expect(patched.status).toBe(409);
+      const patchedError = (await patched.json()) as { code?: string }; // JSON API error envelope
+      expect(patchedError.code).toBe("busy");
+
+      const items = (await stateItems(seeded.campaign.id)) as Array<{ subject: string; content: string }>;
+      expect(items).toHaveLength(1);
+      expect(items[0]).toEqual(expect.objectContaining({ subject: "Original goal", content: "Unchanged." }));
+
+      await stopRun(server.url, next.id);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a session close re-checks pending narration after its body is read", async () => {
+    const seeded = await seedCampaign("CloseRace", "Close race situation.");
+
+    // Hold the close's body mid-flight: the route has already captured the
+    // campaign's then-active session.
+    const close = stalledJsonBody({ title: "Next", handoff: "Should not close." });
+    const closeResponse = sendStalled(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", close.body);
+    // Real delay, not fake timers: Bun.serve exposes no signal for "the route
+    // captured the campaign and is now awaiting the body", and the pass-after
+    // assertion below holds for any interleaving — this wait only widens the
+    // pre-fix window so the regression is actually exercised.
+    await Bun.sleep(100);
+
+    // While the body is stalled, close that session and start pending
+    // narration on the new active session.
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "Intermediate",
+      handoff: "Closed before the stalled body lands.",
+    });
+    expect(closed.status).toBe(201);
+    const closedPayload = (await closed.json()) as { session: Session }; // JSON API envelope
+    const next = closedPayload.session;
+
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      // The SSE response stays open unconsumed so the run stays pending.
+      const pending = await postMessage(server.url, next.id, "Narrate while the close stalls.");
+      expect(pending.status).toBe(200);
+
+      close.release();
+      const response = await closeResponse;
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { code?: string }).code).toBe("busy");
+
+      const sessions = await campaignSessions(seeded.campaign.id);
+      expect(sessions).toHaveLength(2);
+      expect(sessions[sessions.length - 1]).toEqual(
+        expect.objectContaining({ id: next.id, closed_at: null, handoff: null }),
+      );
+
+      await stopRun(server.url, next.id);
     } finally {
       await server.stop();
     }

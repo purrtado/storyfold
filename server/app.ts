@@ -456,7 +456,9 @@ async function handleCampaigns(request: Request, id: string | undefined, db: Dat
  * id and an item id resolves only inside it, so another campaign's item is
  * indistinguishable from a missing one. Mutations are refused while a
  * narration run is pending in the campaign's active session; nothing was
- * saved when that happens.
+ * saved when that happens. The active session is re-read and the guard
+ * re-checked after the request body arrives, so a close and pending start
+ * landing inside the body read still refuse the write.
  */
 async function handleCampaignState(
   request: Request,
@@ -477,7 +479,9 @@ async function handleCampaignState(
       if (body instanceof Response) return body;
       try {
         const input = parseCampaignStateInput(body);
-        if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+        const active = getCampaign(ctx.db, campaignId);
+        if (!active) return notFound("Unknown campaign");
+        if (ctx.play.hasPending(active.active_session_id)) throw new BusyError("A reply is already being generated for this session");
         return jsonResponse(createCampaignStateItem(ctx.db, campaignId, input), 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -491,7 +495,9 @@ async function handleCampaignState(
     if (body instanceof Response) return body;
     try {
       const patch = parseCampaignStatePatch(body);
-      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
+      const active = getCampaign(ctx.db, campaignId);
+      if (!active) return notFound("Unknown campaign");
+      if (ctx.play.hasPending(active.active_session_id)) throw new BusyError("A reply is already being generated for this session");
       const item = updateCampaignStateItem(ctx.db, campaignId, itemId, patch);
       return item ? jsonResponse(item) : notFound("Unknown state item");
     } catch (error) {
@@ -596,7 +602,10 @@ async function handleCampaignRelationships(
 /**
  * Sessions are listed in story order. POST closes the campaign's open session
  * with the reviewed handoff (checkpointing the state at that boundary) and
- * opens the next one; active_session_id moves in the same transaction.
+ * opens the next one; active_session_id moves in the same transaction. The
+ * busy guard re-reads the campaign after the request body arrives, so a close
+ * whose body was in flight cannot close a session that gained a pending
+ * narration run meanwhile.
  */
 async function handleCampaignSessions(
   request: Request,
@@ -615,7 +624,9 @@ async function handleCampaignSessions(
     if (body instanceof Response) return body;
     try {
       const input = parseSessionCreateInput(body);
-      if (ctx.play.hasPending(campaign.active_session_id)) {
+      const active = getCampaign(ctx.db, campaignId);
+      if (!active) return notFound("Unknown campaign");
+      if (ctx.play.hasPending(active.active_session_id)) {
         throw new BusyError("A reply is already being generated for this session");
       }
       const result = beginNextSession(ctx.db, campaignId, input);
