@@ -1002,18 +1002,17 @@ describe("closed-session race guard", () => {
       expect(() => play.reserveOpening(session.id)).toThrow(AlreadyOpenedError);
       expect(play.transcript(session.id)).toHaveLength(1);
 
-      // A draft (interrupted) keeps the retry path open: on a second session,
-      // an interrupted first attempt still allows exactly one more opening.
+      // A draft (interrupted) closes /opening too: retries go through
+      // regeneration, which discards the draft from the same position.
       beginNextSession(db, campaign.id, { title: "Next", handoff: "Race handoff." });
       const second = getCampaign(db, campaign.id)!;
       const draft = play.reserveOpening(second.active_session_id);
       expect(play.settlePending(draft.pendingId, "interrupted", "Half a dawn.")).toBe(true);
-      const retry = play.reserveOpening(second.active_session_id);
+      expect(() => play.reserveOpening(second.active_session_id)).toThrow(AlreadyOpenedError);
+      const retry = play.reserveRegeneration(second.active_session_id);
       expect(retry.pendingId).not.toBeNull();
-      expect(play.transcript(second.active_session_id).map((message) => message.status)).toEqual([
-        "interrupted",
-        "pending",
-      ]);
+      expect(retry.playerId).toBeNull();
+      expect(play.transcript(second.active_session_id).map((message) => message.status)).toEqual(["pending"]);
     } finally {
       db.close();
       await removeDirectory(directory);
