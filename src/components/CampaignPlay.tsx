@@ -503,12 +503,12 @@ export function CampaignPlay(props: {
   // Row actions match what the server accepts for this session; only sends need
   // the app-wide exclusivity that `busy` tracks.
   const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
-  const actionsAllowed = isActiveSession && props.messages !== undefined && !sessionBusy;
+  const actionsAllowed = isActiveSession && transcriptReady && !sessionBusy;
   const canGenerate = actionsAllowed && !busy;
   // Forking is allowed in the active session and in closed (read-only) ones,
   // but the server refuses it while this campaign's active session generates.
   const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
-  const canFork = props.messages !== undefined && !sessionBusy && !campaignGenerating;
+  const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
@@ -643,7 +643,9 @@ export function CampaignPlay(props: {
   }, [panelCollapsed]);
 
   const stopTarget = otherGeneration?.sessionId ?? props.sessionId;
-  const stopAvailable = hasPending || Boolean(otherGeneration);
+  // The run is reserved server-side before acceptance headers arrive, so Stop
+  // works from the moment a local generation starts.
+  const stopAvailable = hasPending || live?.phase === "streaming" || Boolean(otherGeneration);
   useEffect(() => {
     // Double-Esc mirrors the composer Stop control; an Esc that closed a menu
     // or dialog arrives default-prevented and does not count.
@@ -828,8 +830,8 @@ export function CampaignPlay(props: {
               inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
               sendLabel="Send action"
               busy={busy || !hasCompletedNarration}
-              showStop={hasPending || Boolean(otherGeneration)}
-              onStop={() => { void props.onStop(otherGeneration?.sessionId ?? props.sessionId); }}
+              showStop={stopAvailable}
+              onStop={() => { void props.onStop(stopTarget); }}
             />
           ) : (
             <div className="flex flex-wrap items-center gap-2 border-bs border-border px-4 py-3 text-sm" role="note">
