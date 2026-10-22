@@ -523,6 +523,30 @@ export function CampaignPlay(props: {
     localStorage.setItem(PANEL_COLLAPSED_KEY, panelCollapsed ? "1" : "0");
   }, [panelCollapsed]);
 
+  const stopTarget = otherGeneration?.sessionId ?? props.sessionId;
+  const stopAvailable = hasPending || Boolean(otherGeneration);
+  useEffect(() => {
+    // Double-Esc mirrors the composer Stop control; an Esc that closed a menu
+    // or dialog arrives default-prevented and does not count.
+    if (!stopAvailable) return;
+    let lastEscape = 0;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.repeat || event.isComposing) return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const now = performance.now();
+      if (now - lastEscape <= 500) {
+        lastEscape = 0;
+        event.preventDefault();
+        void props.onStop(stopTarget);
+      } else {
+        lastEscape = now;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stopAvailable, stopTarget, props.onStop]);
+
+
   useEffect(() => {
     if (docked) setDetailsOpen(false);
   }, [docked]);
