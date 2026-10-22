@@ -245,7 +245,7 @@ function MessageRow(props: {
           : message.status === "pending" ? <PendingDots /> : null
       )}
       {(showSwipes || canRegenerate || canRetry) && (
-        <div className={`mbs-2 flex flex-wrap items-center gap-2${reveal}`}>
+        <div className="mbs-2 flex flex-wrap items-center gap-2">
           {showSwipes && (
             <div className="flex items-center gap-0.5 text-xs font-normal text-muted" role="group" aria-label="Alternate replies">
               <button
