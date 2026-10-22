@@ -119,9 +119,28 @@ function MessageRow(props: {
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
   const reveal = canAct && !editing && !confirmDelete && !confirmFork ? ` ${REVEAL_CLASSES}` : "";
 
+  // Radix returns focus to the ⋯ trigger on close; skip that when an item opens
+  // an inline form, so it keeps focus and scrolls into view.
+  const keepMenuFocus = useRef(false);
+  const deleteConfirmRef = useRef<HTMLDivElement>(null);
+  const forkConfirmRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (confirmDelete) deleteConfirmRef.current?.scrollIntoView({ block: "nearest" });
+  }, [confirmDelete]);
+  useEffect(() => {
+    if (!confirmFork) return;
+    forkConfirmRef.current?.scrollIntoView({ block: "nearest" });
+    const frame = requestAnimationFrame(() => forkConfirmRef.current?.querySelector("input")?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [confirmFork]);
   const startEdit = () => {
+    keepMenuFocus.current = true;
     setEditValue(message.content);
     setEditing(true);
+  };
+  const startDelete = (scope: "message" | "after") => {
+    keepMenuFocus.current = true;
+    setConfirmDelete(scope);
   };
   const saveEdit = (andRegenerate: boolean) => {
     props.onEditMessage(message.id, editValue, andRegenerate).then(
@@ -136,6 +155,7 @@ function MessageRow(props: {
     );
   };
   const startFork = () => {
+    keepMenuFocus.current = true;
     setForkName(`${props.campaignName} fork`);
     setConfirmFork(true);
   };
@@ -195,6 +215,7 @@ function MessageRow(props: {
 
   const deleteConfirm = confirmDelete && (
     <div
+      ref={deleteConfirmRef}
       className="mbs-2 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface p-3"
       role="group"
       aria-label={confirmDelete === "after" ? "Confirm deleting this message and everything after" : "Confirm deleting this message"}
@@ -223,6 +244,7 @@ function MessageRow(props: {
 
   const forkConfirm = confirmFork && (
     <form
+      ref={forkConfirmRef}
       className="mbs-2 grid gap-2 rounded-lg border border-border bg-surface p-3"
       role="group"
       aria-label="Confirm forking the campaign from this message"
@@ -272,7 +294,17 @@ function MessageRow(props: {
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content align="end" sideOffset={4} collisionPadding={12} className="message-menu-content">
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          collisionPadding={12}
+          className="message-menu-content"
+          onCloseAutoFocus={(event) => {
+            if (!keepMenuFocus.current) return;
+            keepMenuFocus.current = false;
+            event.preventDefault();
+          }}
+        >
           {canEdit && (
             <DropdownMenu.Item className="message-menu-item" onSelect={startEdit}>Edit</DropdownMenu.Item>
           )}
@@ -286,10 +318,10 @@ function MessageRow(props: {
               <DropdownMenu.SubTrigger className="message-menu-item">Delete</DropdownMenu.SubTrigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.SubContent className="message-menu-content" collisionPadding={12}>
-                  <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("message")}>
+                  <DropdownMenu.Item className="message-menu-item" onSelect={() => startDelete("message")}>
                     This message
                   </DropdownMenu.Item>
-                  <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("after")}>
+                  <DropdownMenu.Item className="message-menu-item" onSelect={() => startDelete("after")}>
                     This and everything after
                   </DropdownMenu.Item>
                 </DropdownMenu.SubContent>
