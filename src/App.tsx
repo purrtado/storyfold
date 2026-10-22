@@ -149,6 +149,7 @@ export default function App() {
     });
     try {
       const loaded = await fetchSessionMessages(sessionId);
+      if (loaded.length > 0) automaticOpeningAttempts.current.add(sessionId);
       if (messageRequestSequence.current.get(sessionId) === requestId) {
         setMessages((current) => ({ ...current, [sessionId]: loaded }));
       }

@@ -118,10 +118,10 @@ Narration is grounded per session on the captured world/protagonist/cast snapsho
 
 ## Development workspace
 
-The M2–M4 schema cutovers have no migrations or compatibility layer. M4's alternate replies rework the `messages` table (a `selected` flag and a per-position unique index replace the `UNIQUE (session_id, position)` constraint), so existing databases are unsupported and fail with SQL errors on first use. Point `STORYFOLD_DATA_DIR` at a fresh directory to use the new schema; this does not delete, reset, or overwrite the existing database, which remains untouched:
+The M2–M4 schema cutovers have no migrations or compatibility layer. M4's alternate replies rework the `messages` table (a `selected` flag and a per-position unique index replace the `UNIQUE (session_id, position)` constraint), so existing databases are unsupported: the API fails to start against one, and the Vite proxy answers every `/api` request with 500. Point `STORYFOLD_DATA_DIR` at a fresh directory to use the new schema; this does not delete, reset, or overwrite the existing database, which remains untouched:
 
 ```sh
-STORYFOLD_DATA_DIR=$HOME/.local/share/storyfold-characters bun run dev --host
+STORYFOLD_DATA_DIR=$HOME/.local/share/storyfold-m4 bun run dev --host
 ```
 
 `bun run dev` starts the full stack (API and Vite) against that data directory. Backend tests always run against isolated temporary databases.
