@@ -229,6 +229,37 @@ export function checkpointRelationships(db: Database, campaignId: string, sessio
   }
 }
 
+/** Inserts one copied relationship plus its event history under new ids. */
+function copyRelationship(
+  db: Database,
+  forkCampaignId: string,
+  sourceId: string,
+  targetId: string,
+  document: string,
+  revision: number,
+  events: RelationshipEvent[],
+): void {
+  const id = newId();
+  const now = nowIso();
+  db.query("INSERT INTO relationships (id,campaign_id,source_id,target_id,document,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, forkCampaignId, sourceId, targetId, document, revision, now, now);
+  for (const sourceEvent of events) {
+    db.query("INSERT INTO relationship_events (id,relationship_id,campaign_id,session_id,description,origin_event_id,created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(newId(), id, forkCampaignId, sourceEvent.session_id, sourceEvent.description, sourceEvent.id, sourceEvent.created_at);
+  }
+}
+
+function insertLocalSubjects(db: Database, forkCampaignId: string, subjects: Array<{ subject_id: string; name: string }>): Record<string, string> {
+  const subjectIds: Record<string, string> = {};
+  for (const subject of subjects) {
+    const id = newId();
+    subjectIds[subject.subject_id] = id;
+    db.query("INSERT INTO relationship_subjects (id,campaign_id,name,created_at) VALUES (?,?,?,?)")
+      .run(id, forkCampaignId, subject.name, nowIso());
+  }
+  return subjectIds;
+}
+
 export function forkRelationships(
   db: Database,
   sourceSessionId: string,
@@ -239,27 +270,27 @@ export function forkRelationships(
     "SELECT source_id,target_id,document,revision,events FROM session_relationship_checkpoints WHERE session_id=? ORDER BY created_at,id",
   ).all(sourceSessionId);
   for (const item of checkpoints) {
-    const id = newId();
-    const now = nowIso();
-    db.query("INSERT INTO relationships (id,campaign_id,source_id,target_id,document,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(id, forkCampaignId, subjectIds[item.source_id] ?? item.source_id, subjectIds[item.target_id] ?? item.target_id, item.document, item.revision, now, now);
-    for (const sourceEvent of JSON.parse(item.events) as RelationshipEvent[]) {
-      db.query("INSERT INTO relationship_events (id,relationship_id,campaign_id,session_id,description,origin_event_id,created_at) VALUES (?,?,?,?,?,?,?)")
-        .run(newId(), id, forkCampaignId, sourceEvent.session_id, sourceEvent.description, sourceEvent.id, sourceEvent.created_at);
-    }
+    copyRelationship(db, forkCampaignId, subjectIds[item.source_id] ?? item.source_id, subjectIds[item.target_id] ?? item.target_id, item.document, item.revision, JSON.parse(item.events) as RelationshipEvent[]);
+  }
+}
+
+/** Copies the campaign's CURRENT local subjects, relationships, and event history into new ids. */
+export function forkCampaignRelationships(db: Database, sourceCampaignId: string, forkCampaignId: string): void {
+  const subjectIds = insertLocalSubjects(db, forkCampaignId, db.query<{ subject_id: string; name: string }, [string]>(
+    "SELECT id AS subject_id,name FROM relationship_subjects WHERE campaign_id=? ORDER BY created_at,id",
+  ).all(sourceCampaignId));
+  const rows = db.query<RelationshipRow, [string]>("SELECT * FROM relationships WHERE campaign_id=? ORDER BY created_at,id").all(sourceCampaignId);
+  for (const row of rows) {
+    const events = db.query<RelationshipEvent, [string]>(
+      "SELECT id,relationship_id,campaign_id,session_id,description,created_at FROM relationship_events WHERE relationship_id=? ORDER BY rowid",
+    ).all(row.id);
+    copyRelationship(db, forkCampaignId, subjectIds[row.source_id] ?? row.source_id, subjectIds[row.target_id] ?? row.target_id, row.document, row.revision, events);
   }
 }
 
 export function createCampaignLocalSubjects(db: Database, sourceSessionId: string, forkCampaignId: string): Record<string, string> {
-  const subjectIds: Record<string, string> = {};
-  for (const subject of db.query<{ subject_id: string; name: string }, [string]>(
+  return insertLocalSubjects(db, forkCampaignId, db.query<{ subject_id: string; name: string }, [string]>(
     "SELECT subject_id,name FROM session_relationship_subject_checkpoints WHERE session_id=? ORDER BY created_at,id",
-  ).all(sourceSessionId)) {
-    const id = newId();
-    subjectIds[subject.subject_id] = id;
-    db.query("INSERT INTO relationship_subjects (id,campaign_id,name,created_at) VALUES (?,?,?,?)")
-      .run(id, forkCampaignId, subject.name, nowIso());
-  }
-  return subjectIds;
+  ).all(sourceSessionId));
 }
 

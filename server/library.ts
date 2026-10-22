@@ -17,7 +17,7 @@ import type {
 import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
 import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
-import { checkpointRelationships, createCampaignLocalSubjects, forkRelationships } from "./relationships";
+import { checkpointRelationships, createCampaignLocalSubjects, forkCampaignRelationships, forkRelationships } from "./relationships";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -940,11 +940,97 @@ export interface CreatedFork {
 }
 
 /**
+ * Inserts the fork's campaign row: captured snapshots and starting situation
+ * copied by value from the origin, origin ids recorded for provenance. Returns
+ * the new campaign id; the origin is never re-resolved afterwards.
+ */
+function insertForkCampaign(
+  db: Database,
+  origin: Campaign,
+  name: string,
+  sourceSessionId: string,
+  forkSessionId: string,
+  now: string,
+): string {
+  const campaignId = newId();
+  db.query(
+    `INSERT INTO campaigns
+       (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
+        cast_snapshot, starting_situation, active_session_id,
+        forked_from_campaign_id, forked_from_session_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    campaignId,
+    name,
+    origin.world_id,
+    origin.protagonist_id,
+    JSON.stringify(origin.world_snapshot),
+    JSON.stringify(origin.protagonist_snapshot),
+    JSON.stringify(origin.cast),
+    origin.starting_situation,
+    forkSessionId,
+    origin.id,
+    sourceSessionId,
+    now,
+    now,
+  );
+  return campaignId;
+}
+
+/** Inserts the fork's opening session, grounded by `handoff` (null = none). */
+function insertForkSession(
+  db: Database,
+  campaignId: string,
+  sessionId: string,
+  source: SessionRecord,
+  handoff: string | null,
+  now: string,
+): void {
+  db.query(
+    `INSERT INTO sessions
+       (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
+  ).run(sessionId, campaignId, source.title, handoff, now, now);
+}
+
+/** Copies state rows by value under new ids; `now` stamps the copies. */
+function copyStateItems(
+  db: Database,
+  campaignId: string,
+  items: Array<{
+    category: string;
+    subject: string;
+    subject_kind: string | null;
+    subject_id: string | null;
+    content: string;
+    created_at: string;
+  }>,
+  now: string,
+): void {
+  for (const item of items) {
+    db.query(
+      `INSERT INTO campaign_state_items
+         (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      newId(),
+      campaignId,
+      item.category,
+      item.subject,
+      item.subject_kind,
+      item.subject_id,
+      item.content,
+      item.created_at,
+      now,
+    );
+  }
+}
+
+/**
  * Forks a completed session's boundary into a new independent campaign: the
  * captured world/protagonist/cast snapshots and starting situation are copied
  * by value, the closed session's state checkpoint becomes the new campaign's
- * state, and its handoff grounds the new opening session. The origin ids are
- * recorded for provenance; the origin is never re-resolved afterwards.
+ * state, and its handoff grounds the new opening session.
  */
 export function forkCampaignFromSession(
   db: Database,
@@ -959,36 +1045,9 @@ export function forkCampaignFromSession(
     if (!origin) return null;
 
     const now = nowIso();
-    const campaignId = newId();
     const forkSessionId = newId();
-
-    db.query(
-      `INSERT INTO campaigns
-         (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
-          cast_snapshot, starting_situation, active_session_id,
-          forked_from_campaign_id, forked_from_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      campaignId,
-      name,
-      origin.world_id,
-      origin.protagonist_id,
-      JSON.stringify(origin.world_snapshot),
-      JSON.stringify(origin.protagonist_snapshot),
-      JSON.stringify(origin.cast),
-      origin.starting_situation,
-      forkSessionId,
-      origin.id,
-      source.id,
-      now,
-      now,
-    );
-
-    db.query(
-      `INSERT INTO sessions
-         (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at)
-       VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
-    ).run(forkSessionId, campaignId, source.title, source.handoff ?? "", now, now);
+    const campaignId = insertForkCampaign(db, origin, name, source.id, forkSessionId, now);
+    insertForkSession(db, campaignId, forkSessionId, source, source.handoff ?? "", now);
 
     const copiedSubjectIds = createCampaignLocalSubjects(db, source.id, campaignId);
     forkRelationships(db, source.id, campaignId, copiedSubjectIds);
@@ -1007,23 +1066,7 @@ export function forkCampaignFromSession(
         "SELECT category, subject, subject_kind, subject_id, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
       )
       .all(source.id);
-    for (const item of checkpoint) {
-      db.query(
-        `INSERT INTO campaign_state_items
-           (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        newId(),
-        campaignId,
-        item.category,
-        item.subject,
-        item.subject_kind,
-        item.subject_id,
-        item.content,
-        item.created_at,
-        now,
-      );
-    }
+    copyStateItems(db, campaignId, checkpoint, now);
 
     return {
       campaign: getCampaign(db, campaignId)!,
@@ -1031,6 +1074,96 @@ export function forkCampaignFromSession(
     };
   });
   return fork.immediate(sessionId, input.name);
+}
+
+/**
+ * Forks from a message in the open or a completed session into a new
+ * independent campaign: the captured snapshots and starting situation are
+ * copied by value exactly like a boundary fork, the campaign's CURRENT state
+ * notes, relationships, and event history become the fork's own under new ids,
+ * the handoff that grounded the source session grounds the fork's first
+ * session, and the transcript is the selected rows up to and including the
+ * chosen message — drafts and unselected alternates excluded — renumbered
+ * from 1 with their timestamps kept. Null when the session or the message does
+ * not exist (message ids are session-scoped).
+ */
+export function forkCampaignFromMessage(
+  db: Database,
+  sessionId: string,
+  messageId: string,
+  input: ForkInput,
+): CreatedFork | null {
+  const fork = db.transaction(
+    (id: string, mid: string, name: string): CreatedFork | null => {
+      const source = getSessionRecord(db, id);
+      if (!source) return null;
+      const origin = getCampaign(db, source.campaign_id);
+      if (!origin) return null;
+      const message = db
+        .query<{ position: number }, [string, string]>(
+          "SELECT position FROM messages WHERE id = ? AND session_id = ?",
+        )
+        .get(mid, id);
+      if (!message) return null;
+
+      const now = nowIso();
+      const forkSessionId = newId();
+      const campaignId = insertForkCampaign(db, origin, name, source.id, forkSessionId, now);
+      insertForkSession(
+        db,
+        campaignId,
+        forkSessionId,
+        source,
+        sessionGroundingHandoff(db, source.campaign_id, source.id),
+        now,
+      );
+
+      copyStateItems(db, campaignId, listCampaignState(db, source.campaign_id), now);
+      forkCampaignRelationships(db, source.campaign_id, campaignId);
+
+      const history = db
+        .query<
+          {
+            role: string;
+            speaker_name: string;
+            content: string;
+            status: string;
+            created_at: string;
+            updated_at: string;
+          },
+          [string, number]
+        >(
+          `SELECT role, speaker_name, content, status, created_at, updated_at FROM messages
+           WHERE session_id = ? AND selected = 1 AND position <= ?
+             AND (role = 'user' OR status = 'complete')
+           ORDER BY position`,
+        )
+        .all(id, message.position);
+      history.forEach((row, index) => {
+        db.query(
+          `INSERT INTO messages
+             (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        ).run(
+          newId(),
+          forkSessionId,
+          index + 1,
+          row.role,
+          row.speaker_name,
+          row.content,
+          row.status,
+          row.created_at,
+          row.updated_at,
+        );
+      });
+
+      return {
+        campaign: getCampaign(db, campaignId)!,
+        session: sessionFromRow(getSessionRecord(db, forkSessionId)!),
+      };
+    },
+  );
+  return fork.immediate(sessionId, messageId, input.name);
 }
 
 export function listCampaignState(db: Database, campaignId: string): CampaignStateItem[] {

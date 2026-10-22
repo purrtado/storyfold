@@ -37,6 +37,7 @@ import {
   deleteWorldCharacter,
   deleteCampaignStateItem,
   deleteWorldEntry,
+  forkCampaignFromMessage,
   forkCampaignFromSession,
   getCampaign,
   getCharacter,
@@ -827,6 +828,23 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
         return jsonError(405, "Method not allowed");
       }
       if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
+      if (segments[5] === "fork" && request.method === "POST") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        try {
+          const session = getSession(ctx.db, sessionId);
+          if (!session) return notFound("Unknown session");
+          const sourceCampaign = getCampaign(ctx.db, session.campaign_id);
+          if (!sourceCampaign) return jsonError(500, "Internal server error");
+          if (ctx.play.hasPending(sourceCampaign.active_session_id)) {
+            throw new BusyError("A reply is already being generated for this session");
+          }
+          const forked = forkCampaignFromMessage(ctx.db, sessionId, messageId, parseForkInput(body));
+          return forked ? jsonResponse(forked, 201) : notFound("Unknown message");
+        } catch (error) {
+          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+        }
+      }
       if (segments[5] === "select" && request.method === "POST") {
         try {
           return jsonResponse({ messages: ctx.play.selectVariant(sessionId, messageId) });
