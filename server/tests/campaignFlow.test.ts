@@ -1211,6 +1211,14 @@ describe("forking from a message", () => {
       expect(
         (await transcript(base.url, draftFork.session.id)).map((row) => row.content),
       ).toEqual(["I arrive.", "The gate opens."]);
+      const draft = (await transcript(base.url, seeded.session.id)).at(-1)!;
+      expect(draft.status).toBe("interrupted");
+      const atDraft = await json(
+        `/api/sessions/${seeded.session.id}/messages/${draft.id}/fork`,
+        "POST",
+        { name: "At the draft" },
+      );
+      expect(atDraft.status).toBe(404);
     } finally {
       await server.stop();
     }

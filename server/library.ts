@@ -1112,7 +1112,8 @@ export function forkCampaignFromMessage(
       if (!origin) return null;
       const message = db
         .query<{ position: number }, [string, string]>(
-          "SELECT position FROM messages WHERE id = ? AND session_id = ?",
+          `SELECT position FROM messages
+           WHERE id = ? AND session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete')`,
         )
         .get(mid, id);
       if (!message) return null;
