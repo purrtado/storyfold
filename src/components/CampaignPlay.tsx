@@ -113,6 +113,7 @@ function MessageRow(props: {
   const showSwipes = trailingNarration && variantIds.length > 1;
   const canAct = props.actionsAllowed;
   const canEdit = canAct && message.status === "complete";
+  const canFork = props.canFork && !isDraft;
   const canDeleteSwipe = canAct && trailingNarration && !isDraft && variantIds.length > 1;
   const canRegenerate = props.canGenerate && trailingNarration && !isDraft;
   const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
@@ -286,7 +287,7 @@ function MessageRow(props: {
     </form>
   );
 
-  const menu = (canAct || props.canFork) && (
+  const menu = (canAct || canFork) && (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button type="button" className={messageControlClasses} aria-label="Message actions">
@@ -328,7 +329,7 @@ function MessageRow(props: {
               </DropdownMenu.Portal>
             </DropdownMenu.Sub>
           )}
-          {props.canFork && (
+          {canFork && (
             <DropdownMenu.Item className="message-menu-item" onSelect={startFork}>
               Fork from here
             </DropdownMenu.Item>
@@ -584,7 +585,8 @@ export function CampaignPlay(props: {
   const handleForkFromMessage = (messageId: string, name: string) => {
     setActionError("");
     const forked = forkFromMessage(props.sessionId, messageId, name).then(async (result) => {
-      await props.onSyncSession(result.session.id);
+      // The fork exists now; a failed list refresh must not invite a duplicate retry.
+      await props.onSyncSession(result.session.id).catch(() => {});
       navigate(`/sessions/${encodeURIComponent(result.session.id)}`);
     });
     forked.catch(surfaceActionError);
@@ -600,11 +602,8 @@ export function CampaignPlay(props: {
   // A send renders its player turn optimistically until the transcript lists
   // the accepted row; before acceptance the row cannot exist yet.
   const sending = live?.kind === "message" && live.phase !== "error" ? live : null;
-  const sentListed = !sending || (sending.pendingMessageId !== undefined
-    ? messages.some((message) => message.role === "user"
-      && (message.id === sending.playerMessageId
-        || (!sending.playerMessageId && message.content === sending.playerText)))
-    : false);
+  const sentListed = !sending || (sending.playerMessageId !== undefined
+    && messages.some((message) => message.id === sending.playerMessageId));
   const unmatchedLive = liveUnlisted && !regenerateInPlace;
   const displayedMessages = regenerateInPlace && trailingMessage ? (() => {
     const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
