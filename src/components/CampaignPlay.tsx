@@ -496,7 +496,7 @@ export function CampaignPlay(props: {
   );
   const hasPending = messages.some((message) => message.role === "assistant" && message.status === "pending")
     || Boolean(live?.pendingMessageId && live.phase !== "error");
-  const transcriptReady = props.messages !== undefined && !props.messagesLoading && !props.messagesError;
+  const transcriptReady = props.messages !== undefined && !props.messagesError;
   const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || modelCatalogState === "loading";
   const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
   // Row actions match what the server accepts for this session; only sends need
@@ -546,10 +546,10 @@ export function CampaignPlay(props: {
   }, [hasPending, props.onRefreshMessages, props.sessionId]);
 
   useEffect(() => {
-    if (!isActiveSession || props.sessionLoading || props.sessionError || !props.session || !transcriptReady || modelCatalogState === "loading") return;
+    if (!isActiveSession || props.sessionLoading || props.sessionError || !props.session || !transcriptReady || props.messagesLoading || modelCatalogState === "loading") return;
     if (messages.length !== 0) return;
     props.onOpen(props.sessionId, selectedModel || undefined);
-  }, [isActiveSession, messages.length, modelCatalogState, props.generation?.phase, props.generation?.sessionId, props.onOpen, props.session, props.sessionError, props.sessionId, props.sessionLoading, selectedModel, transcriptReady]);
+  }, [isActiveSession, messages.length, modelCatalogState, props.generation?.phase, props.generation?.sessionId, props.messagesLoading, props.onOpen, props.session, props.sessionError, props.sessionId, props.sessionLoading, selectedModel, transcriptReady]);
 
   const handleSend = (value: string) => {
     setFollowing(true);
