@@ -1069,6 +1069,32 @@ describe("forking from a message", () => {
     expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
   });
 
+  test("a message fork from an open fork session keeps the inherited handoff", async () => {
+    const seeded = await seedCampaign("MsgForkInherited", "Inherited fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+
+    const boundary = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "The boundary fork" });
+    expect(boundary.status).toBe(201);
+    const boundaryFork = (await boundary.json()) as { campaign: Campaign; session: Session };
+    expect(boundaryFork.session.handoff).toBe("The party reached the northern pass at dusk.");
+
+    await completeTurn(base.url, boundaryFork.session.id, "I climb the ridge.", "The valley opens below.");
+    const message = (await transcript(base.url, boundaryFork.session.id)).at(-1)!;
+    const forked = await json(
+      `/api/sessions/${boundaryFork.session.id}/messages/${message.id}/fork`,
+      "POST",
+      { name: "From the ridge" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
+  });
+
   test("the cut excludes swipes and drafts, renumbers from 1, and may end on a player message", async () => {
     const seeded = await seedCampaign("MsgForkCut", "Cut fork situation.");
     await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");

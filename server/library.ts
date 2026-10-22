@@ -814,11 +814,11 @@ export function listCampaignSessions(db: Database, campaignId: string): Session[
 }
 
 /**
- * The incoming handoff that grounded a session's transcript: the handoff
- * written at the close of the latest completed session before it (null for a
- * campaign's opening session). For an open session this is exactly what
- * sessionGroundingHandoff returns; a closed session's own handoff is its
- * outgoing summary, never its grounding.
+ * The handoff written at the close of the latest completed session before
+ * this one (null for a campaign's opening session). A closed session's own
+ * handoff is its outgoing summary, never its grounding; an open fork
+ * session's inherited grounding lives in session.handoff and is resolved by
+ * sessionGroundingHandoff instead.
  */
 function sessionIncomingHandoff(db: Database, session: SessionRecord): string | null {
   const previous = db
@@ -1120,7 +1120,16 @@ export function forkCampaignFromMessage(
       const now = nowIso();
       const forkSessionId = newId();
       const campaignId = insertForkCampaign(db, origin, name, source.id, forkSessionId, now);
-      insertForkSession(db, campaignId, forkSessionId, source, sessionIncomingHandoff(db, source), now);
+      insertForkSession(
+        db,
+        campaignId,
+        forkSessionId,
+        source,
+        source.closed_at === null
+          ? sessionGroundingHandoff(db, source.campaign_id, source.id)
+          : sessionIncomingHandoff(db, source),
+        now,
+      );
 
       copyStateItems(db, campaignId, listCampaignState(db, source.campaign_id), now);
       forkCampaignRelationships(db, source.campaign_id, campaignId);
