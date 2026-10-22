@@ -393,7 +393,10 @@ export function CampaignPlay(props: {
   const transcriptReady = props.messages !== undefined && !props.messagesLoading && !props.messagesError;
   const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || modelCatalogState === "loading";
   const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
-  const actionsAllowed = isActiveSession && !busy;
+  // Row actions match what the server accepts for this session; only sends need
+  // the app-wide exclusivity that `busy` tracks.
+  const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
+  const actionsAllowed = isActiveSession && props.messages !== undefined && !sessionBusy;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
