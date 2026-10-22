@@ -9,6 +9,9 @@ export type Generation = {
   sessionId: string;
   kind?: GenerationRequest["kind"];
   pendingMessageId?: string;
+  playerMessageId?: string;
+  /** The player text this generation was started with (kind "message"). */
+  playerText?: string;
   text: string;
   reasoning?: string;
   phase: GenerationPhase;
@@ -180,7 +183,14 @@ export function useChatGeneration(options: {
     textRef.current = "";
     reasoningRef.current = "";
     chat.setMessages([]);
-    setGeneration({ id: request.id, sessionId, kind, text: "", phase: "streaming" });
+    setGeneration({
+      id: request.id,
+      sessionId,
+      kind,
+      text: "",
+      phase: "streaming",
+      ...(kind === "message" ? { playerText: content } : {}),
+    });
     void chat.sendMessage(kind === "message" ? content : "Opening narration").catch(() => {});
     return true;
   }, [chat]);

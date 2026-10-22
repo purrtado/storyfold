@@ -476,9 +476,17 @@ export function CampaignPlay(props: {
   const liveUnlisted = live
     ? live.pendingMessageId
       ? !messages.some((message) => message.id === live.pendingMessageId)
-      : live.kind === "regenerate" && live.phase !== "error"
+      : live.phase !== "error" && (live.kind === "regenerate" || live.kind === "message")
     : false;
   const regenerateInPlace = liveUnlisted && live?.kind === "regenerate" && live.phase !== "error" && trailingMessage?.role === "assistant";
+  // A send renders its player turn optimistically until the transcript lists
+  // the accepted row; before acceptance the row cannot exist yet.
+  const sending = live?.kind === "message" && live.phase !== "error" ? live : null;
+  const sentListed = !sending || (sending.pendingMessageId !== undefined
+    ? messages.some((message) => message.role === "user"
+      && (message.id === sending.playerMessageId
+        || (!sending.playerMessageId && message.content === sending.playerText)))
+    : false);
   const unmatchedLive = liveUnlisted && !regenerateInPlace;
   const displayedMessages = regenerateInPlace && trailingMessage ? (() => {
     const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
@@ -591,6 +599,30 @@ export function CampaignPlay(props: {
                 />
                 );
               })}
+              {sending && !sentListed && props.campaign && (
+                <MessageRow
+                  key="optimistic-player-turn"
+                  message={{
+                    id: "optimistic-player-turn",
+                    session_id: props.sessionId,
+                    position: messages.length + 1,
+                    role: "user",
+                    speaker_name: props.campaign.protagonist_snapshot.name,
+                    content: sending.playerText ?? "",
+                    status: "complete",
+                    created_at: "",
+                    updated_at: "",
+                  }}
+                  trailing={false}
+                  lastUser={false}
+                  actionsAllowed={false}
+                  deleteCount={0}
+                  onRegenerate={handleRegenerate}
+                  onSelectVariant={handleSelectVariant}
+                  onEditMessage={handleEditMessage}
+                  onDeleteMessage={handleDeleteMessage}
+                />
+              )}
               {unmatchedLive && live && (
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
