@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
@@ -34,6 +34,36 @@ function PendingDots() {
   );
 }
 
+function ThinkingDisclosure(props: { reasoning: string; answering: boolean }) {
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const pinned = useRef(true);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (element && pinned.current) element.scrollTop = element.scrollHeight;
+  }, [props.reasoning]);
+  return (
+    <details
+      className="mbe-2 text-sm text-muted"
+      onToggle={() => {
+        const element = textRef.current;
+        if (element && pinned.current) element.scrollTop = element.scrollHeight;
+      }}
+    >
+      <summary className="cursor-pointer select-none">{props.answering ? "Thought process" : "Thinking…"}</summary>
+      <p
+        ref={textRef}
+        className="mbs-2 max-h-48 overflow-y-auto whitespace-pre-wrap border-s-2 border-border ps-3 text-xs leading-5"
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          pinned.current = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
+        }}
+      >
+        {props.reasoning}
+      </p>
+    </details>
+  );
+}
+
 const messageControlClasses =
   "pressable inline-flex size-7 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
 
@@ -43,6 +73,7 @@ const REVEAL_CLASSES =
 function MessageRow(props: {
   message: TranscriptMessage;
   liveText?: string;
+  reasoning?: string;
   streaming?: boolean;
   trailing: boolean;
   lastUser: boolean;
@@ -239,6 +270,7 @@ function MessageRow(props: {
           {menu}
         </div>
       </div>
+      {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {editing ? editForm : (
         content
           ? <Markdown content={content} streaming={props.streaming} />
@@ -437,9 +469,44 @@ export function CampaignPlay(props: {
     removed.catch(surfaceActionError);
     return removed;
   };
-  const unmatchedLive = live?.pendingMessageId
-    ? !messages.some((message) => message.id === live.pendingMessageId)
+  const trailingMessage = messages.at(-1);
+  const liveUnlisted = live
+    ? live.pendingMessageId
+      ? !messages.some((message) => message.id === live.pendingMessageId)
+      : live.kind === "regenerate" && live.phase !== "error"
     : false;
+  const regenerateInPlace = liveUnlisted && live?.kind === "regenerate" && live.phase !== "error" && trailingMessage?.role === "assistant";
+  const unmatchedLive = liveUnlisted && !regenerateInPlace;
+  const displayedMessages = regenerateInPlace && trailingMessage ? (() => {
+    const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
+    return [
+      ...messages.slice(0, -1),
+      { ...trailingMessage, status: "pending" as const, content: "", variant_ids: [...kept, ""], variant_index: kept.length },
+    ];
+  })() : messages;
+
+  useEffect(() => {
+    const variantIds = trailingMessage?.role === "assistant" ? trailingMessage.variant_ids ?? [] : [];
+    if (!actionsAllowed || variantIds.length < 2) return;
+    const variantIndex = trailingMessage?.variant_index ?? 0;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [role='menu'], [role='dialog']"))) return;
+      if (event.key === "ArrowLeft") {
+        if (variantIndex <= 0) return;
+        handleSelectVariant(variantIds[variantIndex - 1]);
+      } else if (variantIndex < variantIds.length - 1) {
+        handleSelectVariant(variantIds[variantIndex + 1]);
+      } else {
+        handleRegenerate();
+      }
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   useEffect(() => {
     localStorage.setItem(PANEL_COLLAPSED_KEY, panelCollapsed ? "1" : "0");
@@ -501,12 +568,15 @@ export function CampaignPlay(props: {
                   <p className="max-w-md text-sm text-muted">{isActiveSession ? "The narrator will open the first scene using the context you chose." : "This session is read-only and will not open or accept new actions."}</p>
                   {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onRetryOpening(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
                 </div>
-              ) : messages.map((message, index) => (
+              ) : displayedMessages.map((message, index) => {
+                const isLive = regenerateInPlace ? index === displayedMessages.length - 1 : message.id === live?.pendingMessageId && message.status === "pending";
+                return (
                 <MessageRow
                   key={message.id}
                   message={message}
-                  liveText={message.id === live?.pendingMessageId && message.status === "pending" && live.text ? live.text : undefined}
-                  streaming={message.id === live?.pendingMessageId && live.phase === "streaming"}
+                  liveText={isLive && live?.text ? live.text : undefined}
+                  reasoning={isLive ? live?.reasoning : undefined}
+                  streaming={isLive && live?.phase === "streaming"}
                   trailing={index === messages.length - 1}
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
@@ -516,10 +586,12 @@ export function CampaignPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                 />
-              ))}
+                );
+              })}
               {unmatchedLive && live && (
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
+                  {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} answering={Boolean(live.text)} />}
                   {live.text ? <Markdown content={live.text} streaming={live.phase === "streaming"} /> : live.phase === "streaming" ? <PendingDots /> : null}
                 </article>
               )}
