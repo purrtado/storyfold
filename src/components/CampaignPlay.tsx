@@ -505,8 +505,10 @@ export function CampaignPlay(props: {
   const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
   const actionsAllowed = isActiveSession && props.messages !== undefined && !sessionBusy;
   const canGenerate = actionsAllowed && !busy;
-  // Forking is allowed in the active session and in closed (read-only) ones.
-  const canFork = props.messages !== undefined && !sessionBusy;
+  // Forking is allowed in the active session and in closed (read-only) ones,
+  // but the server refuses it while this campaign's active session generates.
+  const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
+  const canFork = props.messages !== undefined && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
