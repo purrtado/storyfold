@@ -1230,6 +1230,8 @@ describe("regeneration, swipes, edits, and deletes", () => {
     try {
       await readSse(await postOpening(server.url, session.id));
       await readSse(await postRegenerate(server.url, session.id));
+      // The 99k swipe is the oldest alternate; unselected after the regenerate.
+      const swipeId = (await transcript(server.url, session.id))[0].variant_ids[0];
 
       // The unselected 99k swipe does not count: a 90k input still fits.
       const turn = await postMessage(server.url, session.id, { content: "B".repeat(90_000) });
@@ -1250,6 +1252,12 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(oversizedBody.code).toBe("context_limit");
       const kept = await patchMessage(server.url, session.id, rows[1].id, { content: "B".repeat(90_000) });
       expect(kept.status).toBe(200);
+
+      // An unselected alternate feeds no model history: growing it is uncapped.
+      const swipeEdit = await patchMessage(server.url, session.id, swipeId, {
+        content: "D".repeat(100_000),
+      });
+      expect(swipeEdit.status).toBe(200);
     } finally {
       await server.stop();
     }

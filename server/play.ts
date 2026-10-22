@@ -339,13 +339,16 @@ export class PlayService {
       const message = this.getSessionMessage(sid, id);
       if (!message) throw new UnknownEntityError("Unknown message");
       if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
-      const completed = this.completedHistoryCharacters(sid) - (message.selected === 1 ? message.content.length : 0);
-      if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
-        throw new ContextLimitError(
-          `This session's completed history is ${completed} characters and this edit would pass the ` +
-            `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
-            "with a handoff.",
-        );
+      if (message.selected === 1) {
+        // Only the selected row feeds the model, so only its growth is capped.
+        const completed = this.completedHistoryCharacters(sid) - message.content.length;
+        if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
+          throw new ContextLimitError(
+            `This session's completed history is ${completed} characters and this edit would pass the ` +
+              `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
+              "with a handoff.",
+          );
+        }
       }
       const now = nowIso();
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
