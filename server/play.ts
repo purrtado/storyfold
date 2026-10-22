@@ -5,6 +5,7 @@ import type { Campaign, CampaignStateItem, CharacterSnapshot, Message } from "..
 import { newId, nowIso } from "./db";
 import {
   SessionClosedError,
+  UnknownEntityError,
   listCampaignState,
   sessionGroundingHandoff,
   ValidationError,
@@ -32,10 +33,40 @@ export class AlreadyOpenedError extends Error {}
 /** Accepting this input would push completed history past the limit. */
 export class ContextLimitError extends Error {}
 
+/** The session has no messages to regenerate. */
+export class NothingToRegenerateError extends Error {}
+
+/** Selection and swipe deletion exist only on the trailing narration. */
+export class NotTrailingError extends Error {}
+
+/** The last remaining alternate was offered to a swipe delete. */
+export class SoleVariantError extends Error {}
+
+/** Only completed messages can be edited. */
+export class NotEditableError extends Error {}
+
 export interface ReservedTurn {
   playerId: string | null;
   pendingId: string;
 }
+
+/**
+ * Wire transcript row: `variant_ids` (oldest first) and `variant_index`
+ * describe the trailing narration's alternates; every other row carries
+ * `[]` / `0`.
+ */
+export interface TranscriptMessage extends Message {
+  variant_ids: string[];
+  variant_index: number;
+}
+
+/** Storage row including the selection flag; never sent to the client. */
+interface MessageRow extends Message {
+  selected: number;
+}
+
+const MESSAGE_COLUMNS =
+  "id, session_id, position, role, speaker_name, content, status, created_at, updated_at";
 
 export interface PlaySettings {
   model: string;
@@ -79,14 +110,32 @@ export class PlayService {
 
   constructor(private db: Database) {}
 
-  transcript(sessionId: string): Message[] {
-    return this.db
-      .query<Message, [string]>("SELECT * FROM messages WHERE session_id = ? ORDER BY position")
+  /** Selected rows in position order; the trailing narration carries its alternates. */
+  transcript(sessionId: string): TranscriptMessage[] {
+    const rows = this.db
+      .query<Message, [string]>(
+        `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE session_id = ? AND selected = 1 ORDER BY position`,
+      )
       .all(sessionId);
+    const plain = rows.map((row) => ({ ...row, variant_ids: [], variant_index: 0 }));
+    const trailing = plain.at(-1);
+    if (!trailing || trailing.role !== "assistant") return plain;
+    const variants = this.db
+      .query<{ id: string; selected: number }, [string, number]>(
+        "SELECT id, selected FROM messages WHERE session_id = ? AND position = ? ORDER BY created_at, rowid",
+      )
+      .all(sessionId, trailing.position);
+    const selectedAt = variants.findIndex((variant) => variant.selected === 1);
+    return [
+      ...plain.slice(0, -1),
+      { ...trailing, variant_ids: variants.map((variant) => variant.id), variant_index: Math.max(selectedAt, 0) },
+    ];
   }
 
   getMessage(messageId: string): Message | null {
-    return this.db.query<Message, [string]>("SELECT * FROM messages WHERE id = ?").get(messageId) ?? null;
+    return (
+      this.db.query<Message, [string]>(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`).get(messageId) ?? null
+    );
   }
 
   /**
@@ -132,23 +181,19 @@ export class PlayService {
 
   /**
    * Opening narration reserves only the pending row; no player input exists.
-   * Every active session may open exactly once — the campaign's first from the
-   * starting situation, later ones (and a fork's opening session) from their
-   * leading handoff — so a fresh session is never stuck before its first turn.
-   * Retries stay possible while only failed/interrupted drafts exist. All
-   * guards sit inside the reservation transaction: a second /opening that
-   * raced the first can never reserve after the first settled complete.
+   * Every active session may open exactly once, and only from emptiness: once
+   * any message exists — a settled opening, a draft, or accepted player input
+   * — retries go through regeneration. All guards sit inside the reservation
+   * transaction: a second /opening that raced the first can never reserve
+   * after the first settled complete.
    */
   reserveOpening(sessionId: string): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
       this.requireOpenSession(id);
-      const completedOpening = this.db
-        .query<Message, [string]>(
-          "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'complete' LIMIT 1",
-        )
+      const existing = this.db
+        .query<unknown, [string]>("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1")
         .get(id);
-      if (completedOpening) throw new AlreadyOpenedError("This session has already opened");
-      if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
+      if (existing) throw new AlreadyOpenedError("This session has already opened");
       const pendingId = newId();
       this.insertMessage(
         id,
@@ -166,6 +211,154 @@ export class PlayService {
   }
 
   /**
+   * Regeneration adds a selected pending alternate at the trailing narration's
+   * position: complete alternates stay as swipes, failed or interrupted drafts
+   * are discarded. A session ending on a player turn reserves a fresh reply;
+   * an empty session has nothing to regenerate.
+   */
+  reserveRegeneration(sessionId: string): ReservedTurn {
+    const reserve = this.db.transaction((id: string): ReservedTurn => {
+      this.requireOpenSession(id);
+      if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
+      const lastUser = this.db
+        .query<Pick<Message, "id">, [string]>(
+          "SELECT id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY position DESC LIMIT 1",
+        )
+        .get(id);
+      const trailing = this.db
+        .query<MessageRow, [string]>(
+          `SELECT ${MESSAGE_COLUMNS}, selected FROM messages
+           WHERE session_id = ? AND selected = 1 ORDER BY position DESC LIMIT 1`,
+        )
+        .get(id);
+      if (!lastUser && !trailing) throw new NothingToRegenerateError("This session has nothing to regenerate");
+      let position: number;
+      if (trailing && trailing.role === "assistant") {
+        position = trailing.position;
+        this.db
+          .query("DELETE FROM messages WHERE session_id = ? AND position = ? AND status IN ('failed', 'interrupted')")
+          .run(id, position);
+      } else {
+        position = this.nextPosition(id);
+      }
+      this.db
+        .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
+        .run(id, position);
+      const pendingId = newId();
+      this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId);
+      return { playerId: lastUser?.id ?? null, pendingId };
+    });
+    return reserve.immediate(sessionId);
+  }
+
+  /**
+   * Selects one alternate of the trailing narration; drafts left behind are
+   * deleted. Anything else — a player message, older narration — is a
+   * conflict; a foreign or unknown id is missing.
+   */
+  selectVariant(sessionId: string, messageId: string): TranscriptMessage[] {
+    const select = this.db.transaction((sid: string, id: string): TranscriptMessage[] => {
+      this.requireOpenSession(sid);
+      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
+      const message = this.getSessionMessage(sid, id);
+      if (!message) throw new UnknownEntityError("Unknown message");
+      if (message.role !== "assistant" || message.position !== this.maxPosition(sid)) {
+        throw new NotTrailingError("Only the latest narration can be switched");
+      }
+      this.db
+        .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
+        .run(sid, message.position);
+      this.db
+        .query(
+          "DELETE FROM messages WHERE session_id = ? AND position = ? AND status IN ('failed', 'interrupted') AND id != ?",
+        )
+        .run(sid, message.position, id);
+      this.db.query("UPDATE messages SET selected = 1, updated_at = ? WHERE id = ?").run(nowIso(), id);
+      return this.transcript(sid);
+    });
+    return select.immediate(sessionId, messageId);
+  }
+
+  /**
+   * Deletes one alternate of the trailing narration (scope "variant"; deleting
+   * the shown one selects the newest remaining, and the sole alternate is
+   * refused — delete the message instead), a message with all its alternates
+   * (default), or the message and everything after it (scope "after").
+   * Positions never shift: the next turn continues after the highest survivor.
+   */
+  deleteMessage(sessionId: string, messageId: string, scope: "variant" | "after" | null): TranscriptMessage[] {
+    const remove = this.db.transaction(
+      (sid: string, id: string, cut: "variant" | "after" | null): TranscriptMessage[] => {
+        this.requireOpenSession(sid);
+        if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
+        const message = this.getSessionMessage(sid, id);
+        if (!message) throw new UnknownEntityError("Unknown message");
+        if (cut === "variant") {
+          if (message.role !== "assistant" || message.position !== this.maxPosition(sid)) {
+            throw new NotTrailingError("Only a swipe of the latest narration can be deleted");
+          }
+          const siblings = this.db
+            .query<{ total: number }, [string, number]>(
+              "SELECT COUNT(*) AS total FROM messages WHERE session_id = ? AND position = ?",
+            )
+            .get(sid, message.position)!.total;
+          if (siblings < 2) {
+            throw new SoleVariantError("The only reply cannot be deleted as a swipe; delete the message instead");
+          }
+          this.db.query("DELETE FROM messages WHERE id = ?").run(id);
+          if (message.selected === 1) {
+            this.db
+              .query(
+                `UPDATE messages SET selected = 1, updated_at = ? WHERE id = (
+                   SELECT id FROM messages WHERE session_id = ? AND position = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1
+                 )`,
+              )
+              .run(nowIso(), sid, message.position);
+          }
+        } else if (cut === "after") {
+          this.db.query("DELETE FROM messages WHERE session_id = ? AND position >= ?").run(sid, message.position);
+        } else {
+          this.db.query("DELETE FROM messages WHERE session_id = ? AND position = ?").run(sid, message.position);
+        }
+        return this.transcript(sid);
+      },
+    );
+    return remove.immediate(sessionId, messageId, scope);
+  }
+
+  /**
+   * Edits a completed message in place; narration edits change only that
+   * alternate. Role, speaker, and position never move; only growth past the
+   * history limit is refused.
+   */
+  editMessage(sessionId: string, messageId: string, content: string): Message {
+    const edit = this.db.transaction((sid: string, id: string, text: string): Message => {
+      this.requireOpenSession(sid);
+      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
+      const message = this.getSessionMessage(sid, id);
+      if (!message) throw new UnknownEntityError("Unknown message");
+      if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
+      if (message.selected === 1) {
+        // Only the selected row feeds the model, so only its growth is capped.
+        const completed = this.completedHistoryCharacters(sid) - message.content.length;
+        if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
+          throw new ContextLimitError(
+            `This session's completed history is ${completed} characters and this edit would pass the ` +
+              `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
+              "with a handoff.",
+          );
+        }
+      }
+      const now = nowIso();
+      this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
+      const { selected: _selected, ...edited } = { ...message, content: text, updated_at: now };
+      return edited;
+    });
+    return edit.immediate(sessionId, messageId, content);
+  }
+
+  /**
    * Write-side half of the read-only closed-session invariant, checked inside
    * the reservation transaction: a close that raced an in-flight play request
    * (between the route's early check and the provider-settings await) loses.
@@ -177,6 +370,17 @@ export class PlayService {
     if (!session || session.closed_at !== null) {
       throw new SessionClosedError("This session is closed; play continues in the campaign's active session");
     }
+  }
+
+  /** Session-scoped message lookup: another session's id is missing. */
+  private getSessionMessage(sessionId: string, messageId: string): MessageRow | null {
+    return (
+      this.db
+        .query<MessageRow, [string, string]>(
+          `SELECT ${MESSAGE_COLUMNS}, selected FROM messages WHERE id = ? AND session_id = ?`,
+        )
+        .get(messageId, sessionId) ?? null
+    );
   }
 
   /** True while a narration run is being generated for this session. */
@@ -194,19 +398,23 @@ export class PlayService {
   private completedHistoryCharacters(sessionId: string): number {
     const row = this.db
       .query<{ total: number | null }, [string]>(
-        "SELECT SUM(length(content)) AS total FROM messages WHERE session_id = ? AND (role = 'user' OR status = 'complete')",
+        "SELECT SUM(length(content)) AS total FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete')",
       )
       .get(sessionId);
     return row?.total ?? 0;
   }
 
-  private nextPosition(sessionId: string): number {
-    const row = this.db
-      .query<{ next: number }, [string]>(
-        "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM messages WHERE session_id = ?",
+  /** Alternates share a position; the next turn still goes past the highest. */
+  private maxPosition(sessionId: string): number {
+    return this.db
+      .query<{ max: number }, [string]>(
+        "SELECT COALESCE(MAX(position), 0) AS max FROM messages WHERE session_id = ?",
       )
-      .get(sessionId)!;
-    return row.next;
+      .get(sessionId)!.max;
+  }
+
+  private nextPosition(sessionId: string): number {
+    return this.maxPosition(sessionId) + 1;
   }
 
   private insertMessage(
@@ -221,8 +429,8 @@ export class PlayService {
   ): void {
     this.db
       .query(
-        `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
       .run(id, sessionId, position, role, speakerName, content, status, now, now);
   }
@@ -238,14 +446,12 @@ export class PlayService {
    * handoff; a later session the one written at the previous close). The
    * campaign's current manual state is included as written — journals in
    * captured order. Only a story without prior narration asks the model to
-   * start a scene; an opening retried after accepted player turns continues
-   * the story.
+   * start a scene.
    */
   narratorSystemPrompt(
     campaign: Campaign,
     state: CampaignStateItem[],
     handoff: string | null,
-    opening: boolean,
     hasHistory: boolean,
     relationships: RelationshipPrompt[] = [],
   ): string {
@@ -320,9 +526,6 @@ export class PlayService {
         : handoff !== null
           ? "There is no prior narration in this session: continue the story from the handoff."
           : "There is no prior narration: begin the story now with an opening scene.",
-      ...(opening && hasHistory
-        ? ["An opening was requested after earlier turns: continue, do not restart."]
-        : []),
     ].join("\n");
   }
 
@@ -330,7 +533,7 @@ export class PlayService {
   modelHistory(sessionId: string): NarrationMessage[] {
     return this.db
       .query<{ role: "user" | "assistant"; content: string }, [string]>(
-        "SELECT role, content FROM messages WHERE session_id = ? AND (role = 'user' OR status = 'complete') ORDER BY position",
+        "SELECT role, content FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') ORDER BY position",
       )
       .all(sessionId);
   }
@@ -386,10 +589,8 @@ export class PlayService {
       options.disconnectSignal?.addEventListener("abort", onDisconnect, { once: true });
     }
 
-    // An opening request (no player row) is the protocol kind; whether the
-    // story actually starts fresh depends on the history: an opening retried
-    // after accepted player turns must continue, never restart.
-    const opening = options.playerId === null;
+    // An opening request carries no player row; whether the story starts
+    // fresh depends on the history, not on the protocol kind.
     const history = this.modelHistory(sessionId);
     const state = listCampaignState(this.db, options.campaign.id);
     const handoff = sessionGroundingHandoff(this.db, options.campaign.id, sessionId);
@@ -402,7 +603,6 @@ export class PlayService {
         options.campaign,
         state,
         handoff,
-        opening,
         history.length > 0,
         relationships,
       ),

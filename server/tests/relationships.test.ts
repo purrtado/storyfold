@@ -94,7 +94,7 @@ test("subjects, prompt grounding, session boundary, and fork copies remain isola
   }));
   const originalEvent = appendRelationshipEvent(db, campaign, relationship.id, "Ilyra shared the map.")!;
   const context = relationshipNarrationContext(db, campaign);
-  const prompt = new PlayService(db).narratorSystemPrompt(campaign, [], null, false, false, context);
+  const prompt = new PlayService(db).narratorSystemPrompt(campaign, [], null, false, context);
   expect(prompt).toContain("Mira → Ilyra");
   expect(prompt).toContain("Met during the eclipse.");
   expect(prompt).toContain("Ilyra shared the map.");

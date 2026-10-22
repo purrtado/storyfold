@@ -25,12 +25,19 @@ function seedLibrary(): { worldId: string; protagonistId: string } {
   return { worldId: world.id, protagonistId: protagonist.id };
 }
 
-function insertMessage(sessionId: string, position: number, role: string, status: string, content = "x"): string {
+function insertMessage(
+  sessionId: string,
+  position: number,
+  role: string,
+  status: string,
+  content = "x",
+  selected = 1,
+): string {
   const id = crypto.randomUUID();
   db.query(
-    `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'Narrator', ?, ?, ?, ?)`,
-  ).run(id, sessionId, position, role, content, status, NOW, NOW);
+    `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'Narrator', ?, ?, ?, ?, ?)`,
+  ).run(id, sessionId, position, role, content, status, selected, NOW, NOW);
   return id;
 }
 
@@ -77,16 +84,42 @@ describe("schema invariants", () => {
       starting_situation: "Order.",
     });
     const first = insertMessage(session.id, 1, "user", "complete");
-    expect(() => insertMessage(session.id, 1, "user", "complete")).toThrow(/UNIQUE/);
     const second = insertMessage(session.id, 2, "user", "complete");
+    // A second selected row at one position violates the partial unique index.
+    expect(() => insertMessage(session.id, 2, "user", "complete")).toThrow(/UNIQUE/);
+    // An unselected alternate may share the position with the selected row.
+    const alternate = insertMessage(session.id, 2, "assistant", "complete", "x", 0);
     const rows = db
       .query<{ id: string; position: number }, [string]>(
-        "SELECT id, position FROM messages WHERE session_id = ? ORDER BY position",
+        "SELECT id, position FROM messages WHERE session_id = ? ORDER BY position, selected",
       )
       .all(session.id);
     expect(rows).toEqual([
       { id: first, position: 1 },
+      { id: alternate, position: 2 },
       { id: second, position: 2 },
+    ]);
+  });
+
+  test("only narration has alternates and exactly one row per position is selected", () => {
+    const { worldId, protagonistId } = seedLibrary();
+    const { session } = createCampaign(db, {
+      world_id: worldId,
+      protagonist_id: protagonistId,
+      starting_situation: "Swipe.",
+    });
+    expect(() => insertMessage(session.id, 1, "user", "complete", "x", 0)).toThrow();
+    expect(() => insertMessage(session.id, 1, "assistant", "complete", "x", 2)).toThrow();
+    const swipe = insertMessage(session.id, 1, "assistant", "complete", "older", 0);
+    const chosen = insertMessage(session.id, 1, "assistant", "complete", "newer");
+    const rows = db
+      .query<{ id: string; content: string; selected: number }, [string]>(
+        "SELECT id, content, selected FROM messages WHERE session_id = ? ORDER BY selected, rowid",
+      )
+      .all(session.id);
+    expect(rows).toEqual([
+      { id: swipe, content: "older", selected: 0 },
+      { id: chosen, content: "newer", selected: 1 },
     ]);
   });
 

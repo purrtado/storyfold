@@ -7,8 +7,10 @@ type GenerationPhase = "streaming" | "stopping" | "error";
 export type Generation = {
   id: number;
   sessionId: string;
+  kind?: GenerationRequest["kind"];
   pendingMessageId?: string;
   text: string;
+  reasoning?: string;
   phase: GenerationPhase;
   error?: string;
   code?: string;
@@ -22,7 +24,7 @@ export type AcceptedMessageIds = {
 type GenerationRequest = {
   id: number;
   sessionId: string;
-  kind: "opening" | "message";
+  kind: "opening" | "message" | "regenerate";
   content: string;
   model?: string;
 };
@@ -43,6 +45,7 @@ export function useChatGeneration(options: {
   const requestRef = useRef<GenerationRequest | null>(null);
   const activeRequestRef = useRef<GenerationRequest | null>(null);
   const textRef = useRef("");
+  const reasoningRef = useRef("");
   const busyRef = useRef(false);
   const requestSequence = useRef(0);
   const onAcceptedRef = useRef(options.onAccepted);
@@ -119,6 +122,12 @@ export function useChatGeneration(options: {
           ? { ...current, text: textRef.current }
           : current,
         );
+      } else if (chunk.type === "REASONING_MESSAGE_CONTENT") {
+        reasoningRef.current += chunk.delta;
+        setGeneration((current) => current?.id === request.id
+          ? { ...current, reasoning: reasoningRef.current }
+          : current,
+        );
       } else if (chunk.type === "RUN_ERROR") {
         setGeneration((current) => current?.id === request.id
           ? { ...current, error: chunk.message, code: chunk.code }
@@ -159,7 +168,7 @@ export function useChatGeneration(options: {
 
   const start = useCallback((
     sessionId: string,
-    kind: "opening" | "message",
+    kind: "opening" | "message" | "regenerate",
     content: string,
     model?: string,
   ) => {
@@ -169,8 +178,9 @@ export function useChatGeneration(options: {
     requestRef.current = request;
     activeRequestRef.current = request;
     textRef.current = "";
+    reasoningRef.current = "";
     chat.setMessages([]);
-    setGeneration({ id: request.id, sessionId, text: "", phase: "streaming" });
+    setGeneration({ id: request.id, sessionId, kind, text: "", phase: "streaming" });
     void chat.sendMessage(kind === "message" ? content : "Opening narration").catch(() => {});
     return true;
   }, [chat]);
@@ -182,6 +192,10 @@ export function useChatGeneration(options: {
 
   const open = useCallback((sessionId: string, model?: string) => {
     return start(sessionId, "opening", "", model);
+  }, [start]);
+
+  const regenerate = useCallback((sessionId: string, model?: string) => {
+    return start(sessionId, "regenerate", "", model);
   }, [start]);
 
   const stop = useCallback(async (sessionId: string) => {
@@ -232,5 +246,5 @@ export function useChatGeneration(options: {
     setGeneration((current) => current?.phase === "error" ? null : current);
   }, []);
 
-  return { generation, send, open, stop, dismiss };
+  return { generation, send, open, regenerate, stop, dismiss };
 }

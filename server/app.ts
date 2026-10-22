@@ -13,7 +13,11 @@ import {
   AlreadyOpenedError,
   BusyError,
   ContextLimitError,
+  NotEditableError,
+  NothingToRegenerateError,
+  NotTrailingError,
   PlayService,
+  SoleVariantError,
   parsePlayerContent,
   type ReservedTurn,
 } from "./play";
@@ -186,6 +190,18 @@ function domainErrorResponse(error: unknown): Response | null {
   }
   if (error instanceof ContextLimitError) {
     return jsonError(413, error.message, undefined, { code: "context_limit", accepted: false });
+  }
+  if (error instanceof NothingToRegenerateError) {
+    return jsonError(409, error.message, undefined, { code: "nothing_to_regenerate", accepted: false });
+  }
+  if (error instanceof NotTrailingError) {
+    return jsonError(409, error.message, undefined, { code: "not_trailing", accepted: false });
+  }
+  if (error instanceof SoleVariantError) {
+    return jsonError(409, error.message, undefined, { code: "sole_variant", accepted: false });
+  }
+  if (error instanceof NotEditableError) {
+    return jsonError(409, error.message, undefined, { code: "not_editable", accepted: false });
   }
   if (error instanceof SessionClosedError) {
     return jsonError(409, error.message, undefined, { code: "session_closed", accepted: false });
@@ -639,14 +655,15 @@ async function handleCampaignSessions(
 }
 
 /**
- * Player turns and opening requests share one shape: reserve input + pending
- * reply atomically (committed before any model setup), then stream. A missing
- * provider settles the reserved reply as failed while accepted input stays
- * saved, so the composer's action is never lost and never auto-retried.
+ * Player turns, opening requests, and regenerations share one shape: reserve
+ * input + pending reply atomically (committed before any model setup), then
+ * stream. A missing provider settles the reserved reply as failed while
+ * accepted input stays saved, so the composer's action is never lost and
+ * never auto-retried.
  */
 async function handlePlayPost(
   request: Request,
-  kind: "messages" | "opening",
+  kind: "messages" | "opening" | "regenerate",
   sessionId: string,
   ctx: AppContext,
 ): Promise<Response> {
@@ -692,7 +709,10 @@ async function handlePlayPost(
     if (kind === "messages") {
       return ctx.play.reservePlayerTurn(sessionId, content, campaign.protagonist_snapshot.name);
     }
-    return ctx.play.reserveOpening(sessionId);
+    if (kind === "opening") {
+      return ctx.play.reserveOpening(sessionId);
+    }
+    return ctx.play.reserveRegeneration(sessionId);
   };
   try {
     const reserved = reserveTurn();
@@ -797,12 +817,51 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
       return jsonError(405, "Method not allowed");
     }
     if (action === "messages") {
-      if (request.method === "GET") {
-        if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
-        return jsonResponse({ messages: ctx.play.transcript(sessionId) });
+      const messageId = segments[4];
+      if (messageId === undefined) {
+        if (request.method === "GET") {
+          if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
+          return jsonResponse({ messages: ctx.play.transcript(sessionId) });
+        }
+        if (request.method === "POST") return handlePlayPost(request, "messages", sessionId, ctx);
+        return jsonError(405, "Method not allowed");
       }
-      if (request.method === "POST") return handlePlayPost(request, "messages", sessionId, ctx);
+      if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
+      if (segments[5] === "select" && request.method === "POST") {
+        try {
+          return jsonResponse({ messages: ctx.play.selectVariant(sessionId, messageId) });
+        } catch (error) {
+          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+        }
+      }
+      if (segments[5] !== undefined) return jsonError(404, "Not found");
+      if (request.method === "DELETE") {
+        const scope = new URL(request.url).searchParams.get("scope");
+        if (scope !== null && scope !== "variant" && scope !== "after") {
+          return jsonError(400, "scope must be 'variant' or 'after'", undefined, {
+            code: "invalid_input",
+            accepted: false,
+          });
+        }
+        try {
+          return jsonResponse({ messages: ctx.play.deleteMessage(sessionId, messageId, scope) });
+        } catch (error) {
+          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+        }
+      }
+      if (request.method === "PATCH") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        try {
+          return jsonResponse({ message: ctx.play.editMessage(sessionId, messageId, parsePlayerContent(body)) });
+        } catch (error) {
+          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+        }
+      }
       return jsonError(405, "Method not allowed");
+    }
+    if (action === "regenerate" && request.method === "POST") {
+      return handlePlayPost(request, "regenerate", sessionId, ctx);
     }
     if (action === "opening" && request.method === "POST") {
       return handlePlayPost(request, "opening", sessionId, ctx);
