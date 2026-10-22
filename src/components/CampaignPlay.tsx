@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
 import type { Campaign, Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
-import type { TranscriptMessage } from "../lib/storyApi";
+import { forkFromMessage, type TranscriptMessage } from "../lib/storyApi";
 import type { Generation } from "../lib/useChatGeneration";
 import { Markdown } from "./Markdown";
 import { AppHeader } from "./AppHeader";
@@ -80,11 +80,15 @@ function MessageRow(props: {
   actionsAllowed: boolean;
   /** Generation-starting controls need the app-wide exclusivity, not just session-level actions. */
   canGenerate: boolean;
+  /** Forking works in the active session and in closed (read-only) sessions. */
+  canFork: boolean;
+  campaignName: string;
   deleteCount: number;
   onRegenerate: () => void;
   onSelectVariant: (messageId: string) => void;
   onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
+  onForkMessage: (messageId: string, name: string) => Promise<void>;
 }) {
   const { message } = props;
   const isDraft = message.status !== "complete";
@@ -99,6 +103,9 @@ function MessageRow(props: {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
+  const [confirmFork, setConfirmFork] = useState(false);
+  const [forkName, setForkName] = useState("");
+  const [forking, setForking] = useState(false);
 
   const variantIds = message.variant_ids ?? [];
   const variantIndex = message.variant_index ?? 0;
@@ -110,7 +117,7 @@ function MessageRow(props: {
   const canRegenerate = props.canGenerate && trailingNarration && !isDraft;
   const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
-  const reveal = canAct && !editing && !confirmDelete ? ` ${REVEAL_CLASSES}` : "";
+  const reveal = canAct && !editing && !confirmDelete && !confirmFork ? ` ${REVEAL_CLASSES}` : "";
 
   const startEdit = () => {
     setEditValue(message.content);
@@ -126,6 +133,18 @@ function MessageRow(props: {
     props.onDeleteMessage(message.id, scope).then(
       () => setConfirmDelete(null),
       () => {},
+    );
+  };
+  const startFork = () => {
+    setForkName(`${props.campaignName} fork`);
+    setConfirmFork(true);
+  };
+  const runFork = () => {
+    if (forking) return;
+    setForking(true);
+    props.onForkMessage(message.id, forkName).then(
+      () => setConfirmFork(false),
+      () => setForking(false), // the parent surfaces the error banner
     );
   };
 
@@ -202,7 +221,50 @@ function MessageRow(props: {
     </div>
   );
 
-  const menu = canAct && (
+  const forkConfirm = confirmFork && (
+    <form
+      className="mbs-2 grid gap-2 rounded-lg border border-border bg-surface p-3"
+      role="group"
+      aria-label="Confirm forking the campaign from this message"
+      onSubmit={(event) => {
+        event.preventDefault();
+        runFork();
+      }}
+    >
+      <label className="grid gap-1 text-sm">
+        New campaign name
+        <input
+          className="min-h-11 rounded-lg border border-border bg-background px-3"
+          value={forkName}
+          onChange={(event) => setForkName(event.target.value)}
+          required
+          autoFocus
+        />
+      </label>
+      <p className="text-sm text-muted">
+        Copies the story up to this message into a new campaign. Notes and relationships are copied as they are now.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+          disabled={forking}
+        >
+          {forking ? "Forking…" : "Fork"}
+        </button>
+        <button
+          type="button"
+          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
+          onClick={() => setConfirmFork(false)}
+          disabled={forking}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+
+  const menu = (canAct || props.canFork) && (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button type="button" className={messageControlClasses} aria-label="Message actions">
@@ -219,19 +281,26 @@ function MessageRow(props: {
               Delete swipe
             </DropdownMenu.Item>
           )}
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger className="message-menu-item">Delete</DropdownMenu.SubTrigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.SubContent className="message-menu-content" collisionPadding={12}>
-                <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("message")}>
-                  This message
-                </DropdownMenu.Item>
-                <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("after")}>
-                  This and everything after
-                </DropdownMenu.Item>
-              </DropdownMenu.SubContent>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Sub>
+          {canAct && (
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger className="message-menu-item">Delete</DropdownMenu.SubTrigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.SubContent className="message-menu-content" collisionPadding={12}>
+                  <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("message")}>
+                    This message
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("after")}>
+                    This and everything after
+                  </DropdownMenu.Item>
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Sub>
+          )}
+          {props.canFork && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={startFork}>
+              Fork from here
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -258,6 +327,7 @@ function MessageRow(props: {
           </button>
         )}
         {deleteConfirm}
+        {forkConfirm}
       </article>
     );
   }
@@ -329,6 +399,7 @@ function MessageRow(props: {
         </div>
       )}
       {deleteConfirm}
+      {forkConfirm}
     </article>
   );
 }
@@ -362,6 +433,7 @@ export function CampaignPlay(props: {
   onDismissGeneration: () => void;
   onSyncSession: (sessionId: string) => Promise<void>;
 }) {
+  const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const docked = useSyncExternalStore(subscribeDocked, () => window.matchMedia(DOCKED_QUERY).matches);
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
@@ -400,6 +472,8 @@ export function CampaignPlay(props: {
   const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
   const actionsAllowed = isActiveSession && props.messages !== undefined && !sessionBusy;
   const canGenerate = actionsAllowed && !busy;
+  // Forking is allowed in the active session and in closed (read-only) ones.
+  const canFork = props.messages !== undefined && !sessionBusy;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
@@ -474,6 +548,15 @@ export function CampaignPlay(props: {
     const removed = props.onDeleteMessage(props.sessionId, messageId, scope);
     removed.catch(surfaceActionError);
     return removed;
+  };
+  const handleForkFromMessage = (messageId: string, name: string) => {
+    setActionError("");
+    const forked = forkFromMessage(props.sessionId, messageId, name).then(async (result) => {
+      await props.onSyncSession(result.session.id);
+      navigate(`/sessions/${encodeURIComponent(result.session.id)}`);
+    });
+    forked.catch(surfaceActionError);
+    return forked;
   };
   const trailingMessage = messages.at(-1);
   const liveUnlisted = live
@@ -619,11 +702,14 @@ export function CampaignPlay(props: {
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
                   canGenerate={canGenerate}
+                  canFork={canFork}
+                  campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={messages.length - index}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
+                  onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
                 />
                 );
               })}
@@ -645,11 +731,14 @@ export function CampaignPlay(props: {
                   lastUser={false}
                   actionsAllowed={false}
                   canGenerate={false}
+                  canFork={false}
+                  campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={0}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
+                  onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
                 />
               )}
               {unmatchedLive && live && (
