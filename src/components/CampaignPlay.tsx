@@ -78,6 +78,8 @@ function MessageRow(props: {
   trailing: boolean;
   lastUser: boolean;
   actionsAllowed: boolean;
+  /** Generation-starting controls need the app-wide exclusivity, not just session-level actions. */
+  canGenerate: boolean;
   deleteCount: number;
   onRegenerate: () => void;
   onSelectVariant: (messageId: string) => void;
@@ -105,8 +107,8 @@ function MessageRow(props: {
   const canAct = props.actionsAllowed;
   const canEdit = canAct && message.status === "complete";
   const canDeleteSwipe = canAct && trailingNarration && !isDraft && variantIds.length > 1;
-  const canRegenerate = canAct && trailingNarration && !isDraft;
-  const canRetry = canAct && trailingNarration && (message.status === "failed" || message.status === "interrupted");
+  const canRegenerate = props.canGenerate && trailingNarration && !isDraft;
+  const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
   const reveal = canAct && !editing && !confirmDelete ? ` ${REVEAL_CLASSES}` : "";
 
@@ -151,7 +153,7 @@ function MessageRow(props: {
         >
           Save
         </button>
-        {props.lastUser && (
+        {props.lastUser && props.canGenerate && (
           <button
             type="button"
             className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised disabled:pointer-events-none disabled:opacity-50"
@@ -245,7 +247,7 @@ function MessageRow(props: {
             {editing ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
           </div>
         </div>
-        {props.trailing && canAct && (
+        {props.trailing && props.canGenerate && (
           <button
             type="button"
             className={`pressable inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground${reveal}`}
@@ -293,7 +295,7 @@ function MessageRow(props: {
               <button
                 type="button"
                 className={messageControlClasses}
-                disabled={!canAct}
+                disabled={!canAct || (variantIndex >= variantIds.length - 1 && !props.canGenerate)}
                 onClick={() => variantIndex < variantIds.length - 1
                   ? props.onSelectVariant(variantIds[variantIndex + 1])
                   : props.onRegenerate()}
@@ -397,6 +399,7 @@ export function CampaignPlay(props: {
   // the app-wide exclusivity that `busy` tracks.
   const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
   const actionsAllowed = isActiveSession && props.messages !== undefined && !sessionBusy;
+  const canGenerate = actionsAllowed && !busy;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
@@ -510,7 +513,7 @@ export function CampaignPlay(props: {
         handleSelectVariant(variantIds[variantIndex - 1]);
       } else if (variantIndex < variantIds.length - 1) {
         handleSelectVariant(variantIds[variantIndex + 1]);
-      } else {
+      } else if (canGenerate) {
         handleRegenerate();
       }
       event.preventDefault();
@@ -615,6 +618,7 @@ export function CampaignPlay(props: {
                   trailing={index === messages.length - 1}
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
+                  canGenerate={canGenerate}
                   deleteCount={messages.length - index}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
@@ -640,6 +644,7 @@ export function CampaignPlay(props: {
                   trailing={false}
                   lastUser={false}
                   actionsAllowed={false}
+                  canGenerate={false}
                   deleteCount={0}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
