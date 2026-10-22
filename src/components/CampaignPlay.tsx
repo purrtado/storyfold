@@ -648,13 +648,13 @@ export function CampaignPlay(props: {
     // Double-Esc mirrors the composer Stop control; an Esc that closed a menu
     // or dialog arrives default-prevented and does not count.
     if (!stopAvailable) return;
-    let lastEscape = 0;
+    let lastEscape: number | null = null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.repeat || event.isComposing) return;
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const now = performance.now();
-      if (now - lastEscape <= 500) {
-        lastEscape = 0;
+      if (lastEscape !== null && now - lastEscape <= 500) {
+        lastEscape = null;
         event.preventDefault();
         void props.onStop(stopTarget);
       } else {
