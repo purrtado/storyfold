@@ -22,7 +22,7 @@ export type AcceptedMessageIds = {
 type GenerationRequest = {
   id: number;
   sessionId: string;
-  kind: "opening" | "message";
+  kind: "opening" | "message" | "regenerate";
   content: string;
   model?: string;
 };
@@ -159,7 +159,7 @@ export function useChatGeneration(options: {
 
   const start = useCallback((
     sessionId: string,
-    kind: "opening" | "message",
+    kind: "opening" | "message" | "regenerate",
     content: string,
     model?: string,
   ) => {
@@ -182,6 +182,10 @@ export function useChatGeneration(options: {
 
   const open = useCallback((sessionId: string, model?: string) => {
     return start(sessionId, "opening", "", model);
+  }, [start]);
+
+  const regenerate = useCallback((sessionId: string, model?: string) => {
+    return start(sessionId, "regenerate", "", model);
   }, [start]);
 
   const stop = useCallback(async (sessionId: string) => {
@@ -232,5 +236,5 @@ export function useChatGeneration(options: {
     setGeneration((current) => current?.phase === "error" ? null : current);
   }, []);
 
-  return { generation, send, open, stop, dismiss };
+  return { generation, send, open, regenerate, stop, dismiss };
 }

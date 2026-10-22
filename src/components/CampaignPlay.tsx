@@ -1,8 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link } from "react-router-dom";
-import { PanelRightOpen, Sparkles, X } from "lucide-react";
-import type { Campaign, Message, Session } from "../../shared/domain";
+import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
+import type { Campaign, Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
+import type { TranscriptMessage } from "../lib/storyApi";
 import type { Generation } from "../lib/useChatGeneration";
 import { Markdown } from "./Markdown";
 import { AppHeader } from "./AppHeader";
@@ -11,6 +13,7 @@ import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
 import { CampaignPanel } from "./CampaignPanel";
 import { isActiveCampaignSession } from "../lib/campaignLifecycle";
+import "./message-menu.css";
 
 const DOCKED_QUERY = "(min-width: 80rem)";
 const PANEL_COLLAPSED_KEY = "storyfold-campaign-panel-collapsed";
@@ -31,10 +34,24 @@ function PendingDots() {
   );
 }
 
+const messageControlClasses =
+  "pressable inline-flex size-7 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
+
+const REVEAL_CLASSES =
+  "opacity-100 transition-opacity [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:opacity-100";
+
 function MessageRow(props: {
-  message: Message;
+  message: TranscriptMessage;
   liveText?: string;
   streaming?: boolean;
+  trailing: boolean;
+  lastUser: boolean;
+  actionsAllowed: boolean;
+  deleteCount: number;
+  onRegenerate: () => void;
+  onSelectVariant: (messageId: string) => void;
+  onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
+  onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
 }) {
   const { message } = props;
   const isDraft = message.status !== "complete";
@@ -46,26 +63,236 @@ function MessageRow(props: {
         ? "Draft · Failed"
         : "";
   const content = props.liveText ?? message.content;
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
+
+  const variantIds = message.variant_ids ?? [];
+  const variantIndex = message.variant_index ?? 0;
+  const trailingNarration = props.trailing && message.role === "assistant";
+  const showSwipes = trailingNarration && variantIds.length > 1;
+  const canAct = props.actionsAllowed;
+  const canEdit = canAct && message.status === "complete";
+  const canDeleteSwipe = canAct && trailingNarration && !isDraft && variantIds.length > 1;
+  const canRegenerate = canAct && trailingNarration && !isDraft;
+  const canRetry = canAct && trailingNarration && (message.status === "failed" || message.status === "interrupted");
+  // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
+  const reveal = canAct && !editing && !confirmDelete ? ` ${REVEAL_CLASSES}` : "";
+
+  const startEdit = () => {
+    setEditValue(message.content);
+    setEditing(true);
+  };
+  const saveEdit = (andRegenerate: boolean) => {
+    props.onEditMessage(message.id, editValue, andRegenerate).then(
+      () => setEditing(false),
+      () => {}, // the editor stays open; the parent surfaces the error banner
+    );
+  };
+  const runDelete = (scope?: "variant" | "after") => {
+    props.onDeleteMessage(message.id, scope).then(
+      () => setConfirmDelete(null),
+      () => {},
+    );
+  };
+
+  const editForm = (
+    <form
+      className="grid gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        saveEdit(false);
+      }}
+    >
+      <textarea
+        className="min-h-24 w-full rounded-lg border border-border bg-background p-3 text-[15px] leading-6 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        value={editValue}
+        onChange={(event) => setEditValue(event.target.value)}
+        rows={Math.min(10, Math.max(3, editValue.split("\n").length))}
+        autoFocus
+        aria-label="Edit message"
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+          disabled={!editValue.trim()}
+        >
+          Save
+        </button>
+        {props.lastUser && (
+          <button
+            type="button"
+            className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised disabled:pointer-events-none disabled:opacity-50"
+            disabled={!editValue.trim()}
+            onClick={() => saveEdit(true)}
+          >
+            Save &amp; regenerate
+          </button>
+        )}
+        <button
+          type="button"
+          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          onClick={() => setEditing(false)}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+
+  const deleteConfirm = confirmDelete && (
+    <div
+      className="mbs-2 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface p-3"
+      role="group"
+      aria-label={confirmDelete === "after" ? "Confirm deleting this message and everything after" : "Confirm deleting this message"}
+    >
+      <span className="text-sm text-muted">
+        {confirmDelete === "after"
+          ? `Delete this message and everything after it? This removes ${props.deleteCount} messages; notes and relationships are unchanged.`
+          : "Delete this message? Notes and relationships are unchanged."}
+      </span>
+      <button
+        type="button"
+        className="pressable min-h-9 rounded-lg border border-border px-3 text-sm text-muted"
+        onClick={() => runDelete(confirmDelete === "after" ? "after" : undefined)}
+      >
+        Delete
+      </button>
+      <button
+        type="button"
+        className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
+        onClick={() => setConfirmDelete(null)}
+      >
+        Cancel
+      </button>
+    </div>
+  );
+
+  const menu = canAct && (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button type="button" className={messageControlClasses} aria-label="Message actions">
+          <Ellipsis className="size-4" aria-hidden="true" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="end" sideOffset={4} collisionPadding={12} className="message-menu-content">
+          {canEdit && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={startEdit}>Edit</DropdownMenu.Item>
+          )}
+          {canDeleteSwipe && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={() => runDelete("variant")}>
+              Delete swipe
+            </DropdownMenu.Item>
+          )}
+          <DropdownMenu.Sub>
+            <DropdownMenu.SubTrigger className="message-menu-item">Delete</DropdownMenu.SubTrigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.SubContent className="message-menu-content" collisionPadding={12}>
+                <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("message")}>
+                  This message
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className="message-menu-item" onSelect={() => setConfirmDelete("after")}>
+                  This and everything after
+                </DropdownMenu.Item>
+              </DropdownMenu.SubContent>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Sub>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
 
   if (message.role === "user") {
     return (
-      <article className="flex justify-end">
-        <div className="max-w-[90%] rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground">
-          <p className="mbs-0 mbe-2 text-xs font-medium text-muted">{message.speaker_name}</p>
-          <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>
+      <article className="group flex flex-col items-end gap-1">
+        <div className="flex max-w-full items-start justify-end gap-1">
+          {menu && <span className={reveal}>{menu}</span>}
+          <div className="max-w-[90%] rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground">
+            <p className="mbs-0 mbe-2 text-xs font-medium text-muted">{message.speaker_name}</p>
+            {editing ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
+          </div>
         </div>
+        {props.trailing && canAct && (
+          <button
+            type="button"
+            className={`pressable inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground${reveal}`}
+            onClick={props.onRegenerate}
+          >
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+            Regenerate
+          </button>
+        )}
+        {deleteConfirm}
       </article>
     );
   }
 
   return (
-    <article className={`rounded-xl ${isDraft ? "border border-dashed border-border bg-surface p-4" : ""}`}>
+    <article className={`group rounded-xl ${isDraft ? "border border-dashed border-border bg-surface p-4" : ""}`}>
       <div className="mbs-0 mbe-2 flex flex-wrap items-center gap-2 text-sm font-semibold">
         <Sparkles className="size-4 text-accent" aria-hidden="true" />
         <span>{message.speaker_name}</span>
         {isDraft && <span className="text-xs font-normal text-muted">{status}</span>}
+        {(showSwipes || canRegenerate || canAct) && (
+          <div className={`ms-auto flex items-center gap-1${reveal}`}>
+            {showSwipes && (
+              <div className="flex items-center gap-0.5 text-xs font-normal text-muted" role="group" aria-label="Alternate replies">
+                <button
+                  type="button"
+                  className={messageControlClasses}
+                  disabled={!canAct || variantIndex <= 0}
+                  onClick={() => props.onSelectVariant(variantIds[variantIndex - 1])}
+                  aria-label="Previous reply"
+                >
+                  <ChevronLeft className="size-3.5" aria-hidden="true" />
+                </button>
+                <span>{variantIndex + 1}/{variantIds.length}</span>
+                <button
+                  type="button"
+                  className={messageControlClasses}
+                  disabled={!canAct}
+                  onClick={() => variantIndex < variantIds.length - 1
+                    ? props.onSelectVariant(variantIds[variantIndex + 1])
+                    : props.onRegenerate()}
+                  aria-label={variantIndex < variantIds.length - 1 ? "Next reply" : "Regenerate reply"}
+                >
+                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            )}
+            {canRegenerate && (
+              <button
+                type="button"
+                className={messageControlClasses}
+                onClick={props.onRegenerate}
+                aria-label="Regenerate reply"
+                title="Regenerate"
+              >
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+              </button>
+            )}
+            {menu}
+          </div>
+        )}
       </div>
-      {content ? <Markdown content={content} streaming={props.streaming} /> : message.status === "pending" ? <PendingDots /> : null}
+      {editing ? editForm : (
+        content
+          ? <Markdown content={content} streaming={props.streaming} />
+          : message.status === "pending" ? <PendingDots /> : null
+      )}
+      {canRetry && (
+        <button
+          type="button"
+          className="pressable mbs-2 inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          onClick={props.onRegenerate}
+        >
+          <RefreshCw className="size-3.5" aria-hidden="true" />
+          Retry
+        </button>
+      )}
+      {deleteConfirm}
     </article>
   );
 }
@@ -77,7 +304,7 @@ export function CampaignPlay(props: {
   session: Session | null;
   sessionLoading: boolean;
   sessionError: string;
-  messages: Message[] | undefined;
+  messages: TranscriptMessage[] | undefined;
   messagesLoading: boolean;
   messagesError: string;
   generation: Generation | null;
@@ -89,6 +316,10 @@ export function CampaignPlay(props: {
   onSend: (sessionId: string, value: string, model?: string) => void;
   onOpen: (sessionId: string, model?: string) => boolean;
   onRetryOpening: (sessionId: string, model?: string) => boolean;
+  onRegenerate: (sessionId: string, model?: string) => boolean;
+  onSelectVariant: (sessionId: string, messageId: string) => Promise<void>;
+  onEditMessage: (sessionId: string, messageId: string, content: string) => Promise<void>;
+  onDeleteMessage: (sessionId: string, messageId: string, scope?: "variant" | "after") => Promise<void>;
   onStop: (sessionId: string) => void | Promise<void>;
   onRefreshMessages: (sessionId: string) => void | Promise<void>;
   onRetrySession: (sessionId: string) => void | Promise<void>;
@@ -99,6 +330,7 @@ export function CampaignPlay(props: {
   const docked = useSyncExternalStore(subscribeDocked, () => window.matchMedia(DOCKED_QUERY).matches);
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const [following, setFollowing] = useState(true);
+  const [actionError, setActionError] = useState("");
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [modelCatalogState, setModelCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const messages = props.messages ?? [];
@@ -124,12 +356,11 @@ export function CampaignPlay(props: {
   );
   const hasPending = messages.some((message) => message.role === "assistant" && message.status === "pending")
     || Boolean(live?.pendingMessageId && live.phase !== "error");
-  const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
-  const canRetryOpening = isActiveSession
-    && !hasCompletedNarration
-    && messages.some((message) => message.role === "assistant" && (message.status === "failed" || message.status === "interrupted"));
   const transcriptReady = props.messages !== undefined && !props.messagesLoading && !props.messagesError;
   const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || modelCatalogState === "loading";
+  const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
+  const actionsAllowed = isActiveSession && !busy;
+  const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
@@ -158,6 +389,10 @@ export function CampaignPlay(props: {
   }, [props.sessionId]);
 
   useEffect(() => {
+    setActionError("");
+  }, [props.sessionId]);
+
+  useEffect(() => {
     if (!hasPending) return;
     const refresh = () => { void props.onRefreshMessages(props.sessionId); };
     const interval = window.setInterval(refresh, 3000);
@@ -173,6 +408,32 @@ export function CampaignPlay(props: {
   const handleSend = (value: string) => {
     setFollowing(true);
     props.onSend(props.sessionId, value, selectedModel || undefined);
+  };
+  const regenerateModel = selectedModel || undefined;
+  const surfaceActionError = (error: unknown) => {
+    setActionError(error instanceof Error && error.message.trim() ? error.message : "That action failed. Try again.");
+  };
+  const handleRegenerate = () => {
+    setActionError("");
+    setFollowing(true);
+    props.onRegenerate(props.sessionId, regenerateModel);
+  };
+  const handleSelectVariant = (messageId: string) => {
+    setActionError("");
+    props.onSelectVariant(props.sessionId, messageId).catch(surfaceActionError);
+  };
+  const handleEditMessage = (messageId: string, content: string, andRegenerate: boolean) => {
+    setActionError("");
+    const saved = props.onEditMessage(props.sessionId, messageId, content);
+    saved.catch(surfaceActionError);
+    if (!andRegenerate) return saved;
+    return saved.then(() => { props.onRegenerate(props.sessionId, regenerateModel); });
+  };
+  const handleDeleteMessage = (messageId: string, scope?: "variant" | "after") => {
+    setActionError("");
+    const removed = props.onDeleteMessage(props.sessionId, messageId, scope);
+    removed.catch(surfaceActionError);
+    return removed;
   };
   const unmatchedLive = live?.pendingMessageId
     ? !messages.some((message) => message.id === live.pendingMessageId)
@@ -238,12 +499,20 @@ export function CampaignPlay(props: {
                   <p className="max-w-md text-sm text-muted">{isActiveSession ? "The narrator will open the first scene using the context you chose." : "This session is read-only and will not open or accept new actions."}</p>
                   {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onRetryOpening(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
                 </div>
-              ) : messages.map((message) => (
+              ) : messages.map((message, index) => (
                 <MessageRow
                   key={message.id}
                   message={message}
                   liveText={message.id === live?.pendingMessageId && message.status === "pending" && live.text ? live.text : undefined}
                   streaming={message.id === live?.pendingMessageId && live.phase === "streaming"}
+                  trailing={index === messages.length - 1}
+                  lastUser={message.id === lastUserMessageId}
+                  actionsAllowed={actionsAllowed}
+                  deleteCount={messages.length - index}
+                  onRegenerate={handleRegenerate}
+                  onSelectVariant={handleSelectVariant}
+                  onEditMessage={handleEditMessage}
+                  onDeleteMessage={handleDeleteMessage}
                 />
               ))}
               {unmatchedLive && live && (
@@ -265,9 +534,10 @@ export function CampaignPlay(props: {
             </div>
           )}
 
-          {canRetryOpening && !props.messagesLoading && (
-            <div className="mx-auto w-full max-w-3xl px-4 pbe-2">
-              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => props.onRetryOpening(props.sessionId, selectedModel || undefined)} disabled={busy}>Retry opening</button>
+          {actionError && (
+            <div className="mx-auto flex w-full max-w-3xl items-start gap-2 px-4 pbe-2 text-sm" role="alert">
+              <p className="flex-1 text-muted">{actionError}</p>
+              <button type="button" className="pressable inline-flex size-8 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => setActionError("")} aria-label="Dismiss notice"><X className="size-4" aria-hidden="true" /></button>
             </div>
           )}
 

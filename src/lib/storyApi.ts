@@ -378,21 +378,26 @@ export async function fetchSession(id: string): Promise<{ session: Session; camp
   return request<{ session: Session; campaign: Campaign }>(`/api/sessions/${encodeURIComponent(id)}`);
 }
 
-export async function fetchSessionMessages(id: string): Promise<Message[]> {
+export async function fetchSessionMessages(id: string): Promise<TranscriptMessage[]> {
   return (
-    await request<{ messages: Message[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)
+    await request<{ messages: TranscriptMessage[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)
   ).messages;
 }
 
+/** Narration rows carry alternate replies; only the trailing narration has them populated. */
+export type TranscriptMessage = Message & { variant_ids?: string[]; variant_index?: number };
+
 export async function requestSessionGeneration(
   sessionId: string,
-  kind: "opening" | "message",
+  kind: "opening" | "message" | "regenerate",
   content: string,
   model: string | undefined,
   signal: AbortSignal,
 ): Promise<Response> {
   const path = kind === "opening"
     ? `/api/sessions/${encodeURIComponent(sessionId)}/opening`
+    : kind === "regenerate"
+    ? `/api/sessions/${encodeURIComponent(sessionId)}/regenerate`
     : `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
   const body = {
     ...(kind === "message" ? { content } : {}),
@@ -411,4 +416,33 @@ export async function stopSessionGeneration(sessionId: string): Promise<{ pendin
     `/api/sessions/${encodeURIComponent(sessionId)}/stop`,
     { method: "POST" },
   );
+}
+
+export async function editSessionMessage(
+  sessionId: string,
+  messageId: string,
+  content: string,
+): Promise<Message> {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
+  return (
+    await request<{ message: Message }>(path, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    })
+  ).message;
+}
+
+export async function selectSessionVariant(sessionId: string, messageId: string): Promise<TranscriptMessage[]> {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/select`;
+  return (await request<{ messages: TranscriptMessage[] }>(path, { method: "POST" })).messages;
+}
+
+export async function deleteSessionMessage(
+  sessionId: string,
+  messageId: string,
+  scope?: "variant" | "after",
+): Promise<TranscriptMessage[]> {
+  const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}${query}`;
+  return (await request<{ messages: TranscriptMessage[] }>(path, { method: "DELETE" })).messages;
 }

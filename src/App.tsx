@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import type { Campaign, Character, Message, Session, World } from "../shared/domain";
+import type { Campaign, Character, Session, World } from "../shared/domain";
 import { CampaignPlay } from "./components/CampaignPlay";
 import { NewCampaignPage } from "./components/NewCampaignPage";
 import { CharactersPage } from "./components/CharactersPage";
@@ -9,7 +9,15 @@ import { SettingsPage, SettingsSidebar } from "./components/SettingsPage";
 import { Sheet } from "./components/Sheet";
 import { Sidebar } from "./components/Sidebar";
 import { WorldsPage } from "./components/WorldsPage";
-import { fetchCampaigns, fetchSession, fetchSessionMessages } from "./lib/storyApi";
+import {
+  deleteSessionMessage,
+  editSessionMessage,
+  fetchCampaigns,
+  fetchSession,
+  fetchSessionMessages,
+  selectSessionVariant,
+  type TranscriptMessage,
+} from "./lib/storyApi";
 import { refreshLibraries, warmLibraries } from "./lib/libraryCache";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
@@ -28,7 +36,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Record<string, { campaign: Campaign; session: Session }>>({});
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [sessionsLoading, setSessionsLoading] = useState<Record<string, boolean>>({});
-  const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  const [messages, setMessages] = useState<Record<string, TranscriptMessage[]>>({});
   const [messageErrors, setMessageErrors] = useState<Record<string, string>>({});
   const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -186,7 +194,7 @@ export default function App() {
     void refreshSessionMessages(activeSessionId);
   }, [activeSessionId, refreshSession, refreshSessionMessages]);
 
-  const { generation, send, open, stop, dismiss } = useChatGeneration({
+  const { generation, send, open, regenerate, stop, dismiss } = useChatGeneration({
     onAccepted: (sessionId, _ids, content) => {
       setDrafts((current) => {
         if ((current[sessionId] ?? "").trim() !== content) return current;
@@ -203,6 +211,34 @@ export default function App() {
     automaticOpeningAttempts.current.add(sessionId);
     return true;
   }, [open]);
+
+  const selectVariant = useCallback(async (sessionId: string, messageId: string) => {
+    try {
+      await selectSessionVariant(sessionId, messageId);
+    } finally {
+      await refreshSessionMessages(sessionId);
+    }
+  }, [refreshSessionMessages]);
+
+  const editMessage = useCallback(async (sessionId: string, messageId: string, content: string) => {
+    try {
+      await editSessionMessage(sessionId, messageId, content);
+    } finally {
+      await refreshSessionMessages(sessionId);
+    }
+  }, [refreshSessionMessages]);
+
+  const deleteMessage = useCallback(async (
+    sessionId: string,
+    messageId: string,
+    scope?: "variant" | "after",
+  ) => {
+    try {
+      await deleteSessionMessage(sessionId, messageId, scope);
+    } finally {
+      await refreshSessionMessages(sessionId);
+    }
+  }, [refreshSessionMessages]);
 
   const openNewCampaign = () => {
     setMobileOpen(false);
@@ -354,6 +390,10 @@ export default function App() {
               onSend={send}
               onOpen={openAutomatically}
               onRetryOpening={open}
+              onRegenerate={regenerate}
+              onSelectVariant={selectVariant}
+              onEditMessage={editMessage}
+              onDeleteMessage={deleteMessage}
               onStop={stop}
               onRefreshMessages={refreshSessionMessages}
               onRetrySession={refreshSession}

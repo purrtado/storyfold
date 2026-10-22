@@ -1,0 +1,29 @@
+.message-menu-content {
+  z-index: 50;
+  min-inline-size: 11rem;
+  max-inline-size: calc(100vw - 1.5rem);
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--raised);
+  color: var(--foreground);
+  box-shadow: 0 0.5rem 2rem
+    color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.message-menu-item {
+  display: flex;
+  align-items: center;
+  min-block-size: 2.5rem;
+  padding-inline: 0.75rem;
+  border-radius: 0.625rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.message-menu-item[data-highlighted],
+.message-menu-item:active {
+  background: var(--surface);
+}
