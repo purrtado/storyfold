@@ -235,62 +235,64 @@ function MessageRow(props: {
         <Sparkles className="size-4 text-accent" aria-hidden="true" />
         <span>{message.speaker_name}</span>
         {isDraft && <span className="text-xs font-normal text-muted">{status}</span>}
-        {(showSwipes || canRegenerate || canAct) && (
-          <div className={`ms-auto flex items-center gap-1${reveal}`}>
-            {showSwipes && (
-              <div className="flex items-center gap-0.5 text-xs font-normal text-muted" role="group" aria-label="Alternate replies">
-                <button
-                  type="button"
-                  className={messageControlClasses}
-                  disabled={!canAct || variantIndex <= 0}
-                  onClick={() => props.onSelectVariant(variantIds[variantIndex - 1])}
-                  aria-label="Previous reply"
-                >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
-                </button>
-                <span>{variantIndex + 1}/{variantIds.length}</span>
-                <button
-                  type="button"
-                  className={messageControlClasses}
-                  disabled={!canAct}
-                  onClick={() => variantIndex < variantIds.length - 1
-                    ? props.onSelectVariant(variantIds[variantIndex + 1])
-                    : props.onRegenerate()}
-                  aria-label={variantIndex < variantIds.length - 1 ? "Next reply" : "Regenerate reply"}
-                >
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
-                </button>
-              </div>
-            )}
-            {canRegenerate && (
-              <button
-                type="button"
-                className={messageControlClasses}
-                onClick={props.onRegenerate}
-                aria-label="Regenerate reply"
-                title="Regenerate"
-              >
-                <RefreshCw className="size-3.5" aria-hidden="true" />
-              </button>
-            )}
-            {menu}
-          </div>
-        )}
+        <div className={`ms-auto flex items-center gap-1${reveal}`}>
+          {menu}
+        </div>
       </div>
       {editing ? editForm : (
         content
           ? <Markdown content={content} streaming={props.streaming} />
           : message.status === "pending" ? <PendingDots /> : null
       )}
-      {canRetry && (
-        <button
-          type="button"
-          className="pressable mbs-2 inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-          onClick={props.onRegenerate}
-        >
-          <RefreshCw className="size-3.5" aria-hidden="true" />
-          Retry
-        </button>
+      {(showSwipes || canRegenerate || canRetry) && (
+        <div className={`mbs-2 flex flex-wrap items-center gap-2${reveal}`}>
+          {showSwipes && (
+            <div className="flex items-center gap-0.5 text-xs font-normal text-muted" role="group" aria-label="Alternate replies">
+              <button
+                type="button"
+                className={messageControlClasses}
+                disabled={!canAct || variantIndex <= 0}
+                onClick={() => props.onSelectVariant(variantIds[variantIndex - 1])}
+                aria-label="Previous reply"
+              >
+                <ChevronLeft className="size-3.5" aria-hidden="true" />
+              </button>
+              <span>{variantIndex + 1}/{variantIds.length}</span>
+              <button
+                type="button"
+                className={messageControlClasses}
+                disabled={!canAct}
+                onClick={() => variantIndex < variantIds.length - 1
+                  ? props.onSelectVariant(variantIds[variantIndex + 1])
+                  : props.onRegenerate()}
+                aria-label={variantIndex < variantIds.length - 1 ? "Next reply" : "Regenerate reply"}
+              >
+                <ChevronRight className="size-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          )}
+          {canRegenerate && (
+            <button
+              type="button"
+              className={messageControlClasses}
+              onClick={props.onRegenerate}
+              aria-label="Regenerate reply"
+              title="Regenerate"
+            >
+              <RefreshCw className="size-3.5" aria-hidden="true" />
+            </button>
+          )}
+          {canRetry && (
+            <button
+              type="button"
+              className="pressable inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+              onClick={props.onRegenerate}
+            >
+              <RefreshCw className="size-3.5" aria-hidden="true" />
+              Retry
+            </button>
+          )}
+        </div>
       )}
       {deleteConfirm}
     </article>
