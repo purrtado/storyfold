@@ -1008,7 +1008,7 @@ describe("forking from a message", () => {
     ]);
   });
 
-  test("fork from a closed session's message keeps the handoff and takes current state", async () => {
+  test("a message fork from a closed opening session has no incoming handoff and takes current state", async () => {
     const seeded = await seedCampaign("MsgForkClosed", "Closed fork situation.");
     await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
     const message = (await transcript(base.url, seeded.session.id))[0]!;
@@ -1035,11 +1035,38 @@ describe("forking from a message", () => {
     );
     expect(forked.status).toBe(201);
     const fork = (await forked.json()) as { campaign: Campaign; session: Session };
-    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
+    expect(fork.session.handoff).toBeNull();
     expect(fork.session.closed_at).toBeNull();
     expect(fork.session.title).toBe(seeded.session.title);
     const forkItems = (await stateItems(fork.campaign.id)) as Array<{ subject: string }>;
     expect(forkItems.map((row) => row.subject)).toEqual(["Find the ledger", "Post-close doubt"]);
+  });
+
+  test("a message fork from a closed session is grounded by its incoming handoff, not its outgoing one", async () => {
+    const seeded = await seedCampaign("MsgForkGround", "Grounded fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+    const closedPayload = (await closed.json()) as { session: Session };
+    const second = closedPayload.session;
+    await completeTurn(base.url, second.id, "I climb the ridge.", "The valley opens below.");
+    const secondMessage = (await transcript(base.url, second.id))[0]!;
+    await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The southern road",
+      handoff: "The party crossed the southern bridge at dawn.",
+    });
+
+    const forked = await json(
+      `/api/sessions/${second.id}/messages/${secondMessage.id}/fork`,
+      "POST",
+      { name: "From the ridge" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
   });
 
   test("the cut excludes swipes and drafts, renumbers from 1, and may end on a player message", async () => {

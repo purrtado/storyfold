@@ -814,6 +814,24 @@ export function listCampaignSessions(db: Database, campaignId: string): Session[
 }
 
 /**
+ * The incoming handoff that grounded a session's transcript: the handoff
+ * written at the close of the latest completed session before it (null for a
+ * campaign's opening session). For an open session this is exactly what
+ * sessionGroundingHandoff returns; a closed session's own handoff is its
+ * outgoing summary, never its grounding.
+ */
+function sessionIncomingHandoff(db: Database, session: SessionRecord): string | null {
+  const previous = db
+    .query<{ handoff: string | null }, [string, number]>(
+      `SELECT handoff FROM sessions
+       WHERE campaign_id = ? AND closed_at IS NOT NULL AND ordinal < ?
+       ORDER BY ordinal DESC LIMIT 1`,
+    )
+    .get(session.campaign_id, session.ordinal);
+  return previous?.handoff ?? null;
+}
+
+/**
  * The handoff that grounds this session: an inherited fork handoff, or the
  * handoff written at the close of the latest completed session before it
  * (null for a campaign's opening session).
@@ -822,14 +840,7 @@ export function sessionGroundingHandoff(db: Database, campaignId: string, sessio
   const session = getSessionRecord(db, sessionId);
   if (!session || session.campaign_id !== campaignId) return null;
   if (session.handoff !== null) return session.handoff;
-  const previous = db
-    .query<{ handoff: string | null }, [string, number]>(
-      `SELECT handoff FROM sessions
-       WHERE campaign_id = ? AND closed_at IS NOT NULL AND ordinal < ?
-       ORDER BY ordinal DESC LIMIT 1`,
-    )
-    .get(campaignId, session.ordinal);
-  return previous?.handoff ?? null;
+  return sessionIncomingHandoff(db, session);
 }
 
 export class SessionClosedError extends Error {}
@@ -1109,14 +1120,7 @@ export function forkCampaignFromMessage(
       const now = nowIso();
       const forkSessionId = newId();
       const campaignId = insertForkCampaign(db, origin, name, source.id, forkSessionId, now);
-      insertForkSession(
-        db,
-        campaignId,
-        forkSessionId,
-        source,
-        sessionGroundingHandoff(db, source.campaign_id, source.id),
-        now,
-      );
+      insertForkSession(db, campaignId, forkSessionId, source, sessionIncomingHandoff(db, source), now);
 
       copyStateItems(db, campaignId, listCampaignState(db, source.campaign_id), now);
       forkCampaignRelationships(db, source.campaign_id, campaignId);
