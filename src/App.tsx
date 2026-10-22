@@ -275,7 +275,7 @@ export default function App() {
         ) : (
           <Sidebar
             campaigns={campaigns}
-            campaignsLoading={campaignsLoading}
+            campaignsLoading={campaignsLoading && campaigns.length === 0}
             campaignsError={campaignsError}
             activeSessionId={activeSessionId}
             onNewCampaign={openNewCampaign}
@@ -298,7 +298,7 @@ export default function App() {
           ) : (
             <Sidebar
               campaigns={campaigns}
-              campaignsLoading={campaignsLoading}
+              campaignsLoading={campaignsLoading && campaigns.length === 0}
               campaignsError={campaignsError}
               activeSessionId={activeSessionId}
               onNewCampaign={openNewCampaign}
@@ -377,8 +377,8 @@ export default function App() {
               sessionId={activeSessionId}
               campaign={activeSession?.campaign ?? null}
               session={activeSession?.session ?? null}
-              sessionLoading={Boolean(sessionsLoading[activeSessionId]) || (!activeSession && !sessionErrors[activeSessionId])}
-              sessionError={sessionErrors[activeSessionId] ?? ""}
+              sessionLoading={!activeSession && (Boolean(sessionsLoading[activeSessionId]) || !sessionErrors[activeSessionId])}
+              sessionError={activeSession ? "" : sessionErrors[activeSessionId] ?? ""}
               messages={messages[activeSessionId]}
               messagesLoading={Boolean(messagesLoading[activeSessionId]) || (messages[activeSessionId] === undefined && !messageErrors[activeSessionId])}
               messagesError={messageErrors[activeSessionId] ?? ""}
