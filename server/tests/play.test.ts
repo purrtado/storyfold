@@ -91,12 +91,75 @@ function postOpening(serverBase: string, sessionId: string, body: unknown = {}):
   });
 }
 
-async function transcript(serverBase: string, sessionId: string): Promise<Message[]> {
+function postRegenerate(serverBase: string, sessionId: string, body: unknown = {}): Promise<Response> {
+  return fetch(`${serverBase}/api/sessions/${sessionId}/regenerate`, {
+    method: "POST",
+    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+}
+
+function selectVariant(serverBase: string, sessionId: string, messageId: string): Promise<Response> {
+  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}/select`, {
+    method: "POST",
+    headers: headersWith({ origin: TRUSTED_ORIGIN }),
+  });
+}
+
+function deleteMessage(
+  serverBase: string,
+  sessionId: string,
+  messageId: string,
+  scope?: "variant" | "after",
+): Promise<Response> {
+  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}${scope ? `?scope=${scope}` : ""}`, {
+    method: "DELETE",
+    headers: headersWith({ origin: TRUSTED_ORIGIN }),
+  });
+}
+
+function patchMessage(
+  serverBase: string,
+  sessionId: string,
+  messageId: string,
+  body: unknown,
+): Promise<Response> {
+  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}`, {
+    method: "PATCH",
+    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+}
+
+/** Completes every call immediately; request i receives replies[i] (last repeats). */
+function scriptedUpstream(
+  model: string,
+  replies: string[][],
+): { fetch: typeof fetch; calls: Array<Record<string, unknown>> } {
+  const calls: Array<Record<string, unknown>> = [];
+  const fetchStub = (async (_input: string | URL | Request, init?: RequestInit) => {
+    calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    const deltas = replies[Math.min(calls.length - 1, replies.length - 1)];
+    return new Response(openAiChatCompletionSse(model, deltas), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+  return { fetch: fetchStub, calls };
+}
+
+/** Wire transcript row: the trailing narration carries its alternates. */
+interface TranscriptRow extends Message {
+  variant_ids: string[];
+  variant_index: number;
+}
+
+async function transcript(serverBase: string, sessionId: string): Promise<TranscriptRow[]> {
   const response = await fetch(`${serverBase}/api/sessions/${sessionId}/messages`, {
     headers: headersWith(),
   });
   expect(response.status).toBe(200);
-  return ((await response.json()) as { messages: Message[] }).messages;
+  return ((await response.json()) as { messages: TranscriptRow[] }).messages;
 }
 
 async function stopRun(serverBase: string, sessionId: string): Promise<{ pending: boolean; message: Message | null }> {
@@ -375,7 +438,7 @@ describe("opening narration", () => {
     }
   });
 
-  test("a failed opening can be retried and keeps the failed draft", async () => {
+  test("a failed opening retries through regenerate, which discards the failed draft", async () => {
     const { session } = await seedStory(base.url);
     const failing = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response('{"error":{"message":"boom"}}', { status: 500 })) as typeof fetch;
@@ -387,18 +450,27 @@ describe("opening narration", () => {
       expect(events.at(-1)?.type).toBe(EventType.RUN_ERROR);
       expect((await transcript(server.url, session.id))[0].status).toBe("failed");
 
+      // The session is no longer empty, so /opening is closed for good and
+      // retries go through regeneration.
+      const opening = await postOpening(server.url, session.id);
+      expect(opening.status).toBe(409);
+      const openingBody = (await opening.json()) as { code: string };
+      expect(openingBody.code).toBe("already_opened");
+
       const retryServer = await startTestServer({
         configDirectory,
         databasePath,
         upstreamFetch: sseStub(replyFrames("glm-5.3", ["Dawn."])),
       });
       try {
-        const retry = await postOpening(retryServer.url, session.id);
+        const retry = await postRegenerate(retryServer.url, session.id);
         expect(retry.status).toBe(200);
         await readSse(retry);
         const messages = await transcript(retryServer.url, session.id);
-        expect(messages.map((message) => message.status)).toEqual(["failed", "complete"]);
-        expect(messages.every((message) => message.speaker_name === "Narrator")).toBe(true);
+        expect(messages.map((message) => message.status)).toEqual(["complete"]);
+        expect(messages[0].position).toBe(1);
+        expect(messages[0].content).toBe("Dawn.");
+        expect(messages[0].variant_ids).toEqual([messages[0].id]);
       } finally {
         await retryServer.stop();
       }
@@ -407,15 +479,17 @@ describe("opening narration", () => {
     }
   });
 
-  test("an opening retried after accepted player input continues with full history", async () => {
+  test("/opening is refused on a non-empty session; regeneration continues with full history", async () => {
     const { session } = await seedStory(base.url);
     const draftText = "A doomed distinct narration, cut off mid-sentence";
     const { fetch: failing, releaseError } = failingUpstream("glm-5.3", [draftText]);
     const failServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
+    let playerId: string;
     try {
       const turn = await postMessage(failServer.url, session.id, { content: "I scout ahead alone." });
-      const playerId = turn.headers.get("x-storyfold-player-message-id");
-      if (!playerId) throw new Error("missing player id header");
+      const id = turn.headers.get("x-storyfold-player-message-id");
+      if (!id) throw new Error("missing player id header");
+      playerId = id;
       await waitFor(
         async () => (await transcript(failServer.url, session.id)).at(-1)?.content === draftText,
         "distinct partial to persist",
@@ -440,15 +514,21 @@ describe("opening narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const retry = await postOpening(server.url, session.id);
+      const refused = await postOpening(server.url, session.id);
+      expect(refused.status).toBe(409);
+      const refusedBody = (await refused.json()) as { code: string };
+      expect(refusedBody.code).toBe("already_opened");
+
+      const retry = await postRegenerate(server.url, session.id);
       expect(retry.status).toBe(200);
+      expect(retry.headers.get("x-storyfold-player-message-id")).toBe(playerId);
       const events = await readSse(retry);
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
 
       const history = calls[0].messages as Array<{ role: string; content: string }>;
       expect(history[0].role).toBe("system");
-      // Accepted player input is retained verbatim; the failed draft is
-      // excluded; no synthetic seed row replaces real history.
+      // Accepted player input is retained verbatim; the discarded failed draft
+      // is excluded; no synthetic seed row replaces real history.
       expect(history.filter((message) => message.role !== "system")).toEqual([
         { role: "user", content: "I scout ahead alone." },
       ]);
@@ -457,9 +537,10 @@ describe("opening narration", () => {
       const rows = await transcript(server.url, session.id);
       expect(rows.map((row) => [row.role, row.status])).toEqual([
         ["user", "complete"],
-        ["assistant", "failed"],
         ["assistant", "complete"],
       ]);
+      expect(rows[1].position).toBe(2);
+      expect(rows[1].variant_ids).toEqual([rows[1].id]);
     } finally {
       await server.stop();
     }
@@ -792,7 +873,15 @@ describe("missing provider", () => {
       ]);
       expect(rows[0].content).toBe("The lamp flickers.");
 
-      const opening = await postOpening(server.url, session.id);
+      // A fresh empty session still reaches the missing provider on /opening;
+      // this session is no longer empty, so /opening is refused before that.
+      const refused = await postOpening(server.url, session.id);
+      expect(refused.status).toBe(409);
+      const refusedBody = (await refused.json()) as { code: string };
+      expect(refusedBody.code).toBe("already_opened");
+
+      const fresh = await seedStory(server.url);
+      const opening = await postOpening(server.url, fresh.session.id);
       expect(opening.status).toBe(400);
       const openingBody = (await opening.json()) as { code: string; accepted: boolean; player_message_id?: string };
       expect(openingBody.code).toBe("no_provider");
@@ -832,6 +921,436 @@ describe("missing provider", () => {
     } finally {
       await server.stop();
       await removeDirectory(emptyConfig);
+    }
+  });
+});
+
+describe("regeneration, swipes, edits, and deletes", () => {
+  test("regenerating an empty session is refused with nothing saved", async () => {
+    const { session } = await seedStory(base.url);
+    const server = await startTestServer({ configDirectory, databasePath });
+    try {
+      const response = await postRegenerate(server.url, session.id);
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { code: string };
+      expect(body.code).toBe("nothing_to_regenerate");
+      expect(await transcript(server.url, session.id)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("regeneration keeps complete alternates as swipes and discards drafts", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [
+      ["First dawn."],
+      ["Second dawn."],
+      ["Third dawn."],
+    ]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      const first = (await transcript(server.url, session.id))[0];
+      expect(first.variant_ids).toEqual([first.id]);
+      expect(first.variant_index).toBe(0);
+
+      await readSse(await postRegenerate(server.url, session.id));
+      const modelOverride = await postRegenerate(server.url, session.id, { model: "glm-5.3-flash" });
+      await readSse(modelOverride);
+      expect(calls[2].model).toBe("glm-5.3-flash");
+
+      const swipes = await transcript(server.url, session.id);
+      expect(swipes).toHaveLength(1);
+      expect(swipes[0].content).toBe("Third dawn.");
+      expect(swipes[0].variant_ids).toHaveLength(3);
+      expect(swipes[0].variant_ids[0]).toBe(first.id);
+      expect(new Set(swipes[0].variant_ids).size).toBe(3);
+      expect(swipes[0].variant_index).toBe(2);
+
+      // A stopped regeneration leaves the draft selected beside the swipes.
+      const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
+      const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
+      try {
+        const run = await postRegenerate(draftServer.url, session.id);
+        await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
+        await stopRun(draftServer.url, session.id);
+        await run.body?.cancel().catch(() => {});
+        await waitFor(
+          async () => (await transcript(draftServer.url, session.id))[0]?.status === "interrupted",
+          "draft to settle interrupted",
+        );
+        const draftRows = await transcript(draftServer.url, session.id);
+        expect(draftRows).toHaveLength(1);
+        expect(draftRows[0].content).toBe("Draft ");
+        expect(draftRows[0].variant_ids).toHaveLength(4);
+        expect(draftRows[0].variant_index).toBe(3);
+
+        // Regenerating again discards the interrupted draft.
+        const again = await postRegenerate(draftServer.url, session.id);
+        await waitFor(() => draftCalls.length === 2, "second regeneration to reach upstream");
+        draftCalls[1].release();
+        await again.body?.cancel().catch(() => {});
+        await waitFor(
+          async () => (await transcript(draftServer.url, session.id))[0]?.status === "complete",
+          "second draft to settle",
+        );
+        const settled = await transcript(draftServer.url, session.id);
+        expect(settled).toHaveLength(1);
+        expect(settled[0].content).toBe("Draft ");
+        expect(settled[0].variant_ids).toHaveLength(4);
+        expect(settled[0].variant_ids).not.toContain(draftRows[0].id);
+      } finally {
+        for (const call of draftCalls) call.release();
+        await draftServer.stop();
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("selection switches the shown swipe and deletes a left-behind draft", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."], ["Third."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      const firstId = (await transcript(server.url, session.id))[0].id;
+      await readSse(await postRegenerate(server.url, session.id));
+      await readSse(await postRegenerate(server.url, session.id));
+
+      const select = await selectVariant(server.url, session.id, firstId);
+      expect(select.status).toBe(200);
+      const selected = ((await select.json()) as { messages: TranscriptRow[] }).messages;
+      expect(selected).toHaveLength(1);
+      expect(selected[0].id).toBe(firstId);
+      expect(selected[0].content).toBe("First.");
+      expect(selected[0].variant_index).toBe(0);
+
+      // Selecting away from an interrupted draft deletes the draft.
+      const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
+      const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
+      try {
+        const run = await postRegenerate(draftServer.url, session.id);
+        await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
+        await stopRun(draftServer.url, session.id);
+        await run.body?.cancel().catch(() => {});
+        await waitFor(
+          async () => (await transcript(draftServer.url, session.id))[0]?.status === "interrupted",
+          "draft to settle interrupted",
+        );
+        const draftRows = await transcript(draftServer.url, session.id);
+        expect(draftRows[0].variant_ids).toHaveLength(4);
+
+        const back = await selectVariant(draftServer.url, session.id, firstId);
+        expect(back.status).toBe(200);
+        const kept = ((await back.json()) as { messages: TranscriptRow[] }).messages;
+        expect(kept[0].id).toBe(firstId);
+        expect(kept[0].variant_ids).toHaveLength(3);
+        expect(kept[0].variant_ids).not.toContain(draftRows[0].id);
+      } finally {
+        for (const call of draftCalls) call.release();
+        await draftServer.stop();
+      }
+
+      // Once later turns exist the old narration is no longer a swipe target.
+      const turn = await postMessage(server.url, session.id, { content: "I press on." });
+      expect(turn.status).toBe(200);
+      await readSse(turn);
+      const stale = await selectVariant(server.url, session.id, firstId);
+      expect(stale.status).toBe(409);
+      const staleBody = (await stale.json()) as { code: string };
+      expect(staleBody.code).toBe("not_trailing");
+      const missing = await selectVariant(server.url, session.id, "no-such-message");
+      expect(missing.status).toBe(404);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("swipe deletion selects the newest remaining and refuses the sole alternate", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      const sole = (await transcript(server.url, session.id))[0];
+      const only = await deleteMessage(server.url, session.id, sole.id, "variant");
+      expect(only.status).toBe(409);
+      const onlyBody = (await only.json()) as { code: string };
+      expect(onlyBody.code).toBe("sole_variant");
+
+      await readSse(await postRegenerate(server.url, session.id));
+      const two = await transcript(server.url, session.id);
+      expect(two[0].variant_ids).toEqual([sole.id, two[0].id]);
+
+      // Deleting the shown swipe falls back to the newest remaining.
+      const removed = await deleteMessage(server.url, session.id, two[0].id, "variant");
+      expect(removed.status).toBe(200);
+      const after = ((await removed.json()) as { messages: TranscriptRow[] }).messages;
+      expect(after).toHaveLength(1);
+      expect(after[0].id).toBe(sole.id);
+      expect(after[0].content).toBe("First.");
+      expect(after[0].variant_ids).toEqual([sole.id]);
+
+      // Older narration is not a swipe target once later turns exist.
+      const turn = await postMessage(server.url, session.id, { content: "Onward." });
+      expect(turn.status).toBe(200);
+      await readSse(turn);
+      const stale = await deleteMessage(server.url, session.id, sole.id, "variant");
+      expect(stale.status).toBe(409);
+      const staleBody = (await stale.json()) as { code: string };
+      expect(staleBody.code).toBe("not_trailing");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("deletes cascade across alternates and later turns; positions continue after the highest survivor", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [
+      ["Opening."],
+      ["Opening swipe."],
+      ["Reply."],
+      ["Reply swipe."],
+    ]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      await readSse(await postRegenerate(server.url, session.id));
+      const turn = await postMessage(server.url, session.id, { content: "I act." });
+      const playerId = turn.headers.get("x-storyfold-player-message-id");
+      if (!playerId) throw new Error("missing player id header");
+      await readSse(turn);
+      await readSse(await postRegenerate(server.url, session.id));
+
+      const rows = await transcript(server.url, session.id);
+      expect(rows.map((row) => row.position)).toEqual([1, 2, 3]);
+      expect(rows[2].variant_ids).toHaveLength(2);
+
+      // Default delete removes the message and all its alternates.
+      const one = await deleteMessage(server.url, session.id, rows[2].id);
+      expect(one.status).toBe(200);
+      const afterOne = ((await one.json()) as { messages: TranscriptRow[] }).messages;
+      expect(afterOne.map((row) => row.position)).toEqual([1, 2]);
+
+      // Delete from the player message onward: it and everything after go.
+      const cut = await deleteMessage(server.url, session.id, playerId, "after");
+      expect(cut.status).toBe(200);
+      const remaining = ((await cut.json()) as { messages: TranscriptRow[] }).messages;
+      expect(remaining.map((row) => row.position)).toEqual([1]);
+      expect(remaining[0].variant_ids).toHaveLength(2);
+
+      // The next turn continues after the highest survivor; no gap is reused.
+      const next = await postMessage(server.url, session.id, { content: "Fresh start." });
+      expect(next.status).toBe(200);
+      await readSse(next);
+      expect((await transcript(server.url, session.id)).map((row) => row.position)).toEqual([1, 2, 3]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("edits change complete messages in place and refuse drafts", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      const swipeId = (await transcript(server.url, session.id))[0].id;
+      await readSse(await postRegenerate(server.url, session.id));
+
+      const narration = (await transcript(server.url, session.id))[0];
+      const edited = await patchMessage(server.url, session.id, narration.id, { content: "Edited opening." });
+      expect(edited.status).toBe(200);
+      const message = ((await edited.json()) as { message: Message }).message;
+      expect(message.id).toBe(narration.id);
+      expect(message.content).toBe("Edited opening.");
+      expect(message.role).toBe("assistant");
+      expect(message.speaker_name).toBe("Narrator");
+      expect(message.position).toBe(1);
+
+      // Only the edited alternate changed: the swipe keeps its original text.
+      const swipe = await selectVariant(server.url, session.id, swipeId);
+      expect(swipe.status).toBe(200);
+      const shown = ((await swipe.json()) as { messages: TranscriptRow[] }).messages;
+      expect(shown[0].content).toBe("First.");
+      expect(shown[0].variant_ids).toEqual([swipeId, narration.id]);
+      expect(shown[0].variant_index).toBe(0);
+      const back = await selectVariant(server.url, session.id, narration.id);
+      expect(back.status).toBe(200);
+
+      const turn = await postMessage(server.url, session.id, { content: "I act." });
+      const playerId = turn.headers.get("x-storyfold-player-message-id");
+      if (!playerId) throw new Error("missing player id header");
+      await readSse(turn);
+
+      const playerEdit = await patchMessage(server.url, session.id, playerId, { content: "I act decisively." });
+      expect(playerEdit.status).toBe(200);
+      expect(((await playerEdit.json()) as { message: Message }).message.speaker_name).toBe("Sable");
+
+      const invalid = await patchMessage(server.url, session.id, playerId, { content: "   " });
+      expect(invalid.status).toBe(400);
+      const invalidBody = (await invalid.json()) as { code: string };
+      expect(invalidBody.code).toBe("invalid_input");
+      const missing = await patchMessage(server.url, session.id, "no-such-message", { content: "x" });
+      expect(missing.status).toBe(404);
+
+      // Drafts are not editable.
+      const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
+      const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
+      try {
+        const run = await postRegenerate(draftServer.url, session.id);
+        await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
+        await stopRun(draftServer.url, session.id);
+        await run.body?.cancel().catch(() => {});
+        await waitFor(
+          async () => (await transcript(draftServer.url, session.id)).at(-1)?.status === "interrupted",
+          "draft to settle interrupted",
+        );
+        const draftRows = await transcript(draftServer.url, session.id);
+        expect(draftRows.at(-1)?.status).toBe("interrupted");
+        const refused = await patchMessage(draftServer.url, session.id, draftRows.at(-1)!.id, { content: "Nope." });
+        expect(refused.status).toBe(409);
+        const refusedBody = (await refused.json()) as { code: string };
+        expect(refusedBody.code).toBe("not_editable");
+      } finally {
+        for (const call of draftCalls) call.release();
+        await draftServer.stop();
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("model history and the history cap count only the selected alternate", async () => {
+    const { session } = await seedStory(base.url);
+    const big = "A".repeat(99_000);
+    const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [[big], ["Short."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      await readSse(await postRegenerate(server.url, session.id));
+
+      // The unselected 99k swipe does not count: a 90k input still fits.
+      const turn = await postMessage(server.url, session.id, { content: "B".repeat(90_000) });
+      expect(turn.status).toBe(200);
+      const events = await readSse(turn);
+      expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+      const history = calls[2].messages as Array<{ role: string; content: string }>;
+      const nonSystem = history.filter((message) => message.role !== "system");
+      expect(nonSystem[0]).toEqual({ role: "assistant", content: "Short." });
+      expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(90_000) });
+      expect(JSON.stringify(history)).not.toContain(big);
+
+      // But the cap still binds: growth past it is refused, standing still is not.
+      const rows = await transcript(server.url, session.id);
+      const oversized = await patchMessage(server.url, session.id, rows[1].id, { content: "C".repeat(100_000) });
+      expect(oversized.status).toBe(413);
+      const oversizedBody = (await oversized.json()) as { code: string };
+      expect(oversizedBody.code).toBe("context_limit");
+      const kept = await patchMessage(server.url, session.id, rows[1].id, { content: "B".repeat(90_000) });
+      expect(kept.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("every message operation is refused busy while a reply is pending", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Slow "]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      const run = await postMessage(server.url, session.id, { content: "I begin." });
+      expect(run.status).toBe(200);
+      await waitFor(() => calls.length === 1, "run to reach upstream");
+      const rows = await transcript(server.url, session.id);
+
+      const regenerate = await postRegenerate(server.url, session.id);
+      expect(regenerate.status).toBe(409);
+      const regenerateBody = (await regenerate.json()) as { code: string };
+      expect(regenerateBody.code).toBe("busy");
+      const select = await selectVariant(server.url, session.id, rows[0].id);
+      expect(select.status).toBe(409);
+      const selectBody = (await select.json()) as { code: string };
+      expect(selectBody.code).toBe("busy");
+      const remove = await deleteMessage(server.url, session.id, rows[0].id);
+      expect(remove.status).toBe(409);
+      const removeBody = (await remove.json()) as { code: string };
+      expect(removeBody.code).toBe("busy");
+      const edit = await patchMessage(server.url, session.id, rows[0].id, { content: "Edited." });
+      expect(edit.status).toBe(409);
+      const editBody = (await edit.json()) as { code: string };
+      expect(editBody.code).toBe("busy");
+
+      calls[0].release();
+      await run.body?.cancel().catch(() => {});
+      await waitFor(
+        async () => (await transcript(server.url, session.id))[1]?.status === "complete",
+        "run to settle",
+      );
+    } finally {
+      for (const call of calls) call.release();
+      await server.stop();
+    }
+  });
+
+  test("closed sessions refuse every message operation and return selected rows only", async () => {
+    const { campaign, session } = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["Opening."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, session.id));
+      const rows = await transcript(server.url, session.id);
+      const closed = await fetch(`${server.url}/api/campaigns/${campaign.id}/sessions`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify({ title: "Next", handoff: "Dawn breaks." }),
+      });
+      expect(closed.status).toBe(201);
+
+      const codes: string[] = [];
+      const refuse = async (response: Response): Promise<void> => {
+        expect(response.status).toBe(409);
+        codes.push(((await response.json()) as { code: string }).code);
+      };
+      await refuse(await postRegenerate(server.url, session.id));
+      await refuse(await selectVariant(server.url, session.id, rows[0].id));
+      await refuse(await deleteMessage(server.url, session.id, rows[0].id));
+      await refuse(await patchMessage(server.url, session.id, rows[0].id, { content: "Edited." }));
+      await refuse(await postOpening(server.url, session.id));
+      expect(codes.every((code) => code === "session_closed")).toBe(true);
+
+      const after = await transcript(server.url, session.id);
+      expect(after).toHaveLength(1);
+      expect(after[0].id).toBe(rows[0].id);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("message ids from another session are missing", async () => {
+    const mine = await seedStory(base.url);
+    const other = await seedStory(base.url);
+    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      const opened = await postOpening(server.url, other.session.id);
+      expect(opened.status).toBe(200);
+      await readSse(opened);
+      const foreign = (await transcript(server.url, other.session.id))[0];
+
+      // The id exists, but only its own session can see it.
+      const self = await selectVariant(server.url, other.session.id, foreign.id);
+      expect(self.status).toBe(200);
+      const select = await selectVariant(server.url, mine.session.id, foreign.id);
+      expect(select.status).toBe(404);
+      const remove = await deleteMessage(server.url, mine.session.id, foreign.id);
+      expect(remove.status).toBe(404);
+      const edit = await patchMessage(server.url, mine.session.id, foreign.id, { content: "x" });
+      expect(edit.status).toBe(404);
+      expect(await transcript(server.url, other.session.id)).toHaveLength(1);
+    } finally {
+      await server.stop();
     }
   });
 });

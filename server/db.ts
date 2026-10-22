@@ -189,14 +189,18 @@ CREATE TABLE IF NOT EXISTS messages (
   speaker_name TEXT NOT NULL,
   content TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'interrupted', 'failed')),
+  selected INTEGER NOT NULL CHECK (selected IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE (session_id, position),
-  CHECK (role != 'user' OR status = 'complete')
+  CHECK (role != 'user' OR status = 'complete'),
+  CHECK (role = 'assistant' OR selected = 1)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS messages_one_pending
   ON messages(session_id) WHERE role = 'assistant' AND status = 'pending';
+
+CREATE UNIQUE INDEX IF NOT EXISTS messages_one_selected
+  ON messages(session_id, position) WHERE selected = 1;
 
 CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
