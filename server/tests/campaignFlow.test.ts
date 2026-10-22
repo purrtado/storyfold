@@ -93,10 +93,16 @@ function postMessage(serverBase: string, sessionId: string, content: string): Pr
   });
 }
 
-async function transcript(serverBase: string, sessionId: string): Promise<Message[]> {
+/** Wire transcript row: the trailing narration carries its alternates. */
+interface TranscriptRow extends Message {
+  variant_ids: string[];
+  variant_index: number;
+}
+
+async function transcript(serverBase: string, sessionId: string): Promise<TranscriptRow[]> {
   const response = await fetch(`${serverBase}/api/sessions/${sessionId}/messages`, { headers: headersWith() });
   expect(response.status).toBe(200);
-  const payload = (await response.json()) as { messages: Message[] };
+  const payload = (await response.json()) as { messages: TranscriptRow[] };
   return payload.messages;
 }
 
@@ -914,6 +920,324 @@ describe("forking completed sessions", () => {
     const unknown = await json("/api/sessions/nope/fork", "POST", { name: "Nowhere" });
     expect(unknown.status).toBe(404);
     const malformed = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", {});
+    expect(malformed.status).toBe(400);
+  });
+});
+
+describe("forking from a message", () => {
+  test("fork from the open session cuts the transcript and copies current state, independent afterwards", async () => {
+    const seeded = await seedCampaign("MsgFork", "Message fork situation.");
+    const item = (await (
+      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+        category: "goal",
+        subject: "Find the ledger",
+        content: "Before the cut.",
+      })
+    ).json()) as { id: string };
+
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    const cutAt = (await transcript(base.url, seeded.session.id)).at(-1)!;
+    await json(`/api/campaigns/${seeded.campaign.id}/state/${item.id}`, "PATCH", {
+      content: "Edited mid-session.",
+    });
+    await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+      category: "journal",
+      subject: "First night",
+      content: "Slept aboard the ferry.",
+    });
+    await completeTurn(base.url, seeded.session.id, "I press on.", "The road climbs.");
+
+    const forked = await json(
+      `/api/sessions/${seeded.session.id}/messages/${cutAt.id}/fork`,
+      "POST",
+      { name: "From the pier" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.campaign.name).toBe("From the pier");
+    expect(fork.campaign.forked_from_campaign_id).toBe(seeded.campaign.id);
+    expect(fork.campaign.forked_from_session_id).toBe(seeded.session.id);
+    expect(fork.campaign.world_snapshot).toEqual(seeded.campaign.world_snapshot);
+    expect(fork.campaign.protagonist_snapshot).toEqual(seeded.campaign.protagonist_snapshot);
+    expect(fork.campaign.cast).toEqual(seeded.campaign.cast);
+    expect(fork.campaign.starting_situation).toBe(seeded.campaign.starting_situation);
+    expect(fork.campaign.active_session_id).toBe(fork.session.id);
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.handoff).toBeNull();
+
+    const messages = await transcript(base.url, fork.session.id);
+    const source = await transcript(base.url, seeded.session.id);
+    expect(messages.map((message) => [message.role, message.content, message.position])).toEqual([
+      ["user", "I scout the pier.", 1],
+      ["assistant", "The fog swallows the pier.", 2],
+    ]);
+    expect(messages.map((message) => message.created_at)).toEqual(
+      source.slice(0, 2).map((message) => message.created_at),
+    );
+    expect(messages.every((message) => message.session_id === fork.session.id)).toBe(true);
+
+    // Current values, not any checkpoint.
+    const items = (await stateItems(fork.campaign.id)) as Array<{ id: string; subject: string; content: string }>;
+    expect(items).toEqual([
+      expect.objectContaining({ subject: "Find the ledger", content: "Edited mid-session." }),
+      expect.objectContaining({ subject: "First night", content: "Slept aboard the ferry." }),
+    ]);
+
+    // The campaigns never touch each other again.
+    await json(`/api/campaigns/${fork.campaign.id}/state/${items[0]!.id}`, "PATCH", {
+      content: "Edited in the fork.",
+    });
+    await json(`/api/campaigns/${seeded.campaign.id}/state/${item.id}`, "PATCH", {
+      content: "Edited in the origin.",
+    });
+    const forkItems = (await stateItems(fork.campaign.id)) as Array<{ content: string }>;
+    const originItems = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
+    expect(forkItems.map((row) => row.content)).toEqual([
+      "Edited in the fork.",
+      "Slept aboard the ferry.",
+    ]);
+    expect(originItems.map((row) => row.content)).toEqual([
+      "Edited in the origin.",
+      "Slept aboard the ferry.",
+    ]);
+    expect(source.map((message) => message.content)).toEqual([
+      "I scout the pier.",
+      "The fog swallows the pier.",
+      "I press on.",
+      "The road climbs.",
+    ]);
+  });
+
+  test("a message fork from a closed opening session has no incoming handoff and takes current state", async () => {
+    const seeded = await seedCampaign("MsgForkClosed", "Closed fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    const message = (await transcript(base.url, seeded.session.id))[0]!;
+    await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+      category: "goal",
+      subject: "Find the ledger",
+      content: "Current content.",
+    });
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+    expect(closed.status).toBe(201);
+    await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+      category: "internal",
+      subject: "Post-close doubt",
+      content: "Added after the close.",
+    });
+
+    const forked = await json(
+      `/api/sessions/${seeded.session.id}/messages/${message.id}/fork`,
+      "POST",
+      { name: "From the pier" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.session.handoff).toBeNull();
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.title).toBe(seeded.session.title);
+    const forkItems = (await stateItems(fork.campaign.id)) as Array<{ subject: string }>;
+    expect(forkItems.map((row) => row.subject)).toEqual(["Find the ledger", "Post-close doubt"]);
+  });
+
+  test("a message fork from a closed session is grounded by its incoming handoff, not its outgoing one", async () => {
+    const seeded = await seedCampaign("MsgForkGround", "Grounded fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+    const closedPayload = (await closed.json()) as { session: Session };
+    const second = closedPayload.session;
+    await completeTurn(base.url, second.id, "I climb the ridge.", "The valley opens below.");
+    const secondMessage = (await transcript(base.url, second.id))[0]!;
+    await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The southern road",
+      handoff: "The party crossed the southern bridge at dawn.",
+    });
+
+    const forked = await json(
+      `/api/sessions/${second.id}/messages/${secondMessage.id}/fork`,
+      "POST",
+      { name: "From the ridge" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
+  });
+
+  test("a message fork from an open fork session keeps the inherited handoff", async () => {
+    const seeded = await seedCampaign("MsgForkInherited", "Inherited fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+      title: "The northern road",
+      handoff: "The party reached the northern pass at dusk.",
+    });
+
+    const boundary = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "The boundary fork" });
+    expect(boundary.status).toBe(201);
+    const boundaryFork = (await boundary.json()) as { campaign: Campaign; session: Session };
+    expect(boundaryFork.session.handoff).toBe("The party reached the northern pass at dusk.");
+
+    await completeTurn(base.url, boundaryFork.session.id, "I climb the ridge.", "The valley opens below.");
+    const message = (await transcript(base.url, boundaryFork.session.id)).at(-1)!;
+    const forked = await json(
+      `/api/sessions/${boundaryFork.session.id}/messages/${message.id}/fork`,
+      "POST",
+      { name: "From the ridge" },
+    );
+    expect(forked.status).toBe(201);
+    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
+    expect(fork.session.closed_at).toBeNull();
+    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
+  });
+
+  test("the cut excludes swipes and drafts, renumbers from 1, and may end on a player message", async () => {
+    const seeded = await seedCampaign("MsgForkCut", "Cut fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
+    // Regenerating the trailing narration leaves the first reply as an unselected swipe.
+    const swipeServer = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: (async (_input: string | URL | Request) =>
+        new Response(openAiChatCompletionSse("glm-5.3", ["The fog deepens."]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })) as typeof fetch,
+    });
+    try {
+      const regenerate = await fetch(`${swipeServer.url}/api/sessions/${seeded.session.id}/regenerate`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify({}),
+      });
+      expect(regenerate.status).toBe(200);
+      expect(parseSseEvents(await regenerate.text()).length).toBeGreaterThan(0);
+    } finally {
+      await swipeServer.stop();
+    }
+    const withSwipe = await transcript(base.url, seeded.session.id);
+    const narration = withSwipe[1]!;
+    expect(narration.content).toBe("The fog deepens.");
+    expect(narration.variant_ids).toHaveLength(2);
+
+    await completeTurn(base.url, seeded.session.id, "I press on.", "The road climbs.");
+    const draftServer = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      const response = await postMessage(draftServer.url, seeded.session.id, "I hesitate.");
+      expect(response.status).toBe(200);
+      await stopRun(draftServer.url, seeded.session.id);
+    } finally {
+      await draftServer.stop();
+    }
+    const rows = await transcript(base.url, seeded.session.id);
+    expect(rows.map((row) => [row.position, row.role, row.status])).toEqual([
+      [1, "user", "complete"],
+      [2, "assistant", "complete"],
+      [3, "user", "complete"],
+      [4, "assistant", "complete"],
+      [5, "user", "complete"],
+      [6, "assistant", "interrupted"],
+    ]);
+
+    const atNarration = await json(
+      `/api/sessions/${seeded.session.id}/messages/${narration.id}/fork`,
+      "POST",
+      { name: "At the narration" },
+    );
+    expect(atNarration.status).toBe(201);
+    const narrationFork = (await atNarration.json()) as { session: Session };
+    expect(
+      (await transcript(base.url, narrationFork.session.id)).map((row) => [row.position, row.content]),
+    ).toEqual([
+      [1, "I scout the pier."],
+      [2, "The fog deepens."],
+    ]);
+
+    const atPlayer = await json(
+      `/api/sessions/${seeded.session.id}/messages/${rows[2]!.id}/fork`,
+      "POST",
+      { name: "At the player turn" },
+    );
+    expect(atPlayer.status).toBe(201);
+    const playerFork = (await atPlayer.json()) as { session: Session };
+    expect(
+      (await transcript(base.url, playerFork.session.id)).map((row) => [row.position, row.content]),
+    ).toEqual([
+      [1, "I scout the pier."],
+      [2, "The fog deepens."],
+      [3, "I press on."],
+    ]);
+  });
+
+  test("fork from a message is refused while a reply is pending and for foreign messages", async () => {
+    const seeded = await seedCampaign("MsgForkGuard", "Guard fork situation.");
+    await completeTurn(base.url, seeded.session.id, "I arrive.", "The gate opens.");
+    const narration = (await transcript(base.url, seeded.session.id)).at(-1)!;
+    const other = await seedCampaign("MsgForkOther", "Other fork situation.");
+
+    const server = await startTestServer({
+      configDirectory,
+      databasePath,
+      upstreamFetch: heldUpstream("glm-5.3", ["Half", " a reply."]),
+    });
+    try {
+      const response = await postMessage(server.url, seeded.session.id, "I act while it streams.");
+      expect(response.status).toBe(200);
+      const busy = await json(
+        `/api/sessions/${seeded.session.id}/messages/${narration.id}/fork`,
+        "POST",
+        { name: "While pending" },
+      );
+      expect(busy.status).toBe(409);
+      const busyError = (await busy.json()) as { code?: string };
+      expect(busyError.code).toBe("busy");
+      await stopRun(server.url, seeded.session.id);
+
+      const afterDraft = await json(
+        `/api/sessions/${seeded.session.id}/messages/${narration.id}/fork`,
+        "POST",
+        { name: "After the draft" },
+      );
+      expect(afterDraft.status).toBe(201);
+      const draftFork = (await afterDraft.json()) as { session: Session };
+      expect(
+        (await transcript(base.url, draftFork.session.id)).map((row) => row.content),
+      ).toEqual(["I arrive.", "The gate opens."]);
+      const draft = (await transcript(base.url, seeded.session.id)).at(-1)!;
+      expect(draft.status).toBe("interrupted");
+      const atDraft = await json(
+        `/api/sessions/${seeded.session.id}/messages/${draft.id}/fork`,
+        "POST",
+        { name: "At the draft" },
+      );
+      expect(atDraft.status).toBe(404);
+    } finally {
+      await server.stop();
+    }
+
+    const foreign = await json(
+      `/api/sessions/${other.session.id}/messages/${narration.id}/fork`,
+      "POST",
+      { name: "Cross-session" },
+    );
+    expect(foreign.status).toBe(404);
+    const unknown = await json(`/api/sessions/${seeded.session.id}/messages/nope/fork`, "POST", { name: "Nowhere" });
+    expect(unknown.status).toBe(404);
+    const unknownSession = await json("/api/sessions/nope/messages/nope/fork", "POST", { name: "Nowhere" });
+    expect(unknownSession.status).toBe(404);
+    const malformed = await json(
+      `/api/sessions/${seeded.session.id}/messages/${narration.id}/fork`,
+      "POST",
+      {},
+    );
     expect(malformed.status).toBe(400);
   });
 });

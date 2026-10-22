@@ -3,13 +3,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../db";
+import { newId, nowIso, openDatabase } from "../db";
 import {
   beginNextSession,
   createCampaign,
   createCharacter,
   createWorld,
   createWorldEntry,
+  forkCampaignFromMessage,
   forkCampaignFromSession,
   getCampaign,
   parseCampaignInput,
@@ -133,3 +134,46 @@ function forkAtCheckpoint(db: Database, sourceSessionId: string) {
   if (!fork) throw new Error("Expected fork");
   return fork;
 }
+
+test("a message fork copies current relationships and stays independent", () => {
+  const { db, campaign, protagonist } = setup();
+  const local = createRelationshipSubject(db, campaign.id, "Ilyra");
+  const relationship = createRelationship(db, campaign, protagonist.id, local.id, parseRelationshipDocument(document("Met during the eclipse.")));
+  const event = appendRelationshipEvent(db, campaign, relationship.id, "Ilyra shared the map.")!;
+
+  const sessionId = campaign.active_session_id;
+  const insertMessage = db.query(
+    "INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'complete', 1, ?, ?)",
+  );
+  insertMessage.run(newId(), sessionId, 1, "user", "Mira", "I approach the lighthouse.", nowIso(), nowIso());
+  const cutId = newId();
+  insertMessage.run(cutId, sessionId, 2, "assistant", "Narrator", "Tamsin waves from the gallery.", nowIso(), nowIso());
+
+  const forked = forkCampaignFromMessage(db, sessionId, cutId, { name: "Fork" });
+  if (!forked) throw new Error("Expected fork");
+  expect(forked.campaign.forked_from_campaign_id).toBe(campaign.id);
+  expect(forked.campaign.forked_from_session_id).toBe(sessionId);
+
+  const forkRelationship = listRelationships(db, forked.campaign).relationships[0]!;
+  expect(forkRelationship.id).not.toBe(relationship.id);
+  expect(forkRelationship.document.how_met).toBe("Met during the eclipse.");
+  expect(forkRelationship.target_id).not.toBe(local.id);
+  expect(listRelationships(db, forked.campaign).subjects.some((subject) => subject.id === forkRelationship.target_id && subject.name === "Ilyra")).toBe(true);
+  const forkEvents = listRelationshipEvents(db, forked.campaign.id, forkRelationship.id)!;
+  expect(forkEvents.map((item) => item.description)).toEqual(["Ilyra shared the map."]);
+  expect(forkEvents[0]!.id).not.toBe(event.id);
+  const forkEventOrigin = db
+    .query<{ origin_event_id: string }, [string]>("SELECT origin_event_id FROM relationship_events WHERE id = ?")
+    .get(forkEvents[0]!.id)!;
+  expect(forkEventOrigin.origin_event_id).toBe(event.id);
+
+  // Either campaign moves on without touching the other.
+  updateRelationship(db, forked.campaign, forkRelationship.id, parseRelationshipDocument(document("Changed in the fork.")), forkRelationship.revision)!;
+  appendRelationshipEvent(db, campaign, relationship.id, "Later, in the origin.");
+  updateRelationship(db, campaign, relationship.id, parseRelationshipDocument(document("Changed in the origin.")), relationship.revision)!;
+  expect(listRelationships(db, forked.campaign).relationships[0]!.document.how_met).toBe("Changed in the fork.");
+  expect(listRelationshipEvents(db, forked.campaign.id, forkRelationship.id)!.map((item) => item.description)).toEqual(["Ilyra shared the map."]);
+  expect(listRelationships(db, campaign).relationships[0]!.document.how_met).toBe("Changed in the origin.");
+  expect(listRelationshipEvents(db, campaign.id, relationship.id)!.map((item) => item.description)).toEqual(["Ilyra shared the map.", "Later, in the origin."]);
+  db.close();
+});

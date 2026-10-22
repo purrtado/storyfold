@@ -132,6 +132,17 @@ export async function forkSession(sessionId: string, name: string): Promise<Camp
   });
 }
 
+export async function forkFromMessage(
+  sessionId: string,
+  messageId: string,
+  name: string,
+): Promise<CampaignFork> {
+  return request<CampaignFork>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/fork`,
+    { method: "POST", body: JSON.stringify({ name }) },
+  );
+}
+
 export type WorldInput = Pick<
   World,
   "name" | "setting_brief" | "suggested_starting_situation"
