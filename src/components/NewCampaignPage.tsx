@@ -84,6 +84,7 @@ export function NewCampaignPage(props: {
     refreshCharacters();
   }, []);
 
+  const worldCharactersState = useWorldCharacters(draft.worldId);
   useEffect(() => {
     if (worlds === undefined || characters === undefined) return;
     const worldSeedChanged = props.selectedWorldId !== seededWorldId.current;
@@ -96,12 +97,14 @@ export function NewCampaignPage(props: {
         : worlds.some((item) => item.id === current.worldId)
           ? current.worldId
           : worlds[0]?.id ?? "";
+      const worldChanged = nextWorldId !== current.worldId;
+      const pickable = (id: string) => characters.some((item) => item.id === id)
+        || (!worldChanged && (worldCharactersState.items ?? []).some((item) => item.id === id));
       const nextProtagonistId = characterSeedChanged && characters.some((item) => item.id === props.selectedCharacterId)
         ? props.selectedCharacterId!
-        : characters.some((item) => item.id === current.protagonistId)
+        : pickable(current.protagonistId)
           ? current.protagonistId
           : characters[0]?.id ?? "";
-      const worldChanged = nextWorldId !== current.worldId;
       const situationChanged = worldChanged && !current.situationEdited;
       return {
         ...current,
@@ -115,11 +118,10 @@ export function NewCampaignPage(props: {
           : current.selectedCharacterIds.filter((id) => id !== nextProtagonistId),
       };
     });
-  }, [worlds, characters, props.selectedCharacterId, props.selectedWorldId]);
+  }, [worlds, characters, worldCharactersState.items, props.selectedCharacterId, props.selectedWorldId]);
 
   const world = worlds?.find((item) => item.id === draft.worldId);
   const worldEntriesState = useWorldEntries(draft.worldId);
-  const worldCharactersState = useWorldCharacters(draft.worldId);
   const worldStatsState = useWorldStats(draft.worldId);
   useEffect(() => {
     if (!draft.worldId) return;
@@ -191,6 +193,9 @@ export function NewCampaignPage(props: {
     setDraft((current) => ({
       ...current,
       worldId: id,
+      protagonistId: characters?.some((item) => item.id === current.protagonistId)
+        ? current.protagonistId
+        : characters?.[0]?.id ?? "",
       selectedCharacterIds: [],
       startingSituation: current.situationEdited
         ? current.startingSituation

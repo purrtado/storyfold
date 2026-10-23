@@ -82,6 +82,8 @@ function MessageRow(props: {
   canGenerate: boolean;
   /** Forking works in the active session and in closed (read-only) sessions. */
   canFork: boolean;
+  /** A closed session forks from its checkpoint, not the current state. */
+  activeSession: boolean;
   campaignName: string;
   deleteCount: number;
   onRegenerate: () => void;
@@ -265,7 +267,10 @@ function MessageRow(props: {
         />
       </label>
       <p className="text-sm text-muted">
-        Copies the story up to this message into a new campaign. Notes and relationships are copied as they are now.
+        Copies the story up to this message into a new campaign.{" "}
+        {props.activeSession
+          ? "Notes and relationships are copied as they are now."
+          : "Notes and relationships are restored as they were when this session closed."}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -731,6 +736,7 @@ export function CampaignPlay(props: {
                   actionsAllowed={actionsAllowed}
                   canGenerate={canGenerate}
                   canFork={canFork}
+                  activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={messages.length - index}
                   onRegenerate={handleRegenerate}
@@ -760,6 +766,7 @@ export function CampaignPlay(props: {
                   actionsAllowed={false}
                   canGenerate={false}
                   canFork={false}
+                  activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={0}
                   onRegenerate={handleRegenerate}
