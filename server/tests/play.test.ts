@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Campaign, Message, Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Message, type Session } from "../../shared/domain";
 import { openDatabase } from "../db";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
@@ -39,7 +39,7 @@ afterAll(async () => {
   if (configDirectory) await removeDirectory(configDirectory);
 });
 
-async function seedStory(serverBase: string): Promise<{ campaign: Campaign; session: Session }> {
+async function seedStory(serverBase: string): Promise<{ campaign: Campaign; session: Session; protagonistId: string }> {
   const world = await fetch(`${serverBase}/api/worlds`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
@@ -72,7 +72,8 @@ async function seedStory(serverBase: string): Promise<{ campaign: Campaign; sess
     }),
   });
   expect(created.status).toBe(201);
-  return (await created.json()) as { campaign: Campaign; session: Session };
+  const createdPayload = (await created.json()) as { campaign: Campaign; session: Session };
+  return { ...createdPayload, protagonistId: protagonistPayload.character.id };
 }
 
 function postMessage(serverBase: string, sessionId: string, body: unknown): Promise<Response> {
@@ -312,12 +313,12 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
 }
 
 describe("campaign creation", () => {
-  test("binds snapshots and the opening session in one committed response", async () => {
+  test("binds characters and the opening session in one committed response", async () => {
     const { campaign, session } = await seedStory(base.url);
     expect(campaign.world_snapshot.name).toBe("Veloria");
-    expect(campaign.protagonist_snapshot.name).toBe("Sable");
-    expect(campaign.protagonist_snapshot.speaking_style).toBe("Clipped, sarcastic.");
-    expect(campaign.cast).toEqual([]);
+    expect(protagonistOf(campaign).name).toBe("Sable");
+    expect(protagonistOf(campaign).speaking_style).toBe("Clipped, sarcastic.");
+    expect(campaign.characters).toHaveLength(1);
     expect(campaign.active_session_id).toBe(session.id);
     expect(session.campaign_id).toBe(campaign.id);
     const detail = await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() });
@@ -340,14 +341,14 @@ describe("campaign creation", () => {
     );
   });
 
-  test("captured snapshots never change when the library is edited", async () => {
-    const { campaign } = await seedStory(base.url);
+  test("captured characters and world never change when the library is edited", async () => {
+    const { campaign, protagonistId } = await seedStory(base.url);
     await fetch(`${base.url}/api/worlds/${campaign.world_id}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Veloria Prime", setting_brief: "Rewritten entirely." }),
     });
-    await fetch(`${base.url}/api/characters/${campaign.protagonist_id}`, {
+    await fetch(`${base.url}/api/characters/${protagonistId}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Sable II", description: "Rewritten." }),
@@ -357,19 +358,19 @@ describe("campaign creation", () => {
     ).json()) as { campaign: Campaign };
     expect(detail.campaign.world_snapshot.name).toBe("Veloria");
     expect(detail.campaign.world_snapshot.setting_brief).toBe("A rain-soaked harbor kingdom of rival ferries.");
-    expect(detail.campaign.protagonist_snapshot.name).toBe("Sable");
+    expect(protagonistOf(detail.campaign).name).toBe("Sable");
     const fresh = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({
         world_id: campaign.world_id,
-        protagonist_id: campaign.protagonist_id,
+        protagonist_id: protagonistId,
         starting_situation: "New morning.",
       }),
     });
     const freshBody = (await fresh.json()) as { campaign: Campaign };
     expect(freshBody.campaign.world_snapshot.name).toBe("Veloria Prime");
-    expect(freshBody.campaign.protagonist_snapshot.name).toBe("Sable II");
+    expect(protagonistOf(freshBody.campaign).name).toBe("Sable II");
   });
 });
 
@@ -1222,35 +1223,35 @@ describe("regeneration, swipes, edits, and deletes", () => {
     }
   });
 
-  test("model history and the history cap count only the selected alternate", async () => {
+  test("model history and the narration budget count only the selected alternate", async () => {
     const { session } = await seedStory(base.url);
-    const big = "A".repeat(99_000);
+    const big = "A".repeat(100_000);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [[big], ["Short."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
       await readSse(await postOpening(server.url, session.id));
       await readSse(await postRegenerate(server.url, session.id));
-      // The 99k swipe is the oldest alternate; unselected after the regenerate.
+      // The 100k swipe is the oldest alternate; unselected after the regenerate.
       const swipeId = (await transcript(server.url, session.id))[0].variant_ids[0];
 
-      // The unselected 99k swipe does not count: a 90k input still fits.
-      const turn = await postMessage(server.url, session.id, { content: "B".repeat(90_000) });
+      // The unselected 100k swipe does not count: a 60k input still fits.
+      const turn = await postMessage(server.url, session.id, { content: "B".repeat(60_000) });
       expect(turn.status).toBe(200);
       const events = await readSse(turn);
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
       const history = calls[2].messages as Array<{ role: string; content: string }>;
       const nonSystem = history.filter((message) => message.role !== "system");
       expect(nonSystem[0]).toEqual({ role: "assistant", content: "Short." });
-      expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(90_000) });
+      expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(60_000) });
       expect(JSON.stringify(history)).not.toContain(big);
 
-      // But the cap still binds: growth past it is refused, standing still is not.
+      // But the budget still binds: growth past it is refused, standing still is not.
       const rows = await transcript(server.url, session.id);
-      const oversized = await patchMessage(server.url, session.id, rows[1].id, { content: "C".repeat(100_000) });
+      const oversized = await patchMessage(server.url, session.id, rows[0].id, { content: "C".repeat(100_000) });
       expect(oversized.status).toBe(413);
       const oversizedBody = (await oversized.json()) as { code: string };
       expect(oversizedBody.code).toBe("context_limit");
-      const kept = await patchMessage(server.url, session.id, rows[1].id, { content: "B".repeat(90_000) });
+      const kept = await patchMessage(server.url, session.id, rows[0].id, { content: "Shout." });
       expect(kept.status).toBe(200);
 
       // An unselected alternate feeds no model history: growing it is uncapped.

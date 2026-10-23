@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { CAMPAIGN_STATE_CATEGORIES, type Campaign, type CampaignStateCategory, type CampaignStateItem, type CampaignStateSubjectKind, type Session } from "../../shared/domain";
+import { CAMPAIGN_STATE_CATEGORIES, type Campaign, type CampaignStateCategory, type CampaignStateItem, type Session } from "../../shared/domain";
 import {
   createCampaignSession,
   createCampaignStateItem,
   deleteCampaignStateItem,
   fetchCampaignSessions,
   fetchCampaignState,
-  forkSession,
   updateCampaignStateItem,
   type CampaignStateInput,
 } from "../lib/storyApi";
@@ -19,7 +18,6 @@ const categoryLabels: Record<CampaignStateCategory, string> = {
   goal: "Goal",
   knowledge: "Knowledge",
   internal: "Internal",
-  attribute: "Attribute",
   journal: "Journal",
 };
 
@@ -29,54 +27,6 @@ function formatDate(value: string) {
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
-}
-
-type StateSubjectCandidate = {
-  subject_kind: CampaignStateSubjectKind;
-  subject_id: string;
-  name: string;
-  source: string;
-};
-
-type StateSubjectOption = StateSubjectCandidate & { value: string; label: string };
-
-function getStateSubjectOptions(campaign: Campaign): StateSubjectOption[] {
-  const candidates: StateSubjectCandidate[] = [
-    { subject_kind: "character", subject_id: campaign.protagonist_snapshot.id, name: campaign.protagonist_snapshot.name, source: "Protagonist" },
-    ...campaign.cast.map((character) => ({
-      subject_kind: "character" as const,
-      subject_id: character.id,
-      name: character.name,
-      source: "Cast",
-    })),
-    ...campaign.world_snapshot.entries.map((entry) => ({
-      subject_kind: "entry" as const,
-      subject_id: entry.id,
-      name: entry.name,
-      source: "World entry",
-    })),
-  ];
-  const nameCounts = new Map<string, number>();
-  for (const candidate of candidates) {
-    const key = `${candidate.subject_kind}\u0000${candidate.name}`;
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
-  }
-  return candidates.map((candidate) => {
-    const key = `${candidate.subject_kind}\u0000${candidate.name}`;
-    const duplicate = nameCounts.get(key)! > 1;
-    return {
-      ...candidate,
-      value: `${candidate.subject_kind}:${candidate.subject_id}`,
-      label: `${candidate.source}: ${candidate.name}${duplicate ? ` · ${candidate.subject_id.slice(0, 8)}` : ""}`,
-    };
-  });
-}
-
-function stateSubjectLabel(item: CampaignStateItem, options: StateSubjectOption[]) {
-  if (!item.subject_kind || !item.subject_id) return item.subject;
-  return options.find((option) =>
-    option.subject_kind === item.subject_kind && option.subject_id === item.subject_id
-  )?.label ?? item.subject;
 }
 
 export function useCampaignSessions(campaignId: string, sessionId: string) {
@@ -122,10 +72,7 @@ export function CampaignStateSection(props: {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [formCategory, setFormCategory] = useState<CampaignStateCategory>("goal");
   const [formSubject, setFormSubject] = useState("");
-  const [subjectSelection, setSubjectSelection] = useState("manual");
   const [formContent, setFormContent] = useState("");
-  const subjectOptions = useMemo(() => getStateSubjectOptions(props.campaign), [props.campaign]);
-  const selectedSubjectOption = subjectOptions.find((option) => option.value === subjectSelection);
 
   const loadState = useCallback(async () => {
     const requestId = stateRequestEpoch.next();
@@ -154,7 +101,6 @@ export function CampaignStateSection(props: {
     setEditingId(null);
     setFormCategory("goal");
     setFormSubject("");
-    setSubjectSelection("manual");
     setFormContent("");
   };
 
@@ -163,7 +109,6 @@ export function CampaignStateSection(props: {
     setEditingId(null);
     setFormCategory("goal");
     setFormSubject("");
-    setSubjectSelection("manual");
     setFormContent("");
     setCreatingItem(true);
   };
@@ -173,11 +118,7 @@ export function CampaignStateSection(props: {
     setCreatingItem(false);
     setEditingId(item.id);
     setFormCategory(item.category);
-    const reference = subjectOptions.find((option) =>
-      option.subject_kind === item.subject_kind && option.subject_id === item.subject_id
-    );
-    setSubjectSelection(reference?.value ?? "manual");
-    setFormSubject(reference?.name ?? item.subject);
+    setFormSubject(item.subject);
     setFormContent(item.content);
   };
 
@@ -185,9 +126,7 @@ export function CampaignStateSection(props: {
     event.preventDefault();
     const input: CampaignStateInput = {
       category: formCategory,
-      subject: selectedSubjectOption?.name ?? formSubject.trim(),
-      subject_kind: selectedSubjectOption?.subject_kind ?? null,
-      subject_id: selectedSubjectOption?.subject_id ?? null,
+      subject: formSubject.trim(),
       content: formContent.trim(),
     };
     if (!input.subject || !input.content) {
@@ -273,24 +212,8 @@ export function CampaignStateSection(props: {
             </select>
           </label>
           <label className="grid gap-1 text-sm">
-            Subject reference
-            <select
-              className="min-h-11 rounded-lg border border-border bg-background px-3"
-              value={subjectSelection}
-              onChange={(event) => {
-                const value = event.target.value;
-                setSubjectSelection(value);
-                const option = subjectOptions.find((candidate) => candidate.value === value);
-                if (option) setFormSubject(option.name);
-              }}
-            >
-              <option value="manual">Manual label</option>
-              {subjectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm">
             Subject
-            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} readOnly={Boolean(selectedSubjectOption)} required />
+            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={formSubject} onChange={(event) => setFormSubject(event.target.value)} required />
           </label>
           <label className="grid gap-1 text-sm">
             Content
@@ -305,7 +228,7 @@ export function CampaignStateSection(props: {
         </form>
       )}
 
-      {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No notes yet. Add a goal, fact, attribute, or journal entry.</p> : null}
+      {items?.length === 0 && !stateLoading ? <p className="text-sm text-muted">No notes yet. Add a goal, knowledge note, or journal entry.</p> : null}
       {items && CAMPAIGN_STATE_CATEGORIES.map((category) => {
         const categoryItems = sortCampaignStateItems(items, category);
         if (categoryItems.length === 0) return null;
@@ -317,7 +240,7 @@ export function CampaignStateSection(props: {
                 <li key={item.id} className="grid gap-2 p-3">
                   <div className="flex items-start gap-2">
                     <div className="grid min-w-0 flex-1 gap-0.5">
-                      <h5 className="text-sm font-medium">{stateSubjectLabel(item, subjectOptions)}</h5>
+                      <h5 className="text-sm font-medium">{item.subject}</h5>
                       <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{item.content}</p>
                       {category === "journal" && <p className="text-xs text-muted">{formatDate(item.created_at)}</p>}
                     </div>
@@ -356,15 +279,11 @@ export function CampaignTimelineSection(props: {
   const [nextTitle, setNextTitle] = useState("");
   const [handoff, setHandoff] = useState("");
   const [reviewHandoff, setReviewHandoff] = useState(false);
-  const [forkTarget, setForkTarget] = useState<string | null>(null);
-  const [forkName, setForkName] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  const [errorFlow, setErrorFlow] = useState<"next" | "fork">("next");
-  const nextFailed = errorFlow === "next" && Boolean(sessionError || pendingSessionId);
-  const forkFailed = errorFlow === "fork" && Boolean(sessionError || pendingSessionId);
+  const nextFailed = Boolean(sessionError || pendingSessionId);
 
   const syncAndNavigate = async (sessionId: string) => {
     setPendingSessionId(sessionId);
@@ -382,7 +301,6 @@ export function CampaignTimelineSection(props: {
   };
 
   const createNextSession = async () => {
-    setErrorFlow("next");
     setPendingSessionId(null);
     setSessionBusy(true);
     setSessionError("");
@@ -398,27 +316,6 @@ export function CampaignTimelineSection(props: {
       await syncAndNavigate(created.id);
     } catch (error) {
       setSessionError(errorMessage(error, "Could not start the next session."));
-      setSessionBusy(false);
-    }
-  };
-
-  const forkFromSession = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!forkTarget) return;
-    setErrorFlow("fork");
-    if (!forkName.trim()) {
-      setSessionError("Enter a name for the forked campaign.");
-      return;
-    }
-    setPendingSessionId(null);
-    setSessionBusy(true);
-    setSessionError("");
-    try {
-      const result = await forkSession(forkTarget, forkName.trim());
-      setForkTarget(null);
-      await syncAndNavigate(result.session.id);
-    } catch (error) {
-      setSessionError(errorMessage(error, "Could not fork this session."));
       setSessionBusy(false);
     }
   };
@@ -461,7 +358,7 @@ export function CampaignTimelineSection(props: {
                   </div>
                 </div>
               ) : (
-                <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); setErrorFlow("next"); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
+                <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); if (!nextTitle.trim() || !handoff.trim()) { setSessionError("A title and handoff are required."); return; } setSessionError(""); setReviewHandoff(true); }}>
                   <label className="grid gap-1 text-sm">
                     Next session title
                     <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={nextTitle} onChange={(event) => setNextTitle(event.target.value)} required />
@@ -507,12 +404,6 @@ export function CampaignTimelineSection(props: {
             <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onReloadSessions(); }}>Retry sessions</button>
           </div>
         )}
-        {forkFailed && sessionError && (
-          <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
-            <p className="text-muted">{sessionError}</p>
-            {pendingSessionId && <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void syncAndNavigate(pendingSessionId); }} disabled={sessionBusy}>Retry opening forked campaign</button>}
-          </div>
-        )}
         {props.sessionsLoading ? <p className="text-sm text-muted" role="status">Loading sessions…</p> : null}
         {orderedSessions.length > 0 && (
           <ol className="grid list-none gap-2 p-0">
@@ -530,20 +421,7 @@ export function CampaignTimelineSection(props: {
                       <span className="block break-words">{entry.title}</span>
                       <span className="mbs-1 block text-xs font-normal text-muted">{isActive ? "Active" : isClosed ? `Ended ${formatDate(entry.closed_at!)}` : `Started ${formatDate(entry.created_at)}`}</span>
                     </Link>
-                    {isClosed && <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setForkTarget(entry.id); setForkName(`${props.campaign.name} fork`); setSessionError(""); }}>Fork</button>}
                   </div>
-                  {forkTarget === entry.id && (
-                    <form className="grid gap-2 border-bs border-border pbs-3" onSubmit={(event) => { void forkFromSession(event); }}>
-                      <label className="grid gap-1 text-sm">
-                        New campaign name
-                        <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={forkName} onChange={(event) => setForkName(event.target.value)} required />
-                      </label>
-                      <div className="flex flex-wrap gap-2">
-                        <button type="submit" className="pressable min-h-10 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={sessionBusy}>{sessionBusy ? "Forking…" : "Create fork"}</button>
-                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setForkTarget(null)} disabled={sessionBusy}>Cancel</button>
-                      </div>
-                    </form>
-                  )}
                 </li>
               );
             })}

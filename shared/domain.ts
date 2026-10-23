@@ -3,7 +3,7 @@
  * JSON APIs are snake_case with ISO timestamps; ids are server-generated text.
  */
 
-export const WORLD_ENTRY_KINDS = ["local_npc", "location", "lore", "scene"] as const;
+export const WORLD_ENTRY_KINDS = ["location", "lore", "scene"] as const;
 
 export type WorldEntryKind = (typeof WORLD_ENTRY_KINDS)[number];
 
@@ -28,57 +28,95 @@ export interface WorldEntrySnapshot {
 export interface WorldSnapshot {
   name: string;
   setting_brief: string;
-  suggested_starting_situation: string;
   entries: WorldEntrySnapshot[];
 }
 
 /**
- * A global character. name/description are required; the remaining authored
- * fields are optional but always present, empty when unauthored.
+ * The one character profile shape, at every scope. `prompt` labels the field
+ * in narrator grounding; name and description are rendered without a label.
  */
-export interface Character {
+export const CHARACTER_PROFILE_FIELDS = [
+  { key: "name", label: "Name", prompt: "", required: true },
+  { key: "description", label: "Description", prompt: "", required: true },
+  { key: "appearance", label: "Appearance", prompt: "Appearance", required: false },
+  { key: "personality", label: "Personality", prompt: "Personality", required: false },
+  { key: "background", label: "Background", prompt: "Background", required: false },
+  { key: "baseline_motivations", label: "Motivations", prompt: "Motivations", required: false },
+  { key: "speaking_style", label: "Speaking style", prompt: "Speaking style", required: false },
+] as const;
+
+export type CharacterProfileKey = (typeof CHARACTER_PROFILE_FIELDS)[number]["key"];
+
+/** Name and description are non-empty; the other fields are "" when unauthored. */
+export type CharacterProfile = Record<CharacterProfileKey, string>;
+
+/**
+ * A library character (`world_id` null) or a world character. Copies between
+ * scopes are independent; nothing links them.
+ */
+export interface Character extends CharacterProfile {
   id: string;
-  name: string;
-  description: string;
-  appearance: string;
-  personality: string;
-  background: string;
-  baseline_motivations: string;
-  speaking_style: string;
+  world_id: string | null;
   /** Content-addressed image id (sha256 hex), null when no picture was uploaded. */
   avatar_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-/**
- * A global character definition captured at campaign creation, together with
- * the world-specific context of the world it was cast from ("" outside any
- * world cast). `id` is the captured global character id; later library edits
- * never rewrite a campaign snapshot.
- */
-export interface CharacterSnapshot {
-  id: string;
-  name: string;
+export const STAT_KINDS = ["character", "relationship"] as const;
+
+export type StatKind = (typeof STAT_KINDS)[number];
+
+/** Named palette tokens; light and dark values live in src/index.css as --stat-<token>. */
+export const STAT_COLORS = ["slate", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink"] as const;
+
+export type StatColor = (typeof STAT_COLORS)[number];
+
+/** What a stat measures and its integer scale; `applies_to` never changes after creation. */
+export interface StatFields {
+  applies_to: StatKind;
+  label: string;
   description: string;
-  appearance: string;
-  personality: string;
-  background: string;
-  baseline_motivations: string;
-  speaking_style: string;
-  world_context: string;
-  /** Captured image id at campaign creation; never re-resolved against the library. */
-  avatar_id: string | null;
+  low_label: string;
+  high_label: string;
+  min: number;
+  max: number;
+  default_value: number;
+  color: StatColor;
 }
 
-/** Association of a global character with a world plus freeform world-specific context. */
-export interface WorldCharacter {
-  world_id: string;
-  character_id: string;
-  context: string;
+/** A stat in the bank (`world_id` null) or defined by a world. */
+export interface StatDefinition extends StatFields {
+  id: string;
+  world_id: string | null;
   created_at: string;
   updated_at: string;
-  character: Character;
+}
+
+/** A campaign's own copy of a stat; edits never reach the world or the bank. */
+export interface CampaignStat extends StatFields {
+  id: string;
+  campaign_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Campaign stat id → current integer value. */
+export type StatValues = Record<string, number>;
+
+export type CampaignCharacterRole = "protagonist" | "cast";
+
+/** A campaign's own copy of a character; edits never reach the library or world. */
+export interface CampaignCharacter extends CharacterProfile {
+  id: string;
+  campaign_id: string;
+  role: CampaignCharacterRole;
+  avatar_id: string | null;
+  /** Opted in: carries every character stat of the campaign; otherwise `stats` is empty. */
+  stats_enabled: boolean;
+  stats: StatValues;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface World {
@@ -90,90 +128,62 @@ export interface World {
   updated_at: string;
 }
 
-export const CAMPAIGN_STATE_CATEGORIES = [
-  "goal",
-  "knowledge",
-  "internal",
-  "attribute",
-  "journal",
-] as const;
+export const CAMPAIGN_STATE_CATEGORIES = ["goal", "knowledge", "internal", "journal"] as const;
 
 export type CampaignStateCategory = (typeof CAMPAIGN_STATE_CATEGORIES)[number];
 
-/** What a state item's subject refers to: null on both fields means a free-text label. */
-export type CampaignStateSubjectKind = "character" | "entry";
-
 /**
- * Campaign-owned manual state. `subject` is display text: the name of a
- * captured character/world entry or any campaign-local label. When the subject
- * refers to a captured snapshot, `subject_kind` plus `subject_id` identify it —
- * validated at write time against the campaign's captured snapshots and never
- * re-resolved against the live library. `content` is the tracked value, and
- * journal entries are read chronologically by created_at, which never changes
- * after creation.
+ * Campaign-owned manual note. `subject` is free text and never links to a
+ * character or entry. Journal entries are read chronologically by created_at,
+ * which never changes after creation.
  */
 export interface CampaignStateItem {
   id: string;
   campaign_id: string;
   category: CampaignStateCategory;
   subject: string;
-  subject_kind: CampaignStateSubjectKind | null;
-  subject_id: string | null;
   content: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface RelationshipDocument {
-  how_met: string;
-  status: string;
-  stats: Record<string, { value: number; min: number; max: number }>;
-  known_facts: string[];
-  sections: { id: string; label: string; type: "text" | "list"; value: string | string[] }[];
-}
-
-export interface RelationshipSubject {
-  id: string;
-  name: string;
-  kind: "character" | "entry" | "local_character";
-}
-
+/** A directed relationship between two characters of the same campaign; carries every relationship stat. */
 export interface Relationship {
   id: string;
   campaign_id: string;
   source_id: string;
   target_id: string;
-  document: RelationshipDocument;
-  revision: number;
+  how_met: string;
+  status: string;
+  known_facts: string[];
+  stats: StatValues;
   created_at: string;
   updated_at: string;
-}
-
-export interface RelationshipEvent {
-  id: string;
-  relationship_id: string;
-  campaign_id: string;
-  session_id: string;
-  description: string;
-  created_at: string;
 }
 
 export interface Campaign {
   id: string;
   name: string;
   world_id: string;
-  protagonist_id: string;
   world_snapshot: WorldSnapshot;
-  protagonist_snapshot: CharacterSnapshot;
-  /** Narrator-controlled cast; excludes the protagonist, who grounds once. */
-  cast: CharacterSnapshot[];
+  /** The protagonist first, then the narrator-controlled cast in creation order. */
+  characters: CampaignCharacter[];
+  /** Character stats, then relationship stats, each in creation order. */
+  stats: CampaignStat[];
   starting_situation: string;
   active_session_id: string;
-  /** Set when this campaign was forked from a completed session checkpoint. */
+  /** True once any session of this campaign has a message; bank stat import is offered only before that. */
+  story_begun: boolean;
+  /** Set when this campaign was forked from a message of another campaign's session. */
   forked_from_campaign_id: string | null;
   forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The character the player controls; every campaign has exactly one, listed first. */
+export function protagonistOf(campaign: Campaign): CampaignCharacter {
+  return campaign.characters[0]!;
 }
 
 export interface Session {

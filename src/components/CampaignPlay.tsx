@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
-import type { Campaign, Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import { forkFromMessage, type TranscriptMessage } from "../lib/storyApi";
 import type { Generation } from "../lib/useChatGeneration";
@@ -82,6 +82,8 @@ function MessageRow(props: {
   canGenerate: boolean;
   /** Forking works in the active session and in closed (read-only) sessions. */
   canFork: boolean;
+  /** A closed session forks from its checkpoint, not the current state. */
+  activeSession: boolean;
   campaignName: string;
   deleteCount: number;
   onRegenerate: () => void;
@@ -265,7 +267,10 @@ function MessageRow(props: {
         />
       </label>
       <p className="text-sm text-muted">
-        Copies the story up to this message into a new campaign. Notes and relationships are copied as they are now.
+        Copies the story up to this message into a new campaign.{" "}
+        {props.activeSession
+          ? "Characters, stats, notes, and relationships are copied as they are now."
+          : "Characters, stats, notes, and relationships are restored as they were when this session closed."}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -455,7 +460,6 @@ export function CampaignPlay(props: {
   onModelChange: (sessionId: string, model: string) => void;
   onSend: (sessionId: string, value: string, model?: string) => void;
   onOpen: (sessionId: string, model?: string) => boolean;
-  onRetryOpening: (sessionId: string, model?: string) => boolean;
   onRegenerate: (sessionId: string, model?: string) => boolean;
   onSelectVariant: (sessionId: string, messageId: string) => Promise<void>;
   onEditMessage: (sessionId: string, messageId: string, content: string) => Promise<void>;
@@ -547,12 +551,6 @@ export function CampaignPlay(props: {
     const interval = window.setInterval(refresh, 3000);
     return () => window.clearInterval(interval);
   }, [hasPending, props.onRefreshMessages, props.sessionId]);
-
-  useEffect(() => {
-    if (!isActiveSession || props.sessionLoading || props.sessionError || !props.session || !transcriptReady || props.messagesLoading || modelCatalogState === "loading") return;
-    if (messages.length !== 0) return;
-    props.onOpen(props.sessionId, selectedModel || undefined);
-  }, [isActiveSession, messages.length, modelCatalogState, props.generation?.phase, props.generation?.sessionId, props.messagesLoading, props.onOpen, props.session, props.sessionError, props.sessionId, props.sessionLoading, selectedModel, transcriptReady]);
 
   const handleSend = (value: string) => {
     setFollowing(true);
@@ -721,8 +719,8 @@ export function CampaignPlay(props: {
                 <div className="my-12 grid justify-items-center gap-3 rounded-xl border border-dashed border-border px-5 py-10 text-center">
                   <Sparkles className="size-6 text-accent" aria-hidden="true" />
                   <h2 className="text-lg font-semibold">{isActiveSession ? "Your session is ready" : "No transcript for this session"}</h2>
-                  <p className="max-w-md text-sm text-muted">{isActiveSession ? "The narrator will open the first scene using the context you chose." : "This session is read-only and will not open or accept new actions."}</p>
-                  {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onRetryOpening(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
+                  <p className="max-w-md text-sm text-muted">{isActiveSession ? "Set up characters, notes, and relationships in the campaign panel, then begin the opening." : "This session is read-only and will not open or accept new actions."}</p>
+                  {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onOpen(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
                 </div>
               ) : displayedMessages.map((message, index) => {
                 const isLive = regenerateInPlace ? index === displayedMessages.length - 1 : message.id === live?.pendingMessageId && message.status === "pending";
@@ -738,6 +736,7 @@ export function CampaignPlay(props: {
                   actionsAllowed={actionsAllowed}
                   canGenerate={canGenerate}
                   canFork={canFork}
+                  activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={messages.length - index}
                   onRegenerate={handleRegenerate}
@@ -756,7 +755,7 @@ export function CampaignPlay(props: {
                     session_id: props.sessionId,
                     position: messages.length + 1,
                     role: "user",
-                    speaker_name: props.campaign.protagonist_snapshot.name,
+                    speaker_name: protagonistOf(props.campaign).name,
                     content: sending.playerText ?? "",
                     status: "complete",
                     created_at: "",
@@ -767,6 +766,7 @@ export function CampaignPlay(props: {
                   actionsAllowed={false}
                   canGenerate={false}
                   canFork={false}
+                  activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
                   deleteCount={0}
                   onRegenerate={handleRegenerate}
@@ -826,8 +826,8 @@ export function CampaignPlay(props: {
               defaultModel={provider?.model ?? null}
               models={provider?.models ?? []}
               modelCatalogState={modelCatalogState}
-              placeholder={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
-              inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
+              placeholder={`What does ${protagonistOf(props.campaign).name} do or say?`}
+              inputLabel={`What does ${protagonistOf(props.campaign).name} do or say?`}
               sendLabel="Send action"
               busy={busy || !hasCompletedNarration}
               showStop={stopAvailable}

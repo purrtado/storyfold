@@ -1,4 +1,4 @@
-import type { Campaign } from "../../shared/domain";
+import { protagonistOf, type Campaign } from "../../shared/domain";
 import { BookOpen, Globe2, Users } from "lucide-react";
 import { NavLink, Link } from "react-router-dom";
 import { FoldIcon, PanelIcon, PlusIcon } from "./icons";
@@ -137,7 +137,7 @@ export function Sidebar(props: {
                   <span className="min-w-0 flex-1">
                     <span className="block line-clamp-2 leading-5">{campaign.name}</span>
                     <span className="mbs-0.5 block line-clamp-1 text-xs font-normal opacity-75">
-                      {campaign.world_snapshot.name} · {campaign.protagonist_snapshot.name}
+                      {campaign.world_snapshot.name} · {protagonistOf(campaign).name}
                     </span>
                   </span>
                 </span>

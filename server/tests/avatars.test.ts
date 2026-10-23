@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import type { Campaign, Character, World } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Character, type World } from "../../shared/domain";
 import { AVATAR_BODY_MAX_BYTES } from "../security";
 import {
   headersWith,
@@ -195,13 +195,13 @@ describe("character avatars", () => {
     const campaignId = createdPayload.campaign.id;
 
     const campaign = await getCampaign(campaignId);
-    expect(campaign.protagonist_snapshot.avatar_id).toBe(sha256(PNG_BYTES));
-    expect(campaign.cast[0]?.avatar_id).toBe(sha256(JPEG_BYTES));
+    expect(protagonistOf(campaign).avatar_id).toBe(sha256(PNG_BYTES));
+    expect(campaign.characters[1]?.avatar_id).toBe(sha256(JPEG_BYTES));
 
     // Replacing the library avatar leaves the captured campaign untouched.
     expect((await upload(`/api/characters/${protagonist.id}/avatar`, "image/gif", GIF_BYTES)).status).toBe(200);
     const after = await getCampaign(campaignId);
-    expect(after.protagonist_snapshot.avatar_id).toBe(sha256(PNG_BYTES));
+    expect(protagonistOf(after).avatar_id).toBe(sha256(PNG_BYTES));
     expect((await getCharacter(protagonist.id)).avatar_id).toBe(sha256(GIF_BYTES));
   });
 

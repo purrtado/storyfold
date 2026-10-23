@@ -1,28 +1,23 @@
 import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Campaign, CampaignStateItem, CharacterSnapshot, Message } from "../shared/domain";
+import type { Message } from "../shared/domain";
+import { protagonistOf } from "../shared/domain";
+import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
 import {
   SessionClosedError,
   UnknownEntityError,
+  getCampaign,
+  getSessionRecord,
   listCampaignState,
   sessionGroundingHandoff,
   ValidationError,
 } from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
-import { relationshipNarrationContext, type RelationshipPrompt } from "./relationships";
+import { relationshipNarrationContext } from "./relationships";
 
 export const NARRATOR_NAME = "Narrator";
-
-/**
- * Server-enforced cap on one session's completed history, counted as the plain
- * summed content length of the player inputs and completed narration sent to
- * the model — independent of the 32,000-character authored grounding limit.
- * Nothing is ever truncated: at the limit the session is refused further input
- * and the player begins the next session with a reviewed handoff.
- */
-export const HISTORY_CHARACTER_LIMIT = 100_000;
 
 /** A reply is already being generated for this session; nothing was saved. */
 export class BusyError extends Error {}
@@ -30,7 +25,7 @@ export class BusyError extends Error {}
 /** The session already contains completed opening narration. */
 export class AlreadyOpenedError extends Error {}
 
-/** Accepting this input would push completed history past the limit. */
+/** Accepting this request would pass the narration budget. */
 export class ContextLimitError extends Error {}
 
 /** The session has no messages to regenerate. */
@@ -80,24 +75,6 @@ interface ActiveRun {
   settled: boolean;
   /** Bound during streamNarration; Stop uses the same first-wins settlement. */
   settle: (status: "complete" | "interrupted" | "failed") => void;
-}
-
-/**
- * One authored character as prompt text: description first, then only the
- * fields actually authored — blank fields add no scaffold text.
- */
-function characterDefinition(character: CharacterSnapshot): string {
-  return [
-    character.description,
-    ...(character.appearance.length > 0 ? [`Appearance: ${character.appearance}`] : []),
-    ...(character.personality.length > 0 ? [`Personality: ${character.personality}`] : []),
-    ...(character.background.length > 0 ? [`Background: ${character.background}`] : []),
-    ...(character.baseline_motivations.length > 0
-      ? [`Motivations: ${character.baseline_motivations}`]
-      : []),
-    ...(character.speaking_style.length > 0 ? [`Speaking style: ${character.speaking_style}`] : []),
-    ...(character.world_context.length > 0 ? [`In this world: ${character.world_context}`] : []),
-  ].join("; ");
 }
 
 /**
@@ -159,14 +136,7 @@ export class PlayService {
       (id: string, text: string, speaker: string): ReservedTurn => {
         this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
-        const completed = this.completedHistoryCharacters(id);
-        if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
-          throw new ContextLimitError(
-            `This session's completed history is ${completed} characters and this input would pass the ` +
-              `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
-              "with a handoff.",
-          );
-        }
+        this.assertWithinBudget(id, text.length);
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
@@ -194,6 +164,7 @@ export class PlayService {
         .query<unknown, [string]>("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1")
         .get(id);
       if (existing) throw new AlreadyOpenedError("This session has already opened");
+      this.assertWithinBudget(id, 0);
       const pendingId = newId();
       this.insertMessage(
         id,
@@ -244,6 +215,7 @@ export class PlayService {
       this.db
         .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
         .run(id, position);
+      this.assertWithinBudget(id, 0);
       const pendingId = newId();
       this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId);
       return { playerId: lastUser?.id ?? null, pendingId };
@@ -330,7 +302,7 @@ export class PlayService {
   /**
    * Edits a completed message in place; narration edits change only that
    * alternate. Role, speaker, and position never move; only growth past the
-   * history limit is refused.
+   * narration budget is refused.
    */
   editMessage(sessionId: string, messageId: string, content: string): Message {
     const edit = this.db.transaction((sid: string, id: string, text: string): Message => {
@@ -339,16 +311,9 @@ export class PlayService {
       const message = this.getSessionMessage(sid, id);
       if (!message) throw new UnknownEntityError("Unknown message");
       if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
-      if (message.selected === 1) {
-        // Only the selected row feeds the model, so only its growth is capped.
-        const completed = this.completedHistoryCharacters(sid) - message.content.length;
-        if (completed + text.length > HISTORY_CHARACTER_LIMIT) {
-          throw new ContextLimitError(
-            `This session's completed history is ${completed} characters and this edit would pass the ` +
-              `${HISTORY_CHARACTER_LIMIT}-character limit. Review this session, then begin the next session ` +
-              "with a handoff.",
-          );
-        }
+      // Only the selected row feeds the model, so only its growth is checked.
+      if (message.selected === 1 && text.length > message.content.length) {
+        this.assertWithinBudget(sid, text.length - message.content.length);
       }
       const now = nowIso();
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
@@ -404,6 +369,21 @@ export class PlayService {
     return row?.total ?? 0;
   }
 
+  /**
+   * The one size rule: the system prompt plus the completed history the model
+   * would see, grown by `extra` characters, must fit the narration budget.
+   * Nothing is truncated; the request is refused instead.
+   */
+  private assertWithinBudget(sessionId: string, extra: number): void {
+    const total = this.systemPrompt(sessionId).length + this.completedHistoryCharacters(sessionId) + extra;
+    if (total > NARRATION_CHARACTER_BUDGET) {
+      throw new ContextLimitError(
+        `This would send ${total} characters to the narrator; the budget is ${NARRATION_CHARACTER_BUDGET}. ` +
+          "Shorten the campaign's notes or relationships, or begin the next session with a handoff.",
+      );
+    }
+  }
+
   /** Alternates share a position; the next turn still goes past the highest. */
   private maxPosition(sessionId: string): number {
     return this.db
@@ -436,97 +416,23 @@ export class PlayService {
   }
 
   /**
-   * Fixed narrator grounding, built only from the campaign's captured
-   * snapshots. The protagonist, the narrator-controlled cast, and the
-   * compendium use exclusively what was captured at creation — the live
-   * library is never consulted, so edits and deletes to characters, world
-   * casts, or world entries cannot rewrite an existing campaign's grounding.
-   * A session grounded by a handoff never sees the starting situation: the
-   * handoff replaces it verbatim (a fork inherits the closed source session's
-   * handoff; a later session the one written at the previous close). The
-   * campaign's current manual state is included as written — journals in
-   * captured order. Only a story without prior narration asks the model to
-   * start a scene.
+   * Narrator grounding for this session from what its campaign owns: the
+   * world snapshot, its characters, current notes and relationships, and the
+   * handoff that grounds the session. The library and worlds are never consulted.
    */
-  narratorSystemPrompt(
-    campaign: Campaign,
-    state: CampaignStateItem[],
-    handoff: string | null,
-    hasHistory: boolean,
-    relationships: RelationshipPrompt[] = [],
-  ): string {
-    const world = campaign.world_snapshot;
-    const protagonist = campaign.protagonist_snapshot;
-    const situation =
-      handoff !== null
-        ? `Handoff from the previous session: ${handoff}`
-        : `Starting situation: ${
-            campaign.starting_situation.trim().length > 0
-              ? campaign.starting_situation
-              : "No starting situation was given; open with a scene that fits the world."
-          }`;
-    const cast =
-      campaign.cast.length > 0
-        ? [
-            "Narrator-controlled cast (captured at campaign creation):",
-            ...campaign.cast.map((member) => `- ${member.name}: ${characterDefinition(member)}`),
-            "Respect these definitions as written.",
-          ]
-        : [];
-    const compendium =
-      world.entries.length > 0
-        ? [
-            "Captured world compendium (captured at campaign creation):",
-            ...world.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`),
-            "Respect these definitions as written.",
-          ]
-        : [];
-    const stateLines =
-      state.length > 0
-        ? [
-            "Current campaign state:",
-            ...state.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`),
-          ]
-        : [];
-    const relationshipLines =
-      relationships.length > 0
-        ? [
-            "Current directional relationships (campaign-owned; use as canon, without inventing automatic changes):",
-            ...relationships.map(({ source_name, target_name, document, recent_events }) =>
-              `- ${source_name} → ${target_name}: how met: ${document.how_met}; status: ${document.status}; ` +
-              `stats: ${JSON.stringify(document.stats)}; known facts: ${JSON.stringify(document.known_facts)}; ` +
-              `sections: ${JSON.stringify(document.sections)}` +
-              (recent_events.length > 0 ? `; recent events: ${JSON.stringify(recent_events)}` : ""),
-            ),
-          ]
-        : [];
-    return [
-      "You are the narrator of an ongoing interactive story.",
-      "",
-      `World — ${world.name}: ${world.setting_brief}`,
-      "",
-      situation,
-      "",
-      `The player controls their character, ${protagonist.name}: ${characterDefinition(protagonist)}`,
-      `Whenever the player speaks or acts, it is ${protagonist.name} acting.`,
-      "",
-      ...cast,
-      "",
-      ...compendium,
-      "",
-      ...stateLines,
-      "",
-      ...relationshipLines,
-      "",
-      "Narrate the world and every other character yourself; never narrate",
-      `${protagonist.name}'s decisions, words, or thoughts.`,
-      "",
-      hasHistory
-        ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
-        : handoff !== null
-          ? "There is no prior narration in this session: continue the story from the handoff."
-          : "There is no prior narration: begin the story now with an opening scene.",
-    ].join("\n");
+  systemPrompt(sessionId: string): string {
+    const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
+    return narratorSystemPrompt({
+      world: campaign.world_snapshot,
+      starting_situation: campaign.starting_situation,
+      stats: campaign.stats,
+      protagonist: protagonistOf(campaign),
+      cast: campaign.characters.filter((character) => character.role === "cast"),
+      notes: listCampaignState(this.db, campaign.id),
+      relationships: relationshipNarrationContext(this.db, campaign),
+      handoff: sessionGroundingHandoff(this.db, campaign.id, sessionId),
+      has_history: this.completedHistoryCharacters(sessionId) > 0,
+    });
   }
 
   /** Completed narration and accepted player input only, in position order. */
@@ -549,7 +455,6 @@ export class PlayService {
     sessionId: string;
     pendingId: string;
     playerId: string | null;
-    campaign: Campaign;
     settings: PlaySettings;
     disconnectSignal?: AbortSignal;
     upstreamFetch?: typeof fetch;
@@ -592,20 +497,11 @@ export class PlayService {
     // An opening request carries no player row; whether the story starts
     // fresh depends on the history, not on the protocol kind.
     const history = this.modelHistory(sessionId);
-    const state = listCampaignState(this.db, options.campaign.id);
-    const handoff = sessionGroundingHandoff(this.db, options.campaign.id, sessionId);
-    const relationships = relationshipNarrationContext(this.db, options.campaign);
 
     const { stream: upstream } = startZaiRun({
       model: options.settings.model,
       apiKey: options.settings.apiKey,
-      systemPrompt: this.narratorSystemPrompt(
-        options.campaign,
-        state,
-        handoff,
-        history.length > 0,
-        relationships,
-      ),
+      systemPrompt: this.systemPrompt(sessionId),
       messages:
         history.length > 0
           ? history
