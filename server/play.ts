@@ -425,6 +425,7 @@ export class PlayService {
     return narratorSystemPrompt({
       world: campaign.world_snapshot,
       starting_situation: campaign.starting_situation,
+      stats: campaign.stats,
       protagonist: protagonistOf(campaign),
       cast: campaign.characters.filter((character) => character.role === "cast"),
       notes: listCampaignState(this.db, campaign.id),

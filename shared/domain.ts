@@ -63,6 +63,47 @@ export interface Character extends CharacterProfile {
   updated_at: string;
 }
 
+export const STAT_KINDS = ["character", "relationship"] as const;
+
+export type StatKind = (typeof STAT_KINDS)[number];
+
+/** Named palette tokens; light and dark values live in src/index.css as --stat-<token>. */
+export const STAT_COLORS = ["slate", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink"] as const;
+
+export type StatColor = (typeof STAT_COLORS)[number];
+
+/** What a stat measures and its integer scale; `applies_to` never changes after creation. */
+export interface StatFields {
+  applies_to: StatKind;
+  label: string;
+  description: string;
+  low_label: string;
+  high_label: string;
+  min: number;
+  max: number;
+  default_value: number;
+  color: StatColor;
+}
+
+/** A stat in the bank (`world_id` null) or defined by a world. */
+export interface StatDefinition extends StatFields {
+  id: string;
+  world_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A campaign's own copy of a stat; edits never reach the world or the bank. */
+export interface CampaignStat extends StatFields {
+  id: string;
+  campaign_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Campaign stat id → current integer value. */
+export type StatValues = Record<string, number>;
+
 export type CampaignCharacterRole = "protagonist" | "cast";
 
 /** A campaign's own copy of a character; edits never reach the library or world. */
@@ -71,6 +112,9 @@ export interface CampaignCharacter extends CharacterProfile {
   campaign_id: string;
   role: CampaignCharacterRole;
   avatar_id: string | null;
+  /** Opted in: carries every character stat of the campaign; otherwise `stats` is empty. */
+  stats_enabled: boolean;
+  stats: StatValues;
   created_at: string;
   updated_at: string;
 }
@@ -103,21 +147,16 @@ export interface CampaignStateItem {
   updated_at: string;
 }
 
-export interface RelationshipDocument {
-  how_met: string;
-  status: string;
-  stats: Record<string, { value: number; min: number; max: number }>;
-  known_facts: string[];
-  sections: { id: string; label: string; type: "text" | "list"; value: string | string[] }[];
-}
-
-/** A directed relationship between two characters of the same campaign. */
+/** A directed relationship between two characters of the same campaign; carries every relationship stat. */
 export interface Relationship {
   id: string;
   campaign_id: string;
   source_id: string;
   target_id: string;
-  document: RelationshipDocument;
+  how_met: string;
+  status: string;
+  known_facts: string[];
+  stats: StatValues;
   created_at: string;
   updated_at: string;
 }
@@ -129,6 +168,8 @@ export interface Campaign {
   world_snapshot: WorldSnapshot;
   /** The protagonist first, then the narrator-controlled cast in creation order. */
   characters: CampaignCharacter[];
+  /** Character stats, then relationship stats, each in creation order. */
+  stats: CampaignStat[];
   starting_situation: string;
   active_session_id: string;
   /** Set when this campaign was forked from a message of another campaign's session. */

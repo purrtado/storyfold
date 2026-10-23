@@ -20,7 +20,7 @@ import {
 import {
   createRelationship,
   listRelationships,
-  parseRelationshipDocument,
+  parseRelationshipPatch,
   updateRelationship,
 } from "../relationships";
 
@@ -49,7 +49,7 @@ function setup() {
   return { db, path, campaign, protagonist: protagonist!, cast: cast!, stranger };
 }
 
-const document = (how_met: string) => ({ how_met, status: "wary", stats: {}, known_facts: [], sections: [] });
+const fields = (how_met: string) => ({ how_met, status: "wary", known_facts: [] });
 
 function addMessage(db: Database, sessionId: string, position: number, role: "user" | "assistant", content: string): string {
   const id = newId();
@@ -61,27 +61,22 @@ function addMessage(db: Database, sessionId: string, position: number, role: "us
 
 test("relationships are directional, campaign-scoped, validated, and last save wins", () => {
   const { db, path, campaign, protagonist, cast, stranger } = setup();
-  const forward = createRelationship(db, campaign, protagonist.id, cast.id, parseRelationshipDocument(document("At sea.")));
-  const reverse = createRelationship(db, campaign, cast.id, protagonist.id, parseRelationshipDocument(document("At port.")));
+  const forward = createRelationship(db, campaign, protagonist.id, cast.id, parseRelationshipPatch(fields("At sea."), campaign));
+  const reverse = createRelationship(db, campaign, cast.id, protagonist.id, parseRelationshipPatch(fields("At port."), campaign));
   expect(forward.source_id).toBe(protagonist.id);
   expect(reverse.source_id).toBe(cast.id);
-  expect(() => createRelationship(db, campaign, protagonist.id, cast.id, parseRelationshipDocument(document("Again.")))).toThrow();
-  expect(() => createRelationship(db, campaign, protagonist.id, "foreign-subject", parseRelationshipDocument(document("No.")))).toThrow();
-  expect(() => createRelationship(db, campaign, protagonist.id, stranger.id, parseRelationshipDocument(document("No.")))).toThrow();
-  expect(() => parseRelationshipDocument({ ...document(""), hidden: "not allowed" })).toThrow();
-  expect(() => parseRelationshipDocument({ ...document(""), stats: { mood: { value: Number.POSITIVE_INFINITY, min: 0, max: 1 } } })).toThrow();
-  expect(() => parseRelationshipDocument({ ...document(""), stats: { mood: { value: 2, min: 0, max: 1 } } })).toThrow();
-  expect(() => parseRelationshipDocument({ ...document(""), sections: [
-    { id: "secret", label: "One", type: "text", value: "A" },
-    { id: "secret", label: "Two", type: "text", value: "B" },
-  ] })).toThrow();
-  updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("First save.")));
-  updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("Second save.")));
+  expect(() => createRelationship(db, campaign, protagonist.id, cast.id, parseRelationshipPatch(fields("Again."), campaign))).toThrow();
+  expect(() => createRelationship(db, campaign, protagonist.id, "foreign-subject", parseRelationshipPatch(fields("No."), campaign))).toThrow();
+  expect(() => createRelationship(db, campaign, protagonist.id, stranger.id, parseRelationshipPatch(fields("No."), campaign))).toThrow();
+  expect(() => parseRelationshipPatch({ stats: { mood: 1 } }, campaign)).toThrow();
+  updateRelationship(db, campaign, forward.id, parseRelationshipPatch(fields("First save."), campaign));
+  updateRelationship(db, campaign, forward.id, parseRelationshipPatch(fields("Second save."), campaign));
   db.close();
   const reopened = openDatabase(path);
   const stored = listRelationships(reopened, campaign.id);
   expect(stored.map((item) => item.id)).toEqual([forward.id, reverse.id]);
-  expect(stored[0]!.document.how_met).toBe("Second save.");
+  expect(stored[0]!.how_met).toBe("Second save.");
+  expect(stored[0]!.status).toBe("wary");
   reopened.close();
 });
 
@@ -92,16 +87,16 @@ test("a closed-session fork restores that session's checkpoint, not later edits"
     description: "A lighthouse keeper.",
   }))!;
   const withCompanion = getCampaign(db, campaign.id)!;
-  const relationship = createRelationship(db, withCompanion, withCompanion.characters[0]!.id, companion.id, parseRelationshipDocument({
-    ...document("Met during the eclipse."),
+  const relationship = createRelationship(db, withCompanion, withCompanion.characters[0]!.id, companion.id, parseRelationshipPatch({
+    ...fields("Met during the eclipse."),
     known_facts: ["She keeps a brass compass."],
-  }));
+  }, withCompanion));
 
   const closedId = campaign.active_session_id;
   const cutId = addMessage(db, closedId, 1, "assistant", "The eclipse ends.");
   beginNextSession(db, campaign.id, { title: "After the storm", handoff: "The crew reached the lighthouse." });
   const afterBoundary = getCampaign(db, campaign.id)!;
-  updateRelationship(db, afterBoundary, relationship.id, parseRelationshipDocument(document("After checkpoint.")));
+  updateRelationship(db, afterBoundary, relationship.id, parseRelationshipPatch(fields("After checkpoint."), afterBoundary));
   updateCampaignCharacter(db, campaign.id, companion.id, { name: "Renamed after the close" });
   createCampaignCharacter(db, campaign.id, parseCharacterInput({
     name: "Later arrival",
@@ -113,7 +108,7 @@ test("a closed-session fork restores that session's checkpoint, not later edits"
   expect(forkCharacters.map((character) => character.name)).toEqual(["Mira", "Oren", "Ilyra"]);
   const forkRelationship = listRelationships(db, fork.campaign.id)[0]!;
   expect(forkRelationship.id).not.toBe(relationship.id);
-  expect(forkRelationship.document.how_met).toBe("Met during the eclipse.");
+  expect(forkRelationship.how_met).toBe("Met during the eclipse.");
   expect(forkRelationship.target_id).not.toBe(companion.id);
   const restored = forkCharacters.find((character) => character.id === forkRelationship.target_id)!;
   expect(restored.name).toBe("Ilyra");
@@ -127,7 +122,7 @@ test("an open-session fork copies current relationships and stays independent", 
     description: "A lighthouse keeper.",
   }))!;
   const withCompanion = getCampaign(db, campaign.id)!;
-  const relationship = createRelationship(db, withCompanion, withCompanion.characters[0]!.id, companion.id, parseRelationshipDocument(document("Met during the eclipse.")));
+  const relationship = createRelationship(db, withCompanion, withCompanion.characters[0]!.id, companion.id, parseRelationshipPatch(fields("Met during the eclipse."), withCompanion));
   const sessionId = campaign.active_session_id;
   addMessage(db, sessionId, 1, "user", "I approach the lighthouse.");
   const cutId = addMessage(db, sessionId, 2, "assistant", "Tamsin waves from the gallery.");
@@ -139,9 +134,9 @@ test("an open-session fork copies current relationships and stays independent", 
   expect(forkRelationship.id).not.toBe(relationship.id);
   expect(forkRelationship.target_id).not.toBe(companion.id);
 
-  updateRelationship(db, forked.campaign, forkRelationship.id, parseRelationshipDocument(document("Changed in the fork.")));
-  updateRelationship(db, campaign, relationship.id, parseRelationshipDocument(document("Changed in the origin.")));
-  expect(listRelationships(db, forked.campaign.id)[0]!.document.how_met).toBe("Changed in the fork.");
-  expect(listRelationships(db, campaign.id)[0]!.document.how_met).toBe("Changed in the origin.");
+  updateRelationship(db, forked.campaign, forkRelationship.id, parseRelationshipPatch(fields("Changed in the fork."), forked.campaign));
+  updateRelationship(db, campaign, relationship.id, parseRelationshipPatch(fields("Changed in the origin."), campaign));
+  expect(listRelationships(db, forked.campaign.id)[0]!.how_met).toBe("Changed in the fork.");
+  expect(listRelationships(db, campaign.id)[0]!.how_met).toBe("Changed in the origin.");
   db.close();
 });
