@@ -22,6 +22,8 @@ function profileInputOf(character: CharacterProfile): CharacterInput {
  */
 export function CharacterProfileDialog<T extends CharacterProfile & { id: string; avatar_id: string | null }>(props: {
   character: T | null;
+  /** Prefills the name of a new character. */
+  initialName?: string;
   title: string;
   description: string;
   openerRef?: RefObject<HTMLElement | null>;
@@ -33,7 +35,7 @@ export function CharacterProfileDialog<T extends CharacterProfile & { id: string
   onClose: () => void;
 }) {
   const [value, setValue] = useState<CharacterInput>(() =>
-    props.character ? profileInputOf(props.character) : emptyProfileInput());
+    props.character ? profileInputOf(props.character) : { ...emptyProfileInput(), name: props.initialName ?? "" });
   const [avatarId, setAvatarId] = useState(props.character?.avatar_id ?? null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
