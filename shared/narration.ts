@@ -145,6 +145,11 @@ export function narratorSystemPrompt(context: NarrationContext): string {
     "Narrate the world and every other character yourself; never narrate",
     `${protagonist.name}'s decisions, words, or thoughts.`,
     "",
+    `Begin each paragraph that centres on one character other than ${protagonist.name} — their speech, actions, or both — with that character's name in square brackets, even when the previous paragraph was theirs too, for example:`,
+    '[Name] She scoffs, swatting at the table. "You\'re late."',
+    "Use names exactly as listed; give unnamed characters a short label and reuse it, such as [Dockhand].",
+    `Start a new paragraph whenever the focus moves to another character. Leave scene description untagged, and never tag ${protagonist.name}.`,
+    "",
     context.has_history
       ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
       : handoff !== null
