@@ -54,6 +54,22 @@ test("tagged paragraphs keep their prose and group by speaker; untagged ones sta
   ]);
 });
 
+test("one untagged paragraph between the same speaker's paragraphs joins them; longer or mixed gaps do not", () => {
+  expect(narrationSegments("[Theo] \"Everyone says it's empty.\"\n\nHe lowers his voice.\n\n[Theo] \"But some Tuesdays—\"", cast)).toEqual([
+    { kind: "speaker", label: "Theo", character: null, text: "\"Everyone says it's empty.\"\n\nHe lowers his voice.\n\n\"But some Tuesdays—\"" },
+  ]);
+  expect(narrationSegments("[Vex] One.\n\nRain.\n\nThunder.\n\n[Vex] Two.", cast).map((segment) => segment.kind)).toEqual([
+    "speaker",
+    "narration",
+    "speaker",
+  ]);
+  expect(narrationSegments("[Vex] One.\n\nRain.\n\n[Dockhand] Two.", cast).map((segment) => segment.kind)).toEqual([
+    "speaker",
+    "narration",
+    "speaker",
+  ]);
+});
+
 test("Markdown links are not tags, and a tag alone in its paragraph attributes the next one", () => {
   expect(narrationSegments("[the map](https://example.com) is torn.", cast)).toEqual([
     { kind: "narration", text: "[the map](https://example.com) is torn." },

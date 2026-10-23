@@ -5,6 +5,8 @@ export type NarrationSegment =
   /** `character` is null for a walk-on: a label that matches no campaign character. */
   | { kind: "speaker"; label: string; character: CampaignCharacter | null; text: string };
 
+type SpeakerSegment = Extract<NarrationSegment, { kind: "speaker" }>;
+
 // `[Name]` opening a paragraph; `[text](url)` and `[text][ref]` are Markdown links, not tags.
 const TAG = /^\[([^[\]\n]{1,60})\](?![([])[ \t]*:?\s*/;
 const PARTIAL_TAG = /^\[[^[\]\n]{0,60}$/;
@@ -25,9 +27,10 @@ export function resolveSpeaker(label: string, characters: CampaignCharacter[]): 
 
 /**
  * Splits narration into untagged prose and paragraphs attributed by a leading
- * `[Name]` tag. Consecutive paragraphs by the same speaker merge; a tag alone
- * in its paragraph attributes the next one. While streaming, a trailing
- * paragraph that is still an unfinished tag is held back.
+ * `[Name]` tag. Consecutive paragraphs by the same speaker merge, absorbing a
+ * single untagged paragraph between them; a tag alone in its paragraph
+ * attributes the next one. While streaming, a trailing paragraph that is
+ * still an unfinished tag is held back.
  */
 export function narrationSegments(content: string, characters: CampaignCharacter[], streaming = false): NarrationSegment[] {
   const paragraphs = content.split(/\n[ \t]*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
@@ -52,10 +55,18 @@ export function narrationSegments(content: string, characters: CampaignCharacter
       continue;
     }
     const character = resolveSpeaker(label, characters);
-    const sameSpeaker = previous?.kind === "speaker"
-      && (character ? previous.character?.id === character.id : !previous.character && nameKey(previous.label) === nameKey(label));
-    if (sameSpeaker) previous.text += `\n\n${text}`;
-    else segments.push({ kind: "speaker", label: character?.name ?? label, character, text });
+    const isSameSpeaker = (segment: NarrationSegment | undefined): segment is SpeakerSegment =>
+      segment?.kind === "speaker"
+      && (character ? segment.character?.id === character.id : !segment.character && nameKey(segment.label) === nameKey(label));
+    const beforeAside = segments.at(-2);
+    if (isSameSpeaker(previous)) {
+      previous.text += `\n\n${text}`;
+    } else if (previous?.kind === "narration" && !previous.text.includes("\n\n") && isSameSpeaker(beforeAside)) {
+      beforeAside.text += `\n\n${previous.text}\n\n${text}`;
+      segments.pop();
+    } else {
+      segments.push({ kind: "speaker", label: character?.name ?? label, character, text });
+    }
   }
   return segments;
 }
