@@ -480,7 +480,7 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
         <StatDefinitionEditor
           stat={statEditor.stat}
           title={statEditor.stat ? `Edit ${statEditor.stat.label}` : "Add a world stat"}
-          description={statEditor.stat ? "Changes apply where this stat is used." : `This stat belongs to ${props.world.name}.`}
+          description={statEditor.stat ? "Changes apply to new campaigns; existing campaigns keep their copy." : `This stat belongs to ${props.world.name}.`}
           openerRef={statOpenerRef}
           onCreate={(input) => createWorldStat(props.world.id, input)}
           onUpdate={updateStat}

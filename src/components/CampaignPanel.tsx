@@ -93,6 +93,7 @@ export function CampaignStatsSection(props: {
   };
 
   const removeStat = async (stat: CampaignStat) => {
+    if (!window.confirm(`Delete “${stat.label}” from this campaign? Its values are removed from every character and relationship.`)) return;
     setBusy(true);
     setError("");
     try {

@@ -99,7 +99,7 @@ export function StatsSettingsPage(props: { onOpenSidebar: () => void }) {
         <StatDefinitionEditor
           stat={editor.stat}
           title={editor.stat ? `Edit ${editor.stat.label}` : "Add a stat"}
-          description={editor.stat ? "Changes apply where this stat is used." : "Character stats follow one character; relationship stats score a pair."}
+          description={editor.stat ? "Changes apply to future imports; worlds and campaigns that already copied this stat keep their copy." : "Character stats follow one character; relationship stats score a pair."}
           openerRef={openerRef}
           onCreate={createStat}
           onUpdate={updateStat}

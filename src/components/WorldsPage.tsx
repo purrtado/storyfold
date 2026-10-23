@@ -19,7 +19,8 @@ export function WorldsPage(props: {
 }) {
   const library = useWorlds();
   const worlds = library.items;
-  const bankStats = useStats().items;
+  const bankLibrary = useStats();
+  const bankStats = bankLibrary.items;
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<{ id: string | null; value: WorldInput; statIds: string[] } | null>(null);
@@ -171,7 +172,12 @@ export function WorldsPage(props: {
                         Import stats from the bank <span className="font-normal text-muted">Optional</span>
                       </legend>
                       {bankStats === undefined ? (
-                        <p className="font-normal text-muted" role="status">Loading stats…</p>
+                        bankLibrary.loadError ? (
+                          <div className="grid justify-items-start gap-2" role="alert">
+                            <p className="font-normal text-muted">{bankLibrary.loadError}</p>
+                            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshStats()}>Try again</button>
+                          </div>
+                        ) : <p className="font-normal text-muted" role="status">Loading stats…</p>
                       ) : bankStats.length === 0 ? (
                         <p className="font-normal text-muted">The bank has no stats yet. Add them under Settings → Stats.</p>
                       ) : (

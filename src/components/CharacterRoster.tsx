@@ -53,9 +53,11 @@ function StatValueInput(props: { stat: CampaignStat; value: number; disabled: bo
   const [text, setText] = useState(() => String(props.value));
   useEffect(() => { setText(String(props.value)); }, [props.value]);
   const commit = () => {
-    if (!text.trim()) return;
     const next = Number(text);
-    if (!Number.isInteger(next) || next === props.value) return;
+    if (!text.trim() || !Number.isInteger(next) || next < props.stat.min || next > props.stat.max || next === props.value) {
+      setText(String(props.value));
+      return;
+    }
     props.onCommit(next);
   };
   return (
