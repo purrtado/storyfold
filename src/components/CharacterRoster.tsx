@@ -9,7 +9,7 @@ import {
   type StatValues,
   protagonistOf,
 } from "../../shared/domain";
-import { Avatar } from "./Avatar";
+import { Avatar, imageUrl } from "./Avatar";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
 import { StatBar, StatBars } from "./StatBar";
 import { createRequestEpoch } from "../lib/requestEpoch";
@@ -300,6 +300,8 @@ export function CharacterRoster(props: {
   sessionId: string;
   openId: string | null;
   onOpenChange: (id: string | null) => void;
+  /** Changes when play asks to reveal the open card; it then scrolls to the card's top. */
+  revealKey?: number;
   onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const [requestEpoch] = useState(createRequestEpoch);
@@ -652,9 +654,13 @@ export function CharacterRoster(props: {
     }
   }, [pendingFocusId, relationships]);
 
+  const revealedKey = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (props.openId) cardRefs.current.get(props.openId)?.scrollIntoView({ block: "nearest" });
-  }, [props.openId]);
+    if (!props.openId) return;
+    const revealing = props.revealKey !== revealedKey.current;
+    revealedKey.current = props.revealKey;
+    cardRefs.current.get(props.openId)?.scrollIntoView({ block: revealing ? "start" : "nearest" });
+  }, [props.openId, props.revealKey]);
 
   const actionsDisabled = saving || deleteBusyId !== null;
   const relationshipRow = (relationship: Relationship) => (
@@ -710,6 +716,13 @@ export function CharacterRoster(props: {
             toggleRef={(element) => { if (element) cardRefs.current.set(character.id, element); else cardRefs.current.delete(character.id); }}
           >
             <>
+              {character.avatar_id && (
+                <img
+                  src={imageUrl(character.avatar_id)}
+                  alt={`Portrait of ${character.name}`}
+                  className="aspect-[3/4] max-h-[60dvh] w-full rounded-xl bg-raised object-cover object-top"
+                />
+              )}
               <Profile character={character} />
               <CharacterStatsSection
                 character={character}

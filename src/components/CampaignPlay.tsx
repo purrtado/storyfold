@@ -85,6 +85,7 @@ function MessageRow(props: {
   characters: CampaignCharacter[];
   /** Offered on walk-on speakers; absent where the cast cannot change from here. */
   onAddToCast?: (name: string) => void;
+  onShowCharacter: (characterId: string) => void;
   streaming?: boolean;
   trailing: boolean;
   lastUser: boolean;
@@ -394,7 +395,7 @@ function MessageRow(props: {
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {editing ? editForm : (
         content
-          ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} />
+          ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
           : message.status === "pending" ? <PendingDots /> : null
       )}
       {(showSwipes || canRegenerate || canRetry) && (
@@ -484,6 +485,7 @@ export function CampaignPlay(props: {
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [walkOnName, setWalkOnName] = useState<string | null>(null);
+  const [revealedCharacter, setRevealedCharacter] = useState<{ id: string; key: number } | null>(null);
   const docked = useSyncExternalStore(subscribeDocked, () => window.matchMedia(DOCKED_QUERY).matches);
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const [following, setFollowing] = useState(true);
@@ -528,6 +530,10 @@ export function CampaignPlay(props: {
   const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
   const addToCast = isActiveSession ? setWalkOnName : undefined;
+  const showCharacter = (id: string) => {
+    setRevealedCharacter((current) => ({ id, key: (current?.key ?? 0) + 1 }));
+    if (!docked) setDetailsOpen(true);
+  };
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
@@ -690,6 +696,7 @@ export function CampaignPlay(props: {
     active: isActiveSession,
     canEndSession: isActiveSession && !busy,
     onSyncSession: props.onSyncSession,
+    revealCharacter: revealedCharacter,
   } : null;
 
   return (
@@ -747,6 +754,7 @@ export function CampaignPlay(props: {
                   streaming={isLive && live?.phase === "streaming"}
                   characters={characters}
                   onAddToCast={addToCast}
+                  onShowCharacter={showCharacter}
                   trailing={index === messages.length - 1}
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
@@ -791,13 +799,14 @@ export function CampaignPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  onShowCharacter={showCharacter}
                 />
               )}
               {unmatchedLive && live && (
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
                   {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} answering={Boolean(live.text)} />}
-                  {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} /> : live.phase === "streaming" ? <PendingDots /> : null}
+                  {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots /> : null}
                 </article>
               )}
             </MessageScroller>
