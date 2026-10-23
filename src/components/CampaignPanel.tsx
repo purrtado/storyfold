@@ -1,10 +1,21 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronRight, NotebookPen, PanelRightClose, PanelRightOpen, ScrollText, Users } from "lucide-react";
-import type { Campaign, Session } from "../../shared/domain";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ChevronRight, NotebookPen, PanelRightClose, PanelRightOpen, Plus, ScrollText, Users, X } from "lucide-react";
+import { STAT_KINDS, type Campaign, type CampaignStat, type Session, type StatDefinition } from "../../shared/domain";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
+import { createRequestEpoch } from "../lib/requestEpoch";
+import {
+  createCampaignStat,
+  deleteCampaignStat,
+  fetchSessionMessages,
+  fetchStats,
+  importCampaignStats,
+  updateCampaignStat,
+} from "../lib/storyApi";
 import { Avatar } from "./Avatar";
 import { CampaignStateSection, CampaignTimelineSection, useCampaignSessions } from "./CampaignManagement";
 import { CharacterRoster } from "./CharacterRoster";
+import { StatDefinitionEditor } from "./StatDefinitionEditor";
+import { StatDefinitionList } from "./StatDefinitionList";
 import { Tooltip } from "./Tooltip";
 
 const panelTabs = [
@@ -45,6 +56,208 @@ function CapturedDisclosure(props: { label: string; children: ReactNode }) {
     </details>
   );
 }
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+/** Campaign-owned stats: add, edit, and import from the bank while the story has not begun. */
+export function CampaignStatsSection(props: {
+  campaign: Campaign;
+  sessionId: string;
+  onSyncSession: (sessionId: string) => Promise<void>;
+}) {
+  const [requestEpoch] = useState(createRequestEpoch);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [editor, setEditor] = useState<{ stat: CampaignStat | null } | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [bank, setBank] = useState<StatDefinition[] | null>(null);
+  const [bankLoading, setBankLoading] = useState(false);
+  const [bankError, setBankError] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  // null while unknown; failures hide the importer (the server refuses late imports anyway).
+  const [begun, setBegun] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const requestId = requestEpoch.next();
+    fetchSessionMessages(props.campaign.active_session_id)
+      .then((messages) => { if (requestEpoch.isCurrent(requestId)) setBegun(messages.length > 0); })
+      .catch(() => { if (requestEpoch.isCurrent(requestId)) setBegun(true); });
+    return () => requestEpoch.invalidate();
+  }, [props.campaign.active_session_id, requestEpoch]);
+
+  const sync = () => {
+    void props.onSyncSession(props.sessionId).catch(() => {});
+  };
+
+  const removeStat = async (stat: CampaignStat) => {
+    setBusy(true);
+    setError("");
+    try {
+      await deleteCampaignStat(props.campaign.id, stat.id);
+      sync();
+    } catch (caught) {
+      setError(errorMessage(caught, "Could not delete this stat."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openPicker = async () => {
+    setPicking(true);
+    setBank(null);
+    setBankError("");
+    setSelected(new Set());
+    const requestId = requestEpoch.next();
+    setBankLoading(true);
+    try {
+      const loaded = await fetchStats();
+      if (requestEpoch.isCurrent(requestId)) setBank(loaded);
+    } catch (caught) {
+      if (requestEpoch.isCurrent(requestId)) setBankError(errorMessage(caught, "Could not load the stat bank."));
+    } finally {
+      if (requestEpoch.isCurrent(requestId)) setBankLoading(false);
+    }
+  };
+
+  const importable = (bank ?? []).filter((bankStat) => !props.campaign.stats.some((stat) =>
+    stat.applies_to === bankStat.applies_to && stat.label.toLowerCase() === bankStat.label.toLowerCase()));
+
+  const importSelected = async () => {
+    setImporting(true);
+    setError("");
+    try {
+      await importCampaignStats(props.campaign.id, [...selected]);
+      setPicking(false);
+      sync();
+    } catch (caught) {
+      setError(errorMessage(caught, "Could not import the selected stats."));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <section className="mbs-5 grid gap-3 border-bs border-border pbs-4" aria-labelledby="campaign-stats-title">
+      <h3 id="campaign-stats-title" className="text-xs font-semibold tracking-wide text-muted uppercase">Stats</h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted">Scales the narrator tracks for characters and relationships.</p>
+        <div className="flex flex-wrap gap-2">
+          {begun === false && (
+            <button
+              type="button"
+              className="pressable inline-flex min-h-10 flex-none items-center rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+              onClick={() => { void openPicker(); }}
+              disabled={busy || importing}
+            >
+              Import from bank
+            </button>
+          )}
+          <button
+            type="button"
+            className="pressable inline-flex min-h-10 flex-none items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+            onClick={() => setEditor({ stat: null })}
+            disabled={busy}
+          >
+            <Plus className="size-4" aria-hidden="true" />Add stat
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-muted">Edits change this campaign only — the world&apos;s stats and the shared bank are never touched.</p>
+
+      {error && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="alert">{error}</p>}
+      <StatDefinitionList
+        stats={props.campaign.stats}
+        onEdit={(stat) => setEditor({ stat })}
+        onDelete={(stat) => { void removeStat(stat); }}
+        busy={busy}
+      />
+
+      {picking && (
+        <div className="grid gap-3 rounded-xl border border-border bg-surface p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h4 className="font-medium">Import from the stat bank</h4>
+              <p className="text-xs text-muted">Copies become this campaign&apos;s own stats and start at their defaults for every character tracking stats.</p>
+            </div>
+            <button
+              type="button"
+              className="pressable inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              onClick={() => setPicking(false)}
+              disabled={importing}
+              aria-label="Close the stat bank"
+            ><X className="size-4" aria-hidden="true" /></button>
+          </div>
+          {bankError && <p className="text-sm text-muted" role="alert">{bankError}</p>}
+          {bankLoading && <p className="text-sm text-muted" role="status">Loading the stat bank…</p>}
+          {bank && (
+            importable.length === 0 ? (
+              <p className="text-sm text-muted">Every bank stat is already in this campaign.</p>
+            ) : (
+              <>
+                {STAT_KINDS.map((kind) => {
+                  const group = importable.filter((stat) => stat.applies_to === kind);
+                  if (group.length === 0) return null;
+                  return (
+                    <div key={kind} className="grid gap-2">
+                      <h5 className="text-xs font-semibold tracking-wide text-muted uppercase">{kind === "character" ? "Character stats" : "Relationship stats"}</h5>
+                      <ul className="grid list-none gap-3 p-0">
+                        {group.map((stat) => (
+                          <li key={stat.id}>
+                            <label className="flex items-start gap-3 text-sm">
+                              <input
+                                type="checkbox"
+                                className="mbs-1 size-4 flex-none accent-accent"
+                                checked={selected.has(stat.id)}
+                                disabled={importing}
+                                onChange={() => setSelected((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(stat.id)) next.delete(stat.id); else next.add(stat.id);
+                                  return next;
+                                })}
+                              />
+                              <span className="grid min-w-0 flex-1 gap-0.5">
+                                <span className="font-medium">{stat.label}</span>
+                                <span className="text-xs text-muted">{stat.description} · {stat.min}–{stat.max}, starts at {stat.default_value}</span>
+                              </span>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  className="pressable min-h-11 w-fit rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90"
+                  onClick={() => { void importSelected(); }}
+                  disabled={selected.size === 0 || importing}
+                >
+                  {importing ? "Importing…" : `Import ${selected.size || ""} stat${selected.size === 1 ? "" : "s"}`.trim()}
+                </button>
+              </>
+            )
+          )}
+        </div>
+      )}
+
+      {editor && (
+        <StatDefinitionEditor
+          stat={editor.stat}
+          title={editor.stat ? `Edit ${editor.stat.label}` : "Add campaign stat"}
+          description="Edits change this campaign only."
+          onCreate={(input) => createCampaignStat(props.campaign.id, input)}
+          onUpdate={(id, patch) => updateCampaignStat(props.campaign.id, id, patch)}
+          onSaved={() => sync()}
+          onClose={() => setEditor(null)}
+        />
+      )}
+    </section>
+  );
+}
+
 
 /**
  * Campaign companion panel: docked beside play on wide screens (with a collapsed
@@ -231,6 +444,11 @@ export function CampaignPanel(props: {
                     </div>
                   </CapturedDisclosure>
                 </section>
+                <CampaignStatsSection
+                  campaign={props.campaign}
+                  sessionId={props.session.id}
+                  onSyncSession={props.onSyncSession}
+                />
               </>
             )}
           </div>

@@ -4,13 +4,14 @@ import {
   CHARACTER_PROFILE_FIELDS,
   type Campaign,
   type CampaignCharacter,
+  type CampaignStat,
   type Relationship,
-  type RelationshipDocument,
+  type StatValues,
   protagonistOf,
 } from "../../shared/domain";
 import { Avatar } from "./Avatar";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
-import { StatBars } from "./StatBar";
+import { StatBar, StatBars } from "./StatBar";
 import { createRequestEpoch } from "../lib/requestEpoch";
 import {
   createCampaignCharacter,
@@ -25,104 +26,12 @@ import {
   uploadCampaignCharacterAvatar,
 } from "../lib/storyApi";
 
-type RelationshipStat = RelationshipDocument["stats"][string];
-type RelationshipSection = RelationshipDocument["sections"][number];
-
-function emptyDocument(): RelationshipDocument {
-  return { how_met: "", status: "", stats: {}, known_facts: [], sections: [] };
-}
-
-function copyDocument(document: RelationshipDocument): RelationshipDocument {
-  return {
-    how_met: document.how_met,
-    status: document.status,
-    stats: Object.fromEntries(Object.entries(document.stats).map(([name, stat]) => [name, { ...stat }])),
-    known_facts: [...document.known_facts],
-    sections: document.sections.map((section) => ({
-      ...section,
-      value: Array.isArray(section.value) ? [...section.value] : section.value,
-    })),
-  };
-}
-
-
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]) {
-  return Object.keys(value).every((key) => keys.includes(key)) && keys.every((key) => key in value);
-}
-
-function validateDocument(value: unknown): { document?: RelationshipDocument; error?: string } {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return { error: "Document must be an object." };
-  }
-  const document = value as Record<string, unknown>;
-  if (!hasOnlyKeys(document, ["how_met", "status", "stats", "known_facts", "sections"])) {
-    return { error: "Document must contain only how_met, status, stats, known_facts, and sections." };
-  }
-  if (typeof document.how_met !== "string" || typeof document.status !== "string") {
-    return { error: "How met and status must be text." };
-  }
-  if (document.stats === null || typeof document.stats !== "object" || Array.isArray(document.stats)) {
-    return { error: "Stats must be an object of named numeric ranges." };
-  }
-  const stats = document.stats as Record<string, unknown>;
-  for (const [name, stat] of Object.entries(stats)) {
-    if (!name.trim() || stat === null || typeof stat !== "object" || Array.isArray(stat)) {
-      return { error: "Each stat needs a name and numeric value, minimum, and maximum." };
-    }
-    const statRecord = stat as Record<string, unknown>;
-    if (!hasOnlyKeys(statRecord, ["value", "min", "max"])) {
-      return { error: "Each stat needs a name and numeric value, minimum, and maximum." };
-    }
-    if (![statRecord.value, statRecord.min, statRecord.max].every((number) => typeof number === "number" && Number.isFinite(number))) {
-      return { error: `Stat “${name}” must use finite numbers.` };
-    }
-    if ((statRecord.min as number) > (statRecord.max as number)) {
-      return { error: `Stat “${name}” minimum cannot exceed its maximum.` };
-    }
-  }
-  if (!Array.isArray(document.known_facts) || !document.known_facts.every((fact) => typeof fact === "string")) {
-    return { error: "Known facts must be a list of text." };
-  }
-  if (!Array.isArray(document.sections)) return { error: "Custom sections must be a list." };
-  const sectionIds = new Set<string>();
-  for (const section of document.sections) {
-    if (section === null || typeof section !== "object" || Array.isArray(section)) {
-      return { error: "Each custom section needs an id, label, type, and value." };
-    }
-    const sectionRecord = section as Record<string, unknown>;
-    if (!hasOnlyKeys(sectionRecord, ["id", "label", "type", "value"])) {
-      return { error: "Each custom section needs an id, label, type, and value." };
-    }
-    if (typeof sectionRecord.id !== "string" || !sectionRecord.id.trim() || sectionIds.has(sectionRecord.id)) {
-      return { error: "Custom section IDs must be non-empty and unique." };
-    }
-    sectionIds.add(sectionRecord.id);
-    if (typeof sectionRecord.label !== "string" || !sectionRecord.label.trim()) {
-      return { error: "Custom section labels cannot be empty." };
-    }
-    if (sectionRecord.type === "text") {
-      if (typeof sectionRecord.value !== "string") return { error: `Section “${sectionRecord.label}” needs a text value.` };
-    } else if (sectionRecord.type === "list") {
-      if (!Array.isArray(sectionRecord.value) || !sectionRecord.value.every((item) => typeof item === "string")) {
-        return { error: `Section “${sectionRecord.label}” needs a list of text values.` };
-      }
-    } else {
-      return { error: `Section “${sectionRecord.label}” type must be text or list.` };
-    }
-  }
-
-  return { document: document as unknown as RelationshipDocument };
-}
-
-function parseDocumentJson(json: string) {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return { error: "Enter valid JSON." };
-  }
-  return validateDocument(value);
-}
+type RelationshipDraft = {
+  how_met: string;
+  status: string;
+  known_facts: string[];
+  stats: StatValues;
+};
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -135,45 +44,106 @@ function formatDate(value: string) {
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function CurrentState({ document }: { document: RelationshipDocument }) {
-  const hasContent = document.how_met.trim() || document.status.trim()
-    || Object.keys(document.stats).length > 0 || document.known_facts.length > 0 || document.sections.length > 0;
+function statEntries(stats: CampaignStat[], values: StatValues) {
+  return stats.map((stat) => ({ stat, value: values[stat.id] ?? stat.default_value }));
+}
+
+/** Number input that commits the integer on blur or Enter; empty or invalid edits are discarded. */
+function StatValueInput(props: { stat: CampaignStat; value: number; disabled: boolean; onCommit: (value: number) => void }) {
+  const [text, setText] = useState(() => String(props.value));
+  useEffect(() => { setText(String(props.value)); }, [props.value]);
+  const commit = () => {
+    if (!text.trim()) return;
+    const next = Number(text);
+    if (!Number.isInteger(next) || next === props.value) return;
+    props.onCommit(next);
+  };
+  return (
+    <input
+      type="number"
+      className="min-h-9 w-16 flex-none rounded-lg border border-border bg-background px-2 text-sm tabular-nums"
+      min={props.stat.min}
+      max={props.stat.max}
+      value={text}
+      disabled={props.disabled}
+      aria-label={`${props.stat.label} value`}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function CharacterStatsSection(props: {
+  character: CampaignCharacter;
+  stats: CampaignStat[];
+  busy: boolean;
+  onToggle: () => void;
+  onValueChange: (statId: string, value: number) => void;
+}) {
+  return (
+    <section className="grid gap-2" aria-label={`${props.character.name} stats`}>
+      <label className="flex w-fit cursor-pointer items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="size-4 flex-none accent-accent"
+          checked={props.character.stats_enabled}
+          disabled={props.busy}
+          onChange={props.onToggle}
+        />
+        Track stats
+      </label>
+      {props.character.stats_enabled && (
+        props.stats.length === 0 ? (
+          <p className="text-sm text-muted">No character stats are defined in the Campaign tab yet.</p>
+        ) : (
+          <div className="grid gap-1.5">
+            {statEntries(props.stats, props.character.stats).map(({ stat, value }) => (
+              <div key={stat.id} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <StatBar stat={stat} value={value} />
+                </div>
+                <StatValueInput
+                  stat={stat}
+                  value={value}
+                  disabled={props.busy}
+                  onCommit={(next) => props.onValueChange(stat.id, next)}
+                />
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
+function RelationshipDetails(props: { relationship: Relationship; stats: CampaignStat[] }) {
+  const relationship = props.relationship;
+  const hasContent = relationship.how_met.trim() || relationship.status.trim()
+    || props.stats.length > 0 || relationship.known_facts.length > 0;
   return (
     <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-label="Current state">
-      <div>
-        <p className="text-xs font-semibold tracking-wide text-muted uppercase">Current state</p>
-        <p className="text-xs text-muted">Latest editable snapshot</p>
-      </div>
+      <p className="text-xs font-semibold tracking-wide text-muted uppercase">Current state</p>
       {!hasContent ? <p className="text-sm text-muted">No current details recorded.</p> : (
         <div className="grid gap-3 text-sm">
-          {document.how_met.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">How they met</p><p className="whitespace-pre-wrap break-words">{document.how_met}</p></div>}
-          {document.status.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">Status</p><p className="whitespace-pre-wrap break-words">{document.status}</p></div>}
-          {Object.keys(document.stats).length > 0 && (
-            <div className="grid gap-1.5">
-              <p className="text-xs font-medium text-muted">Stats</p>
-              <StatBars stats={document.stats} />
-            </div>
-          )}
-          {document.known_facts.length > 0 && (
+          {relationship.how_met.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">How they met</p><p className="whitespace-pre-wrap break-words">{relationship.how_met}</p></div>}
+          {relationship.status.trim() && <div className="grid gap-1"><p className="text-xs font-medium text-muted">Status</p><p className="whitespace-pre-wrap break-words">{relationship.status}</p></div>}
+          {props.stats.length > 0 && <StatBars stats={props.stats} values={relationship.stats} />}
+          {relationship.known_facts.length > 0 && (
             <div className="grid gap-1">
               <p className="text-xs font-medium text-muted">Known facts</p>
               <ul className="grid list-disc gap-1 ps-5">
-                {document.known_facts.map((fact, index) => <li key={index} className="whitespace-pre-wrap break-words">{fact}</li>)}
+                {relationship.known_facts.map((fact, index) => <li key={index} className="whitespace-pre-wrap break-words">{fact}</li>)}
               </ul>
             </div>
           )}
-          {document.sections.map((section) => (
-            <div key={section.id} className="grid gap-1">
-              <p className="text-xs font-medium text-muted">{section.label}</p>
-              {section.type === "text" ? (
-                <p className="whitespace-pre-wrap break-words">{section.value as string}</p>
-              ) : (
-                <ul className="grid list-disc gap-1 ps-5">
-                  {(section.value as string[]).map((item, index) => <li key={index} className="whitespace-pre-wrap break-words">{item}</li>)}
-                </ul>
-              )}
-            </div>
-          ))}
         </div>
       )}
     </section>
@@ -184,6 +154,7 @@ function RelationshipRow(props: {
   relationship: Relationship;
   sourceLabel: string;
   targetLabel: string;
+  stats: CampaignStat[];
   editing: boolean;
   editor?: ReactNode;
   onEdit: () => void;
@@ -203,12 +174,11 @@ function RelationshipRow(props: {
   };
 
   const relationshipTitle = `${props.sourceLabel} → ${props.targetLabel}`;
-  const document = props.relationship.document;
-  const status = document.status.trim();
-  const statEntries = Object.entries(document.stats);
+  const status = props.relationship.status.trim();
+  const entries = statEntries(props.stats, props.relationship.stats);
   const statSummary = [
-    ...statEntries.slice(0, 2).map(([name, stat]) => `${name} ${stat.value}/${stat.max}`),
-    ...(statEntries.length > 2 ? [`+${statEntries.length - 2} more`] : []),
+    ...entries.slice(0, 2).map(({ stat, value }) => `${stat.label} ${value}/${stat.max}`),
+    ...(entries.length > 2 ? [`+${entries.length - 2} more`] : []),
   ].join(" · ");
   return (
     <article className="grid min-w-0 rounded-2xl border border-border">
@@ -248,7 +218,7 @@ function RelationshipRow(props: {
                 </div>
               </div>
             )}
-            {!props.editing && <CurrentState document={document} />}
+            {!props.editing && <RelationshipDetails relationship={props.relationship} stats={props.stats} />}
           </div>
         )}
       </details>
@@ -281,7 +251,7 @@ function CharacterCard(props: {
   open: boolean;
   onToggle: () => void;
   status: string;
-  stats: { label: string; stats: RelationshipDocument["stats"] }[];
+  stats: { label: string; stats: CampaignStat[]; values: StatValues }[];
   toggleRef: (element: HTMLButtonElement | null) => void;
   children: ReactNode;
 }) {
@@ -313,7 +283,7 @@ function CharacterCard(props: {
           {props.stats.map((group) => (
             <div key={group.label} className="grid gap-1.5">
               {props.stats.length > 1 && <p className="text-xs font-medium text-muted">{group.label}</p>}
-              <StatBars stats={group.stats} />
+              <StatBars stats={group.stats} values={group.values} />
             </div>
           ))}
         </div>
@@ -338,9 +308,7 @@ export function CharacterRoster(props: {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
-  const [draft, setDraft] = useState<RelationshipDocument>(emptyDocument);
-  const [advanced, setAdvanced] = useState(false);
-  const [rawJson, setRawJson] = useState("");
+  const [draft, setDraft] = useState<RelationshipDraft>({ how_met: "", status: "", known_facts: [], stats: {} });
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -383,6 +351,15 @@ export function CharacterRoster(props: {
     }));
   }, [props.campaign.characters]);
 
+  const characterStats = useMemo(
+    () => props.campaign.stats.filter((stat) => stat.applies_to === "character"),
+    [props.campaign],
+  );
+  const relationshipStats = useMemo(
+    () => props.campaign.stats.filter((stat) => stat.applies_to === "relationship"),
+    [props.campaign],
+  );
+
   // The write already succeeded; a failed refresh is recovered by the next focus/session load.
   const syncCampaign = useCallback(() => {
     void props.onSyncSession(props.sessionId).catch(() => {});
@@ -393,11 +370,6 @@ export function CharacterRoster(props: {
   const relationshipLabel = (id: string) => characterLabels.get(id) ?? `Unavailable reference (${id})`;
   const cardOwner = (relationship: Relationship) =>
     relationship.source_id === protagonistId ? relationship.target_id : relationship.source_id;
-  const rawDocument = advanced ? parseDocumentJson(rawJson) : null;
-  const rawValidationError = rawDocument?.error ?? "";
-  const serializedDraftLength = advanced
-    ? rawDocument?.document ? JSON.stringify(rawDocument.document).length : rawJson.length
-    : JSON.stringify(draft).length;
 
   const resetEditor = useCallback(() => {
     setCreatingRelationship(false);
@@ -405,9 +377,7 @@ export function CharacterRoster(props: {
     setEditingId(null);
     setSourceId("");
     setTargetId("");
-    setDraft(emptyDocument());
-    setAdvanced(false);
-    setRawJson("");
+    setDraft({ how_met: "", status: "", known_facts: [], stats: {} });
     setEditorError("");
   }, []);
   useEffect(() => {
@@ -436,61 +406,32 @@ export function CharacterRoster(props: {
     setEditingId(null);
     setSourceId(cardId);
     setTargetId(cardId === protagonistId ? "" : protagonistId);
-    const nextDocument = emptyDocument();
-    setDraft(nextDocument);
-    setAdvanced(false);
-    setRawJson(JSON.stringify(nextDocument, null, 2));
+    setDraft({
+      how_met: "",
+      status: "",
+      known_facts: [],
+      stats: Object.fromEntries(relationshipStats.map((stat) => [stat.id, stat.default_value])),
+    });
     setEditorError("");
   };
 
   const openEdit = (relationship: Relationship) => {
-    const nextDocument = copyDocument(relationship.document);
     setCreatingRelationship(false);
     setConfirmDeleteId(null);
     setEditingId(relationship.id);
     setSourceId(relationship.source_id);
     setTargetId(relationship.target_id);
-    setDraft(nextDocument);
-    setAdvanced(false);
-    setRawJson(JSON.stringify(nextDocument, null, 2));
+    setDraft({
+      how_met: relationship.how_met,
+      status: relationship.status,
+      known_facts: [...relationship.known_facts],
+      stats: Object.fromEntries(statEntries(relationshipStats, relationship.stats).map(({ stat, value }) => [stat.id, value])),
+    });
     setEditorError("");
-  };
-
-  const changeAdvancedMode = () => {
-    setEditorError("");
-    if (advanced) {
-      const parsed = parseDocumentJson(rawJson);
-      if (parsed.error || !parsed.document) {
-        setEditorError(parsed.error ?? "The JSON document is invalid.");
-        return;
-      }
-      setDraft(parsed.document);
-      setRawJson(JSON.stringify(parsed.document, null, 2));
-      setAdvanced(false);
-    } else {
-      setRawJson(JSON.stringify(draft, null, 2));
-      setAdvanced(true);
-    }
   };
 
   const saveRelationship = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    let document = draft;
-    if (advanced) {
-      const parsed = parseDocumentJson(rawJson);
-      if (parsed.error || !parsed.document) {
-        setEditorError(parsed.error ?? "The JSON document is invalid.");
-        return;
-      }
-      document = parsed.document;
-    } else {
-      const validation = validateDocument(draft);
-      if (validation.error || !validation.document) {
-        setEditorError(validation.error ?? "The relationship document is invalid.");
-        return;
-      }
-      document = validation.document;
-    }
     if (creatingRelationship && (!sourceId || !targetId)) {
       setEditorError("Choose both a source and a target character.");
       return;
@@ -501,17 +442,23 @@ export function CharacterRoster(props: {
     }
     setSaving(true);
     setEditorError("");
+    const fields = {
+      how_met: draft.how_met,
+      status: draft.status,
+      known_facts: draft.known_facts,
+      stats: draft.stats,
+    };
     try {
       if (creatingRelationship) {
         const created = await createCampaignRelationship(props.campaign.id, {
           source_id: sourceId,
           target_id: targetId,
-          document,
+          ...fields,
         });
         setRelationships((current) => [...current, created]);
         setPendingFocusId(created.id);
       } else if (editingId) {
-        const updated = await updateCampaignRelationship(props.campaign.id, editingId, { document });
+        const updated = await updateCampaignRelationship(props.campaign.id, editingId, fields);
         setRelationships((current) => current.map((relationship) => relationship.id === updated.id ? updated : relationship));
         setPendingFocusId(editingId);
       }
@@ -543,29 +490,30 @@ export function CharacterRoster(props: {
     }
   };
 
-  const updateDraft = (update: (current: RelationshipDocument) => RelationshipDocument) => {
-    setDraft(update);
-    setEditorError("");
-  };
-
-  const updateStat = (index: number, name: string, stat: RelationshipStat) => {
-    const entries = Object.entries(draft.stats);
-    const currentName = entries[index]?.[0];
-    if (name !== currentName && entries.some(([entryName], entryIndex) => entryIndex !== index && entryName === name)) {
-      setEditorError("Stat names must be unique.");
-      return;
+  const changeStatTracking = async (character: CampaignCharacter) => {
+    setCharacterBusyId(character.id);
+    setCharacterAction(null);
+    try {
+      await updateCampaignCharacter(props.campaign.id, character.id, { stats_enabled: !character.stats_enabled });
+      syncCampaign();
+    } catch (error) {
+      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not update stat tracking.") });
+    } finally {
+      setCharacterBusyId(null);
     }
-    updateDraft((current) => ({
-      ...current,
-      stats: Object.fromEntries(Object.entries(current.stats).map(([entryName, entry], entryIndex) => entryIndex === index ? [name, stat] : [entryName, entry])),
-    }));
   };
 
-  const updateSection = (index: number, update: (section: RelationshipSection) => RelationshipSection) => {
-    updateDraft((current) => ({
-      ...current,
-      sections: current.sections.map((section, sectionIndex) => sectionIndex === index ? update(section) : section),
-    }));
+  const setCharacterStat = async (character: CampaignCharacter, statId: string, value: number) => {
+    setCharacterBusyId(character.id);
+    setCharacterAction(null);
+    try {
+      await updateCampaignCharacter(props.campaign.id, character.id, { stats: { [statId]: value } });
+      syncCampaign();
+    } catch (error) {
+      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not save this stat value.") });
+    } finally {
+      setCharacterBusyId(null);
+    }
   };
 
   const profileSaved = (saved: CampaignCharacter, previousId: string | undefined) => {
@@ -605,11 +553,16 @@ export function CharacterRoster(props: {
     }
   };
 
+  const updateDraft = (update: (current: RelationshipDraft) => RelationshipDraft) => {
+    setDraft(update);
+    setEditorError("");
+  };
+
   const editorForm = (creatingRelationship || editingId) && (
     <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
       <div>
-        <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit current relationship state"}</h4>
-        <p className="text-xs text-muted">The direction is explicit; editing changes the current relationship document.</p>
+        <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit relationship"}</h4>
+        <p className="text-xs text-muted">The direction is explicit; changes apply to this campaign only.</p>
       </div>
       {creatingRelationship ? (
         <div className="grid gap-3">
@@ -633,113 +586,54 @@ export function CharacterRoster(props: {
         <p className="break-words rounded-lg border border-border p-3 text-sm font-medium">{relationshipLabel(sourceId)} <span aria-hidden="true" className="text-muted">→</span> {relationshipLabel(targetId)}</p>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-bs border-border pbs-3">
-        <div>
-          <p className="text-sm font-medium">Document editor</p>
-          <p className="text-xs text-muted">Serialized document: {serializedDraftLength.toLocaleString()} characters. The server enforces a 16,000-character campaign-wide limit; drafts are never truncated.</p>
-        </div>
-        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={changeAdvancedMode}>
-          {advanced ? "Use native editor" : "Advanced JSON"}
-        </button>
-      </div>
+      <label className="grid gap-1 text-sm">
+        How they met
+        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
+      </label>
+      <label className="grid gap-1 text-sm">
+        Current status
+        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.status} onChange={(event) => updateDraft((current) => ({ ...current, status: event.target.value }))} />
+      </label>
 
-      {advanced ? (
-        <label className="grid gap-1 text-sm">
-          Relationship document JSON
-          <textarea className="min-h-80 rounded-lg border border-border bg-background p-3 font-mono text-xs leading-5" value={rawJson} onChange={(event) => { setRawJson(event.target.value); setEditorError(""); }} rows={18} spellCheck={false} aria-invalid={Boolean(rawValidationError || editorError)} />
-          {rawValidationError && <span className="text-xs text-muted" role="alert">{rawValidationError}</span>}
-        </label>
-      ) : (
-        <div className="grid gap-3">
-          <label className="grid gap-1 text-sm">
-            How they met
-            <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
-          </label>
-          <label className="grid gap-1 text-sm">
-            Current status
-            <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.status} onChange={(event) => updateDraft((current) => ({ ...current, status: event.target.value }))} />
-          </label>
+      <fieldset className="grid gap-2 rounded-xl border border-border p-3">
+        <legend className="px-1 text-sm font-medium">Known facts</legend>
+        {draft.known_facts.map((fact, index) => (
+          <div key={index} className="flex min-w-0 items-start gap-2">
+            <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
+            <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: current.known_facts.filter((_, entryIndex) => entryIndex !== index) }))}>Remove</button>
+          </div>
+        ))}
+        <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: [...current.known_facts, ""] }))}>Add known fact</button>
+      </fieldset>
 
-          <fieldset className="grid gap-2 rounded-xl border border-border p-3">
-            <legend className="px-1 text-sm font-medium">Numeric stats</legend>
-            {Object.entries(draft.stats).length === 0 && <p className="text-xs text-muted">No numeric stats recorded.</p>}
-            {Object.entries(draft.stats).map(([name, stat], index) => (
-              <div key={index} className="grid gap-2 rounded-lg border border-border p-2">
-                <label className="grid gap-1 text-sm">
-                  Stat name
-                  <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={name} onChange={(event) => updateStat(index, event.target.value, stat)} required />
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(["value", "min", "max"] as const).map((field) => (
-                    <label key={field} className="grid min-w-0 gap-1 text-xs text-muted">
-                      {field === "value" ? "Value" : field === "min" ? "Minimum" : field === "max" ? "Maximum" : ""}
-                      <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={Number.isNaN(stat[field]) ? "" : stat[field]} onChange={(event) => updateStat(index, name, { ...stat, [field]: event.currentTarget.valueAsNumber })} required />
-                    </label>
-                  ))}
-                </div>
-                <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: Object.fromEntries(Object.entries(current.stats).filter((_, entryIndex) => entryIndex !== index)) }))}>Remove stat</button>
+      {relationshipStats.length > 0 && (
+        <fieldset className="grid gap-2 rounded-xl border border-border p-3">
+          <legend className="px-1 text-sm font-medium">Stats</legend>
+          {statEntries(relationshipStats, draft.stats).map(({ stat, value }) => (
+            <div key={stat.id} className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <StatBar stat={stat} value={value} />
               </div>
-            ))}
-            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, stats: { ...current.stats, "": { value: 0, min: 0, max: 0 } } }))} disabled={Object.keys(draft.stats).some((name) => !name.trim())}>Add stat</button>
-          </fieldset>
-
-          <fieldset className="grid gap-2 rounded-xl border border-border p-3">
-            <legend className="px-1 text-sm font-medium">Known facts</legend>
-            {draft.known_facts.map((fact, index) => (
-              <div key={index} className="flex min-w-0 items-start gap-2">
-                <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
-                <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: current.known_facts.filter((_, entryIndex) => entryIndex !== index) }))}>Remove</button>
-              </div>
-            ))}
-            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: [...current.known_facts, ""] }))}>Add known fact</button>
-          </fieldset>
-
-          <fieldset className="grid gap-3 rounded-xl border border-border p-3">
-            <legend className="px-1 text-sm font-medium">Custom sections</legend>
-            {draft.sections.map((section, index) => (
-              <div key={section.id} className="grid min-w-0 gap-2 rounded-lg border border-border p-3">
-                <label className="grid gap-1 text-sm">
-                  Section label
-                  <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-3" value={section.label} onChange={(event) => updateSection(index, (current) => ({ ...current, label: event.target.value }))} />
-                </label>
-                <label className="grid gap-1 text-sm">
-                  Section type
-                  <select className="min-h-10 rounded-lg border border-border bg-background px-3" value={section.type} onChange={(event) => {
-                    const type = event.target.value as "text" | "list";
-                    updateSection(index, (current) => ({ ...current, type, value: type === "text" ? (Array.isArray(current.value) ? current.value.join("\n") : current.value) : (Array.isArray(current.value) ? current.value : [current.value]) }));
-                  }}>
-                    <option value="text">Text</option>
-                    <option value="list">List</option>
-                  </select>
-                </label>
-                {section.type === "text" ? (
-                  <label className="grid gap-1 text-sm">
-                    Text value
-                    <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={section.value as string} onChange={(event) => updateSection(index, (current) => ({ ...current, value: event.target.value }))} />
-                  </label>
-                ) : (
-                  <div className="grid gap-2">
-                    <span className="text-sm">List values</span>
-                    {(section.value as string[]).map((item, itemIndex) => (
-                      <div key={itemIndex} className="flex min-w-0 items-start gap-2">
-                        <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`${section.label || "Custom section"} item ${itemIndex + 1}`} value={item} onChange={(event) => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).map((value, valueIndex) => valueIndex === itemIndex ? event.target.value : value) }))} />
-                        <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: (current.value as string[]).filter((_, valueIndex) => valueIndex !== itemIndex) }))}>Remove</button>
-                      </div>
-                    ))}
-                    <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateSection(index, (current) => ({ ...current, value: [...current.value as string[], ""] }))}>Add list item</button>
-                  </div>
-                )}
-                <button type="button" className="pressable min-h-9 justify-self-start rounded-lg border border-border px-3 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: current.sections.filter((_, sectionIndex) => sectionIndex !== index) }))}>Remove section</button>
-              </div>
-            ))}
-            <button type="button" className="pressable min-h-10 justify-self-start rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, sections: [...current.sections, { id: crypto.randomUUID(), label: "", type: "text", value: "" }] }))}>Add custom section</button>
-          </fieldset>
-        </div>
+              <input
+                type="number"
+                className="min-h-9 w-16 flex-none rounded-lg border border-border bg-background px-2 text-sm tabular-nums"
+                min={stat.min}
+                max={stat.max}
+                value={Number.isNaN(value) ? "" : value}
+                aria-label={`${stat.label} value`}
+                onChange={(event) => {
+                  const next = event.currentTarget.valueAsNumber;
+                  updateDraft((current) => ({ ...current, stats: { ...current.stats, [stat.id]: next } }));
+                }}
+              />
+            </div>
+          ))}
+        </fieldset>
       )}
 
       {editorError && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="alert">{editorError}</p>}
       <div className="flex flex-wrap gap-2">
-        <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save current state"}</button>
+        <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save changes"}</button>
         <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={resetEditor} disabled={saving}>Cancel</button>
       </div>
     </form>
@@ -767,6 +661,7 @@ export function CharacterRoster(props: {
       relationship={relationship}
       sourceLabel={relationshipLabel(relationship.source_id)}
       targetLabel={relationshipLabel(relationship.target_id)}
+      stats={relationshipStats}
       editing={editingId === relationship.id}
       editor={editingId === relationship.id ? editorForm : undefined}
       onEdit={() => openEdit(relationship)}
@@ -797,8 +692,8 @@ export function CharacterRoster(props: {
         const towardYou = you ? undefined : owned.find((relationship) => relationship.target_id === protagonistId);
         const fromYou = you ? undefined : owned.find((relationship) => relationship.source_id === protagonistId);
         const stats = [
-          ...(towardYou && Object.keys(towardYou.document.stats).length > 0 ? [{ label: "How they see you", stats: towardYou.document.stats }] : []),
-          ...(fromYou && Object.keys(fromYou.document.stats).length > 0 ? [{ label: "How you see them", stats: fromYou.document.stats }] : []),
+          ...(towardYou && relationshipStats.length > 0 ? [{ label: "How they see you", stats: relationshipStats, values: towardYou.stats }] : []),
+          ...(fromYou && relationshipStats.length > 0 ? [{ label: "How you see them", stats: relationshipStats, values: fromYou.stats }] : []),
         ];
         const open = props.openId === character.id;
         return (
@@ -808,12 +703,20 @@ export function CharacterRoster(props: {
             you={you}
             open={open}
             onToggle={() => props.onOpenChange(open ? null : character.id)}
-            status={towardYou?.document.status.trim() || fromYou?.document.status.trim() || ""}
+            status={towardYou?.status.trim() || fromYou?.status.trim() || ""}
             stats={stats}
             toggleRef={(element) => { if (element) cardRefs.current.set(character.id, element); else cardRefs.current.delete(character.id); }}
           >
             <>
               <Profile character={character} />
+              <CharacterStatsSection
+                character={character}
+                stats={characterStats}
+                busy={characterBusyId === character.id}
+                onToggle={() => { void changeStatTracking(character); }}
+                onValueChange={(statId, value) => { void setCharacterStat(character, statId, value); }}
+              />
+              {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor({ character })} disabled={characterBusyId !== null}>Edit</button>
                 <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setSaveConfirmId(character.id); setSavedId(null); setCharacterAction(null); }} disabled={characterBusyId !== null}>Save to world</button>
@@ -840,7 +743,6 @@ export function CharacterRoster(props: {
                   </div>
                 </div>
               )}
-              {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
               {owned.length > 0 && (
                 <section className="grid min-w-0 gap-2" aria-label={`${character.name} relationships`}>
                   <p className="text-xs font-semibold tracking-wide text-muted uppercase">Relationships</p>
