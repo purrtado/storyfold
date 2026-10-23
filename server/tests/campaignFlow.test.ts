@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Campaign, Message, Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Message, type Session } from "../../shared/domain";
 import { NARRATION_CHARACTER_BUDGET } from "../../shared/narration";
 import { openDatabase } from "../db";
 import {
@@ -9,6 +9,7 @@ import {
   createCharacter,
   createWorld,
   getCampaign,
+  parseCharacterInput,
   SessionClosedError,
 } from "../library";
 import { AlreadyOpenedError, PlayService } from "../play";
@@ -578,8 +579,45 @@ describe("pending-run exclusivity", () => {
       });
       expect(transition.status).toBe(409);
 
+      const protagonistId = seeded.campaign.characters[0]!.id;
+      const castCreate = await json(`/api/campaigns/${seeded.campaign.id}/characters`, "POST", {
+        name: "Late arrival",
+        description: "Should not save.",
+      });
+      expect(castCreate.status).toBe(409);
+      const castPatch = await json(`/api/campaigns/${seeded.campaign.id}/characters/${protagonistId}`, "PATCH", {
+        name: "Should not save.",
+      });
+      expect(castPatch.status).toBe(409);
+      const castDelete = await json(`/api/campaigns/${seeded.campaign.id}/characters/${protagonistId}`, "DELETE");
+      expect(castDelete.status).toBe(409);
+
+      const statCreate = await json(`/api/campaigns/${seeded.campaign.id}/stats`, "POST", {
+        applies_to: "character",
+        label: "While pending",
+        description: "Should not save.",
+        low_label: "low",
+        high_label: "high",
+        min: 0,
+        max: 10,
+        default_value: 5,
+        color: "red",
+      });
+      expect(statCreate.status).toBe(409);
+      expect(((await statCreate.json()) as { code?: string }).code).toBe("busy");
+      const statPatch = await json(`/api/campaigns/${seeded.campaign.id}/stats/nope`, "PATCH", { label: "Should not save." });
+      expect(statPatch.status).toBe(409);
+      const statDelete = await json(`/api/campaigns/${seeded.campaign.id}/stats/nope`, "DELETE");
+      expect(statDelete.status).toBe(409);
+      const statImport = await json(`/api/campaigns/${seeded.campaign.id}/stats/import`, "POST", { stat_ids: ["nope"] });
+      expect(statImport.status).toBe(409);
+
       expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
       expect(await campaignSessions(seeded.campaign.id)).toHaveLength(1);
+      const characters = (await (
+        await json(`/api/campaigns/${seeded.campaign.id}/characters`, "GET")
+      ).json()) as { characters: Array<{ name: string }> };
+      expect(characters.characters.map((character) => character.name)).toEqual(["Sable of Pending"]);
 
       await stopRun(server.url, seeded.session.id);
       const after = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
@@ -742,8 +780,9 @@ describe("forking from a message", () => {
     expect(fork.campaign.forked_from_campaign_id).toBe(seeded.campaign.id);
     expect(fork.campaign.forked_from_session_id).toBe(seeded.session.id);
     expect(fork.campaign.world_snapshot).toEqual(seeded.campaign.world_snapshot);
-    expect(fork.campaign.protagonist_snapshot).toEqual(seeded.campaign.protagonist_snapshot);
-    expect(fork.campaign.cast).toEqual(seeded.campaign.cast);
+    expect(fork.campaign.characters.map((character) => [character.role, character.name, character.speaking_style])).toEqual(
+      seeded.campaign.characters.map((character) => [character.role, character.name, character.speaking_style]),
+    );
     expect(fork.campaign.starting_situation).toBe(seeded.campaign.starting_situation);
     expect(fork.campaign.active_session_id).toBe(fork.session.id);
     expect(fork.session.closed_at).toBeNull();
@@ -1083,7 +1122,7 @@ describe("closed-session race guard", () => {
     const db = openDatabase(join(directory, "race.db"));
     try {
       const world = createWorld(db, { name: "Race", setting_brief: "Harbor.", suggested_starting_situation: "" });
-      const character = createCharacter(db, { name: "Sable", description: "Ferrywoman spy." });
+      const character = createCharacter(db, parseCharacterInput({ name: "Sable", description: "Ferrywoman spy." }));
       const { campaign, session } = createCampaign(db, {
         world_id: world.id,
         protagonist_id: character.id,
@@ -1115,7 +1154,7 @@ describe("closed-session race guard", () => {
     const db = openDatabase(join(directory, "opening-race.db"));
     try {
       const world = createWorld(db, { name: "OpeningRace", setting_brief: "Harbor.", suggested_starting_situation: "" });
-      const character = createCharacter(db, { name: "Sable", description: "Ferrywoman spy." });
+      const character = createCharacter(db, parseCharacterInput({ name: "Sable", description: "Ferrywoman spy." }));
       const { campaign, session } = createCampaign(db, {
         world_id: world.id,
         protagonist_id: character.id,
@@ -1196,41 +1235,47 @@ describe("restart and persistence", () => {
   });
 });
 
-test("directional relationship API validates subjects and the last save wins", async () => {
+test("campaign relationship API validates campaign characters and the last save wins", async () => {
   const { campaign } = await seedCampaign("Relationship API", "A meeting at the harbor.");
-  const subjectsResponse = await json(`/api/campaigns/${campaign.id}/relationships`, "GET");
-  expect(subjectsResponse.status).toBe(200);
-  const subjects = (await subjectsResponse.json()) as { subjects: Array<{ id: string; kind: string }> };
-  expect(subjects.subjects.some((subject) => subject.id === campaign.protagonist_snapshot.id)).toBe(true);
-  const createdSubject = await json(`/api/campaigns/${campaign.id}/relationship-subjects`, "POST", { name: "Aven" });
-  expect(createdSubject.status).toBe(201);
-  const target = ((await createdSubject.json()) as { subject: { id: string } }).subject.id;
-  const document = { how_met: "At the harbor.", status: "cautious", stats: {}, known_facts: [], sections: [] };
+  const protagonistId = protagonistOf(campaign).id;
+  const outsider = await json("/api/characters", "POST", { name: "Outsider", description: "Not in this campaign." });
+  expect(outsider.status).toBe(201);
+  const outsiderId = ((await outsider.json()) as { character: { id: string } }).character.id;
+  const companion = await json(`/api/campaigns/${campaign.id}/characters`, "POST", {
+    name: "Aven",
+    description: "A harbor pilot.",
+  });
+  expect(companion.status).toBe(201);
+  const target = ((await companion.json()) as { character: { id: string } }).character.id;
+
   const created = await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
-    source_id: campaign.protagonist_snapshot.id,
+    source_id: protagonistId,
     target_id: target,
-    document,
+    how_met: "At the harbor.",
+    status: "cautious",
   });
   expect(created.status).toBe(201);
-  const relationship = ((await created.json()) as { relationship: { id: string } }).relationship;
+  const createdPayload = (await created.json()) as { relationship: { id: string; status: string } };
+  expect(createdPayload.relationship.status).toBe("cautious");
+  const relationship = createdPayload.relationship;
   expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
-    source_id: campaign.protagonist_snapshot.id,
+    source_id: protagonistId,
     target_id: target,
-    document,
+    how_met: "At the harbor.",
   })).status).toBe(400);
   expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
-    source_id: campaign.protagonist_snapshot.id,
-    target_id: target,
-    document: { ...document, hidden: "field" },
+    source_id: protagonistId,
+    target_id: outsiderId,
+    how_met: "At the harbor.",
   })).status).toBe(400);
   for (const status of ["trusting", "wary"]) {
     const updated = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
-      document: { ...document, status },
+      status,
     });
     expect(updated.status).toBe(200);
   }
   const listed = (await (await json(`/api/campaigns/${campaign.id}/relationships`, "GET")).json()) as {
-    relationships: Array<{ document: { status: string } }>;
+    relationships: Array<{ status: string }>;
   };
-  expect(listed.relationships[0]!.document.status).toBe("wary");
+  expect(listed.relationships[0]!.status).toBe("wary");
 });

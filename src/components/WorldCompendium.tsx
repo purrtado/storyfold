@@ -1,15 +1,20 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
-import { Pencil, Plus, Trash2, X } from "lucide-react";
-import type { World, WorldCharacter, WorldEntry, WorldEntryKind } from "../../shared/domain";
+import { Copy, Pencil, Plus, Trash2, X } from "lucide-react";
+import type { Character, StatDefinition, World, WorldEntry, WorldEntryKind } from "../../shared/domain";
 import {
+  copyCharacterToLibrary,
   createWorldCharacter,
   createWorldEntry,
-  deleteWorldCharacter,
+  createWorldStat,
+  deleteCharacter,
+  deleteCharacterAvatar,
+  deleteStat,
   deleteWorldEntry,
-  updateWorldCharacterContext,
+  updateCharacter,
+  updateStat,
   updateWorldEntry,
+  uploadCharacterAvatar,
   type WorldEntryInput,
 } from "../lib/storyApi";
 import {
@@ -17,22 +22,28 @@ import {
   applyWorldCharacterSaved,
   applyWorldEntryRemoved,
   applyWorldEntrySaved,
+  applyWorldStatRemoved,
+  applyWorldStatSaved,
   ensureWorldCharacters,
   ensureWorldEntries,
+  ensureWorldStats,
   refreshCharacters,
   refreshWorldCharacters,
   refreshWorldEntries,
-  useCharacters,
+  refreshWorldStats,
   useWorldCharacters,
   useWorldEntries,
+  useWorldStats,
 } from "../lib/libraryCache";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
+import { Avatar } from "./Avatar";
+import { CharacterProfileDialog } from "./CharacterProfileDialog";
+import { StatDefinitionEditor } from "./StatDefinitionEditor";
+import { StatDefinitionList } from "./StatDefinitionList";
 
 type EntryEditor = WorldEntryInput & { id: string | null };
-type CastEditor = { mode: "add" | "edit"; characterId: string; context: string };
 
 const ENTRY_LABELS: Record<WorldEntryKind, string> = {
-  local_npc: "local NPC",
   location: "location",
   lore: "lore entry",
   scene: "opening scene",
@@ -40,37 +51,51 @@ const ENTRY_LABELS: Record<WorldEntryKind, string> = {
 
 export function WorldCompendium(props: { world: World; onClose: () => void }) {
   const entriesLibrary = useWorldEntries(props.world.id);
-  const castLibrary = useWorldCharacters(props.world.id);
-  const charactersLibrary = useCharacters();
+  const charactersLibrary = useWorldCharacters(props.world.id);
   const [editor, setEditor] = useState<EntryEditor | null>(null);
   const entryOpenerRef = useRef<HTMLElement | null>(null);
-  const castOpenerRef = useRef<HTMLElement | null>(null);
-  const [castEditor, setCastEditor] = useState<CastEditor | null>(null);
+  const characterOpenerRef = useRef<HTMLElement | null>(null);
+  const [characterEditor, setCharacterEditor] = useState<{ character: Character | null } | null>(null);
+  const [statEditor, setStatEditor] = useState<{ stat: StatDefinition | null } | null>(null);
+  const statOpenerRef = useRef<HTMLElement | null>(null);
   const [saveError, setSaveError] = useState("");
-  const [castSaveError, setCastSaveError] = useState("");
   const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [castSaving, setCastSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [deletingCharacterId, setDeletingCharacterId] = useState<string | null>(null);
+  const [busyCharacterId, setBusyCharacterId] = useState<string | null>(null);
+  const [deletingStatId, setDeletingStatId] = useState<string | null>(null);
   const entries = useMemo(
     () => [...(entriesLibrary.items ?? [])].sort((a, b) =>
       a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
     [entriesLibrary.items],
   );
-  const worldCast = useMemo(
-    () => [...(castLibrary.items ?? [])].sort((a, b) =>
-      a.character.name.localeCompare(b.character.name) || a.character_id.localeCompare(b.character_id)),
-    [castLibrary.items],
+  const worldCharacters = useMemo(
+    () => [...(charactersLibrary.items ?? [])].sort((a, b) =>
+      a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    [charactersLibrary.items],
   );
-  const worldCastIds = new Set(worldCast.map(({ character_id }) => character_id));
-  const charactersById = new Map((charactersLibrary.items ?? []).map((character) => [character.id, character]));
-  const availableCharacters = (charactersLibrary.items ?? []).filter(({ id }) => !worldCastIds.has(id));
+  const statsLibrary = useWorldStats(props.world.id);
+  const worldStats = statsLibrary.items ?? [];
 
   useEffect(() => {
     ensureWorldEntries(props.world.id);
     ensureWorldCharacters(props.world.id);
+    ensureWorldStats(props.world.id);
   }, [props.world.id]);
+
+  const removeStat = async (stat: StatDefinition) => {
+    if (!window.confirm(`Delete “${stat.label}” from ${props.world.name}? Campaigns that already use it keep their copy.`)) return;
+    setDeletingStatId(stat.id);
+    setActionError("");
+    try {
+      await deleteStat(stat.id);
+      applyWorldStatRemoved(props.world.id, stat.id);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not delete this stat.");
+    } finally {
+      setDeletingStatId(null);
+    }
+  };
 
   const openNew = (kind: WorldEntryKind) => {
     setEditor({ id: null, kind, name: "", description: "" });
@@ -82,16 +107,6 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
     setEditor({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description });
     setSaveError("");
     setActionError("");
-  };
-
-  const openAddWorldCharacter = () => {
-    setCastEditor({ mode: "add", characterId: "", context: "" });
-    setCastSaveError("");
-  };
-
-  const openEditWorldCharacter = (association: WorldCharacter) => {
-    setCastEditor({ mode: "edit", characterId: association.character_id, context: association.context });
-    setCastSaveError("");
   };
 
   const submitEntry = async (event: FormEvent<HTMLFormElement>) => {
@@ -117,28 +132,6 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
     }
   };
 
-  const submitWorldCharacter = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!castEditor || castSaving || !castEditor.characterId) return;
-    setCastSaving(true);
-    setCastSaveError("");
-    try {
-      const saved = castEditor.mode === "add"
-        ? await createWorldCharacter(props.world.id, castEditor.characterId, castEditor.context.trim())
-        : await updateWorldCharacterContext(props.world.id, castEditor.characterId, castEditor.context.trim());
-      applyWorldCharacterSaved(
-        props.world.id,
-        saved,
-        castEditor.mode === "edit" ? saved.character_id : undefined,
-      );
-      setCastEditor(null);
-    } catch (error) {
-      setCastSaveError(error instanceof Error ? error.message : "Could not save this world cast context.");
-    } finally {
-      setCastSaving(false);
-    }
-  };
-
   const removeEntry = async (entry: WorldEntry) => {
     if (!window.confirm(`Delete “${entry.name}” from ${props.world.name}? Campaigns that already include it keep their captured copy.`)) return;
     setDeletingId(entry.id);
@@ -153,24 +146,35 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
     }
   };
 
-  const removeWorldCharacter = async (association: WorldCharacter) => {
-    if (!window.confirm(`Remove “${association.character.name}” from ${props.world.name}’s cast? The global character remains in your library.`)) return;
-    setDeletingCharacterId(association.character_id);
+  const removeWorldCharacter = async (character: Character) => {
+    if (!window.confirm(`Delete “${character.name}” from ${props.world.name}? Campaigns that already include this character keep their copy.`)) return;
+    setBusyCharacterId(character.id);
     setActionError("");
     try {
-      await deleteWorldCharacter(props.world.id, association.character_id);
-      applyWorldCharacterRemoved(props.world.id, association.character_id);
+      await deleteCharacter(character.id);
+      applyWorldCharacterRemoved(props.world.id, character.id);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not remove this character from the world cast.");
+      setActionError(error instanceof Error ? error.message : "Could not delete this character.");
     } finally {
-      setDeletingCharacterId(null);
+      setBusyCharacterId(null);
+    }
+  };
+
+  const copyCharacter = async (character: Character) => {
+    if (!window.confirm(`Copy “${character.name}” to your library? Library characters can't be deleted.`)) return;
+    setBusyCharacterId(character.id);
+    setActionError("");
+    try {
+      await copyCharacterToLibrary(character.id);
+      refreshCharacters();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not copy this character to your library.");
+    } finally {
+      setBusyCharacterId(null);
     }
   };
 
   const loading = entriesLibrary.items === undefined && entriesLibrary.loadError === undefined;
-  const selectedCastCharacter = castEditor
-    ? charactersById.get(castEditor.characterId) ?? worldCast.find(({ character_id }) => character_id === castEditor.characterId)?.character
-    : undefined;
 
   return (
     <DialogPrimitive.Root
@@ -186,7 +190,7 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
           <div>
             <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">World compendium</p>
             <h2 id="world-compendium-title" className="mbs-1 text-xl font-semibold">{props.world.name}</h2>
-            <p className="mbs-1 text-sm text-muted">Global characters with world-specific context, local NPCs, places, lore, and opening scenes.</p>
+            <p className="mbs-1 text-sm text-muted">This world’s characters, places, lore, and opening scenes.</p>
           </div>
           <button
             type="button"
@@ -205,172 +209,82 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
         )}
         {actionError && <p className="text-sm text-muted" role="alert">{actionError}</p>}
 
-        <DialogPrimitive.Root
-          open={castEditor !== null}
-          onOpenChange={(open) => { if (!open) setCastEditor(null); }}
-        >
-          <section className="grid gap-4 rounded-xl border border-border bg-raised p-5" aria-labelledby="world-cast-title">
-            <header className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Reusable characters</p>
-                <h3 id="world-cast-title" className="mbs-1 text-lg font-semibold">World cast</h3>
-                <p className="mbs-1 max-w-2xl text-sm leading-6 text-muted">Add global characters to this world and give them context that does not change their shared definition.</p>
-              </div>
-              <DialogPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  className="pressable inline-flex min-h-10 flex-none items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
-                  onClick={(event) => {
-                    castOpenerRef.current = event.currentTarget;
-                    openAddWorldCharacter();
-                  }}
-                  disabled={availableCharacters.length === 0}
-                >
-                  <Plus className="size-4" aria-hidden="true" />Add character
-                </button>
-              </DialogPrimitive.Trigger>
-            </header>
+        <section className="grid gap-4 rounded-xl border border-border bg-raised p-5" aria-labelledby="world-characters-title">
+          <header className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Reusable characters</p>
+              <h3 id="world-characters-title" className="mbs-1 text-lg font-semibold">World characters</h3>
+              <p className="mbs-1 max-w-2xl text-sm leading-6 text-muted">Characters that belong to {props.world.name}. New campaigns can cast them alongside your library characters.</p>
+            </div>
+            <button
+              type="button"
+              className="pressable inline-flex min-h-10 flex-none items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+              onClick={(event) => {
+                characterOpenerRef.current = event.currentTarget;
+                setCharacterEditor({ character: null });
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />Create character
+            </button>
+          </header>
 
-            {castLibrary.refreshError && (
-              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
-                {castLibrary.refreshError}
-                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldCharacters(props.world.id)}>Retry</button>
-              </p>
-            )}
-            {castLibrary.items === undefined ? (
-              castLibrary.loadError ? (
-                <section className="grid justify-items-start gap-3 rounded-lg border border-border p-5" role="alert">
-                  <p className="text-sm text-muted">{castLibrary.loadError}</p>
-                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldCharacters(props.world.id)}>Try again</button>
-                </section>
-              ) : <p className="text-sm text-muted" role="status">Loading this world’s cast…</p>
-            ) : worldCast.length === 0 ? (
-              <p className="text-sm text-muted">No global characters have been added to this world yet.</p>
-            ) : (
-              <ul className="grid list-none gap-4 p-0">
-                {worldCast.map((association) => {
-                  const character = charactersById.get(association.character_id) ?? association.character;
-                  return (
-                    <li key={association.character_id} className="grid gap-3 border-bs border-border pbs-4 first:border-0 first:pbs-0">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h4 className="font-semibold">{character.name}</h4>
-                            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted">Global character</span>
-                          </div>
-                          <p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{character.description}</p>
-                        </div>
-                        <div className="flex flex-none items-center gap-1">
-                          <DialogPrimitive.Trigger asChild>
-                            <button
-                              type="button"
-                              className="pressable hit-44 inline-flex size-9 items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
-                              aria-label={`Edit ${character.name} world context`}
-                              onClick={(event) => {
-                                castOpenerRef.current = event.currentTarget;
-                                openEditWorldCharacter(association);
-                              }}
-                              disabled={castSaving || deletingCharacterId !== null}
-                            ><Pencil className="size-4" aria-hidden="true" /></button>
-                          </DialogPrimitive.Trigger>
-                          <button
-                            type="button"
-                            className="pressable hit-44 inline-flex size-9 items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
-                            aria-label={`Remove ${character.name} from ${props.world.name} cast`}
-                            onClick={() => { void removeWorldCharacter(association); }}
-                            disabled={castSaving || deletingCharacterId !== null}
-                          ><Trash2 className="size-4" aria-hidden="true" /></button>
-                        </div>
-                      </div>
-                      <p className="whitespace-pre-wrap rounded-lg bg-surface p-3 text-sm leading-6 text-muted">
-                        <span className="font-medium text-foreground">World-specific context:</span> {association.context || "None yet."}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            {charactersLibrary.items === undefined ? (
-              charactersLibrary.loadError ? (
-                <div className="grid justify-items-start gap-2" role="alert">
-                  <p className="text-sm text-muted">{charactersLibrary.loadError}</p>
-                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshCharacters()}>Try again</button>
-                </div>
-              ) : <p className="text-sm text-muted" role="status">Loading the global character library…</p>
-            ) : charactersLibrary.items.length === 0 ? (
-              <p className="text-sm text-muted">Create a global character before adding someone to this world. <Link className="font-medium text-accent underline underline-offset-2" to="/characters">Open Characters</Link></p>
-            ) : availableCharacters.length === 0 ? (
-              <p className="text-sm text-muted">All global characters are already in this world’s cast. <Link className="font-medium text-accent underline underline-offset-2" to="/characters">Create another character</Link></p>
-            ) : null}
-          </section>
-
-          {castEditor && (
-            <DialogPrimitive.Portal>
-              <DialogPrimitive.Overlay className="backdrop fixed inset-0 z-30 bg-black/40" />
-              <DialogPrimitive.Content
-                onCloseAutoFocus={(event) => {
-                  event.preventDefault();
-                  if (castOpenerRef.current?.isConnected) castOpenerRef.current.focus();
-                  castOpenerRef.current = null;
-                }}
-                className="fixed inset-0 z-40 flex flex-col bg-surface md:inset-bs-1/2 md:inset-be-auto md:start-1/2 md:max-h-[min(90dvh,48rem)] md:w-[min(calc(100vw-2rem),56rem)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-xl"
-              >
-                <form className="flex [min-block-size:0] flex-1 flex-col" onSubmit={submitWorldCharacter}>
-                  <header className="flex-none border-be border-border p-5 md:px-7 md:py-6">
-                    <DialogPrimitive.Title className="text-xl font-semibold">
-                      {castEditor.mode === "add" ? "Add character to world cast" : `Edit ${selectedCastCharacter?.name ?? "character"} in this world`}
-                    </DialogPrimitive.Title>
-                    <DialogPrimitive.Description className="mbs-1 text-sm text-muted">The character definition stays global; these notes apply only to {props.world.name}.</DialogPrimitive.Description>
-                  </header>
-                  <div className="chat-scroll min-block-size-0 flex-1 p-5 md:p-7">
-                    <div className="grid gap-6">
-                      {castEditor.mode === "add" ? (
-                        <label className="grid gap-2 text-sm font-medium">
-                          Global character
-                          <select
-                            required
-                            value={castEditor.characterId}
-                            onChange={(event) => setCastEditor({ ...castEditor, characterId: event.target.value })}
-                            className="min-h-11 rounded-lg border border-border bg-background px-3 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                          >
-                            <option value="" disabled>Choose a character</option>
-                            {availableCharacters.map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
-                          </select>
-                        </label>
-                      ) : (
-                        <div className="grid gap-1 rounded-lg border border-border bg-background p-4">
-                          <p className="text-sm font-medium">Global character</p>
-                          <p className="text-lg font-semibold">{selectedCastCharacter?.name}</p>
-                          <p className="text-sm text-muted">The character remains reusable in every world.</p>
-                        </div>
-                      )}
-                      <label className="grid gap-2 text-sm font-medium">
-                        World-specific context <span className="font-normal text-muted">Optional</span>
-                        <textarea
-                          rows={10}
-                          value={castEditor.context}
-                          onChange={(event) => setCastEditor({ ...castEditor, context: event.target.value })}
-                          placeholder="How this character fits into this world, their local role, or what they know here."
-                          className="min-h-64 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                        />
-                      </label>
-                      {castSaveError && <p className="text-sm text-muted" role="alert">{castSaveError}</p>}
+          {charactersLibrary.refreshError && (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+              {charactersLibrary.refreshError}
+              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldCharacters(props.world.id)}>Retry</button>
+            </p>
+          )}
+          {charactersLibrary.items === undefined ? (
+            charactersLibrary.loadError ? (
+              <section className="grid justify-items-start gap-3 rounded-lg border border-border p-5" role="alert">
+                <p className="text-sm text-muted">{charactersLibrary.loadError}</p>
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldCharacters(props.world.id)}>Try again</button>
+              </section>
+            ) : <p className="text-sm text-muted" role="status">Loading this world’s characters…</p>
+          ) : worldCharacters.length === 0 ? (
+            <p className="text-sm text-muted">No characters in this world yet.</p>
+          ) : (
+            <ul className="grid list-none gap-4 p-0">
+              {worldCharacters.map((character) => (
+                <li key={character.id} className="flex flex-wrap items-start justify-between gap-3 border-bs border-border pbs-4 first:border-0 first:pbs-0">
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <Avatar name={character.name} imageId={character.avatar_id} className="size-11 text-base" />
+                    <div className="min-w-0">
+                      <h4 className="font-semibold">{character.name}</h4>
+                      <p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{character.description}</p>
                     </div>
                   </div>
-                  <footer className="flex flex-none flex-wrap justify-end gap-2 border-bs border-border p-4 [padding-block-end:calc(1rem+env(safe-area-inset-bottom,0px))] md:p-5">
-                    <DialogPrimitive.Close asChild>
-                      <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 py-2 text-sm text-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={castSaving}>Cancel</button>
-                    </DialogPrimitive.Close>
-                    <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:cursor-wait disabled:opacity-60 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={castSaving || (castEditor.mode === "add" && !availableCharacters.length)}>
-                      {castSaving ? "Saving…" : castEditor.mode === "add" ? "Add to world cast" : "Save context"}
-                    </button>
-                  </footer>
-                </form>
-              </DialogPrimitive.Content>
-            </DialogPrimitive.Portal>
+                  <div className="flex flex-none items-center gap-1">
+                    <button
+                      type="button"
+                      className="pressable hit-44 inline-flex size-9 items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+                      aria-label={`Edit ${character.name}`}
+                      onClick={(event) => {
+                        characterOpenerRef.current = event.currentTarget;
+                        setCharacterEditor({ character });
+                      }}
+                      disabled={busyCharacterId !== null}
+                    ><Pencil className="size-4" aria-hidden="true" /></button>
+                    <button
+                      type="button"
+                      className="pressable hit-44 inline-flex size-9 items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+                      aria-label={`Copy ${character.name} to your library`}
+                      onClick={() => { void copyCharacter(character); }}
+                      disabled={busyCharacterId !== null}
+                    ><Copy className="size-4" aria-hidden="true" /></button>
+                    <button
+                      type="button"
+                      className="pressable hit-44 inline-flex size-9 items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+                      aria-label={`Delete ${character.name}`}
+                      onClick={() => { void removeWorldCharacter(character); }}
+                      disabled={busyCharacterId !== null}
+                    ><Trash2 className="size-4" aria-hidden="true" /></button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
-        </DialogPrimitive.Root>
+        </section>
 
         {loading ? (
           <p className="py-4 text-sm text-muted" role="status">Loading compendium…</p>
@@ -443,6 +357,52 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
             })}
           </div>
         )}
+
+        <section className="grid gap-4 rounded-xl border border-border bg-raised p-5" aria-labelledby="world-stats-title">
+          <header className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Reusable meters</p>
+              <h3 id="world-stats-title" className="mbs-1 text-lg font-semibold">Stats</h3>
+              <p className="mbs-1 max-w-2xl text-sm leading-6 text-muted">Scales that campaigns of {props.world.name} can track for characters and relationships. Bank stats can only be imported when a world is created.</p>
+            </div>
+            <button
+              type="button"
+              className="pressable inline-flex min-h-10 flex-none items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+              onClick={(event) => {
+                statOpenerRef.current = event.currentTarget;
+                setStatEditor({ stat: null });
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />Add stat
+            </button>
+          </header>
+
+          {statsLibrary.refreshError && (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+              {statsLibrary.refreshError}
+              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldStats(props.world.id)}>Retry</button>
+            </p>
+          )}
+          {actionError && <p className="text-sm text-muted" role="alert">{actionError}</p>}
+
+          {statsLibrary.items === undefined ? (
+            statsLibrary.loadError ? (
+              <section className="grid justify-items-start gap-3 rounded-lg border border-border p-5" role="alert">
+                <p className="text-sm text-muted">{statsLibrary.loadError}</p>
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldStats(props.world.id)}>Try again</button>
+              </section>
+            ) : <p className="text-sm text-muted" role="status">Loading this world's stats…</p>
+          ) : worldStats.length === 0 ? (
+            <p className="text-sm text-muted">No stats in this world yet.</p>
+          ) : (
+            <StatDefinitionList
+              stats={worldStats}
+              busy={deletingStatId !== null}
+              onDelete={(stat) => { void removeStat(stat); }}
+              onEdit={(stat) => setStatEditor({ stat })}
+            />
+          )}
+        </section>
       </section>
 
       {editor && (
@@ -499,6 +459,34 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
             </form>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
+      )}
+
+      {characterEditor && (
+        <CharacterProfileDialog
+          character={characterEditor.character}
+          title={characterEditor.character ? "Edit world character" : "Create a world character"}
+          description={`This character belongs to ${props.world.name}.`}
+          openerRef={characterOpenerRef}
+          onCreate={(input) => createWorldCharacter(props.world.id, input)}
+          onUpdate={updateCharacter}
+          onAvatarUpload={uploadCharacterAvatar}
+          onAvatarRemove={deleteCharacterAvatar}
+          onSaved={(saved, previousId) => applyWorldCharacterSaved(props.world.id, saved, previousId)}
+          onClose={() => setCharacterEditor(null)}
+        />
+      )}
+
+      {statEditor && (
+        <StatDefinitionEditor
+          stat={statEditor.stat}
+          title={statEditor.stat ? `Edit ${statEditor.stat.label}` : "Add a world stat"}
+          description={statEditor.stat ? "Changes apply to new campaigns; existing campaigns keep their copy." : `This stat belongs to ${props.world.name}.`}
+          openerRef={statOpenerRef}
+          onCreate={(input) => createWorldStat(props.world.id, input)}
+          onUpdate={updateStat}
+          onSaved={(saved, previousId) => applyWorldStatSaved(props.world.id, saved, previousId)}
+          onClose={() => setStatEditor(null)}
+        />
       )}
     </DialogPrimitive.Root>
   );

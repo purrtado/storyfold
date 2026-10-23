@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Campaign, Message, Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Message, type Session } from "../../shared/domain";
 import { openDatabase } from "../db";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
@@ -39,7 +39,7 @@ afterAll(async () => {
   if (configDirectory) await removeDirectory(configDirectory);
 });
 
-async function seedStory(serverBase: string): Promise<{ campaign: Campaign; session: Session }> {
+async function seedStory(serverBase: string): Promise<{ campaign: Campaign; session: Session; protagonistId: string }> {
   const world = await fetch(`${serverBase}/api/worlds`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
@@ -72,7 +72,8 @@ async function seedStory(serverBase: string): Promise<{ campaign: Campaign; sess
     }),
   });
   expect(created.status).toBe(201);
-  return (await created.json()) as { campaign: Campaign; session: Session };
+  const createdPayload = (await created.json()) as { campaign: Campaign; session: Session };
+  return { ...createdPayload, protagonistId: protagonistPayload.character.id };
 }
 
 function postMessage(serverBase: string, sessionId: string, body: unknown): Promise<Response> {
@@ -312,12 +313,12 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
 }
 
 describe("campaign creation", () => {
-  test("binds snapshots and the opening session in one committed response", async () => {
+  test("binds characters and the opening session in one committed response", async () => {
     const { campaign, session } = await seedStory(base.url);
     expect(campaign.world_snapshot.name).toBe("Veloria");
-    expect(campaign.protagonist_snapshot.name).toBe("Sable");
-    expect(campaign.protagonist_snapshot.speaking_style).toBe("Clipped, sarcastic.");
-    expect(campaign.cast).toEqual([]);
+    expect(protagonistOf(campaign).name).toBe("Sable");
+    expect(protagonistOf(campaign).speaking_style).toBe("Clipped, sarcastic.");
+    expect(campaign.characters).toHaveLength(1);
     expect(campaign.active_session_id).toBe(session.id);
     expect(session.campaign_id).toBe(campaign.id);
     const detail = await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() });
@@ -340,14 +341,14 @@ describe("campaign creation", () => {
     );
   });
 
-  test("captured snapshots never change when the library is edited", async () => {
-    const { campaign } = await seedStory(base.url);
+  test("captured characters and world never change when the library is edited", async () => {
+    const { campaign, protagonistId } = await seedStory(base.url);
     await fetch(`${base.url}/api/worlds/${campaign.world_id}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Veloria Prime", setting_brief: "Rewritten entirely." }),
     });
-    await fetch(`${base.url}/api/characters/${campaign.protagonist_id}`, {
+    await fetch(`${base.url}/api/characters/${protagonistId}`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ name: "Sable II", description: "Rewritten." }),
@@ -357,19 +358,19 @@ describe("campaign creation", () => {
     ).json()) as { campaign: Campaign };
     expect(detail.campaign.world_snapshot.name).toBe("Veloria");
     expect(detail.campaign.world_snapshot.setting_brief).toBe("A rain-soaked harbor kingdom of rival ferries.");
-    expect(detail.campaign.protagonist_snapshot.name).toBe("Sable");
+    expect(protagonistOf(detail.campaign).name).toBe("Sable");
     const fresh = await fetch(`${base.url}/api/campaigns`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({
         world_id: campaign.world_id,
-        protagonist_id: campaign.protagonist_id,
+        protagonist_id: protagonistId,
         starting_situation: "New morning.",
       }),
     });
     const freshBody = (await fresh.json()) as { campaign: Campaign };
     expect(freshBody.campaign.world_snapshot.name).toBe("Veloria Prime");
-    expect(freshBody.campaign.protagonist_snapshot.name).toBe("Sable II");
+    expect(protagonistOf(freshBody.campaign).name).toBe("Sable II");
   });
 });
 

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
-import type { Campaign, Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import { forkFromMessage, type TranscriptMessage } from "../lib/storyApi";
 import type { Generation } from "../lib/useChatGeneration";
@@ -269,8 +269,8 @@ function MessageRow(props: {
       <p className="text-sm text-muted">
         Copies the story up to this message into a new campaign.{" "}
         {props.activeSession
-          ? "Notes and relationships are copied as they are now."
-          : "Notes and relationships are restored as they were when this session closed."}
+          ? "Characters, stats, notes, and relationships are copied as they are now."
+          : "Characters, stats, notes, and relationships are restored as they were when this session closed."}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -755,7 +755,7 @@ export function CampaignPlay(props: {
                     session_id: props.sessionId,
                     position: messages.length + 1,
                     role: "user",
-                    speaker_name: props.campaign.protagonist_snapshot.name,
+                    speaker_name: protagonistOf(props.campaign).name,
                     content: sending.playerText ?? "",
                     status: "complete",
                     created_at: "",
@@ -826,8 +826,8 @@ export function CampaignPlay(props: {
               defaultModel={provider?.model ?? null}
               models={provider?.models ?? []}
               modelCatalogState={modelCatalogState}
-              placeholder={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
-              inputLabel={`What does ${props.campaign.protagonist_snapshot.name} do or say?`}
+              placeholder={`What does ${protagonistOf(props.campaign).name} do or say?`}
+              inputLabel={`What does ${protagonistOf(props.campaign).name} do or say?`}
               sendLabel="Send action"
               busy={busy || !hasCompletedNarration}
               showStop={stopAvailable}

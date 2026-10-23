@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCampaign, createCharacter, createWorld } from "../library";
+import { createCampaign, createCharacter, createWorld, parseCharacterInput } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
 
 const NOW = "2026-01-01T00:00:00Z";
@@ -24,7 +24,7 @@ function seedLibrary(): { worldId: string; protagonistId: string } {
     setting_brief: "Brief.",
     suggested_starting_situation: "",
   });
-  const protagonist = createCharacter(db, { name: "Invariant Hero", description: "Desc." });
+  const protagonist = createCharacter(db, parseCharacterInput({ name: "Invariant Hero", description: "Desc." }));
   return { worldId: world.id, protagonistId: protagonist.id };
 }
 
@@ -83,10 +83,9 @@ describe("schema invariants", () => {
     const steal = db.transaction(() => {
       db.query(
         `INSERT INTO campaigns
-           (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
-            cast_snapshot, starting_situation, active_session_id, created_at, updated_at)
-         VALUES ('c2', 'Thief', ?, ?, '{"entries":[]}', '{}', '[]', 'Two.', ?, ?, ?)`,
-      ).run(worldId, protagonistId, session.id, NOW, NOW);
+           (id, name, world_id, world_snapshot, starting_situation, active_session_id, created_at, updated_at)
+         VALUES ('c2', 'Thief', ?, '{"name":"W","setting_brief":"b","entries":[]}', 'Two.', ?, ?, ?)`,
+      ).run(worldId, session.id, NOW, NOW);
     });
     expect(() => steal.immediate()).toThrow(/FOREIGN KEY/);
     expect(campaignRows().map((row) => row.id)).toEqual([campaign.id]);
@@ -206,15 +205,14 @@ describe("schema invariants", () => {
   });
 
   test("snapshot columns refuse non-JSON text", () => {
-    const { worldId, protagonistId } = seedLibrary();
+    const { worldId } = seedLibrary();
     const sessionId = crypto.randomUUID();
     const broken = db.transaction(() => {
       db.query(
         `INSERT INTO campaigns
-           (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
-            cast_snapshot, starting_situation, active_session_id, created_at, updated_at)
-         VALUES (?, 'Broken', ?, ?, 'not json', '{"id":"c","name":"P","description":"d","appearance":"","personality":"","background":"","baseline_motivations":"","speaking_style":"","world_context":""}', '[]', 'x', ?, ?, ?)`,
-      ).run(crypto.randomUUID(), worldId, protagonistId, sessionId, NOW, NOW);
+           (id, name, world_id, world_snapshot, starting_situation, active_session_id, created_at, updated_at)
+         VALUES (?, 'Broken', ?, 'not json', 'x', ?, ?, ?)`,
+      ).run(crypto.randomUUID(), worldId, sessionId, NOW, NOW);
       db.query(
         "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'T', ?, ?)",
       ).run(sessionId, db.query<{ id: string }, []>("SELECT id FROM campaigns WHERE name = 'Broken'").get()!.id, NOW, NOW);

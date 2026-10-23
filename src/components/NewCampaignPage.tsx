@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
-import type { Campaign, Character, CharacterSnapshot, Session, WorldEntry } from "../../shared/domain";
+import type { Campaign, Character, Session, StatValues, WorldEntry } from "../../shared/domain";
+import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import { createCampaign } from "../lib/storyApi";
 import {
   ensureWorldCharacters,
   ensureWorldEntries,
+  ensureWorldStats,
   refreshCharacters,
   refreshWorldCharacters,
   refreshWorldEntries,
@@ -14,6 +16,7 @@ import {
   useCharacters,
   useWorldCharacters,
   useWorldEntries,
+  useWorldStats,
   useWorlds,
 } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
@@ -28,32 +31,10 @@ type Draft = {
   selectedCharacterIds: string[];
 };
 
-const characterFieldLabels = [
-  ["appearance", "Appearance"],
-  ["personality", "Personality"],
-  ["background", "Background"],
-  ["baseline_motivations", "Baseline motivations"],
-  ["speaking_style", "Speaking style"],
-] as const;
-
-function toSnapshot(character: Character, worldContext: string): CharacterSnapshot {
-  return {
-    id: character.id,
-    name: character.name,
-    description: character.description,
-    appearance: character.appearance,
-    personality: character.personality,
-    background: character.background,
-    baseline_motivations: character.baseline_motivations,
-    speaking_style: character.speaking_style,
-    world_context: worldContext,
-    avatar_id: character.avatar_id,
-  };
-}
+const profileDetailFields = CHARACTER_PROFILE_FIELDS.filter(({ required }) => !required);
 
 function CharacterPreview(props: {
   character: Character;
-  worldContext: string;
   source: string;
 }) {
   return (
@@ -66,14 +47,11 @@ function CharacterPreview(props: {
         <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted">{props.source}</span>
       </div>
       <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{props.character.description}</p>
-      {characterFieldLabels.filter(([field]) => props.character[field]).map(([field, label]) => (
-        <p key={field} className="whitespace-pre-wrap text-sm leading-6 text-muted">
-          <span className="font-medium text-foreground">{label}:</span> {props.character[field]}
+      {profileDetailFields.filter(({ key }) => props.character[key]).map(({ key, label }) => (
+        <p key={key} className="whitespace-pre-wrap text-sm leading-6 text-muted">
+          <span className="font-medium text-foreground">{label}:</span> {props.character[key]}
         </p>
       ))}
-      <p className="whitespace-pre-wrap text-sm leading-6 text-muted">
-        <span className="font-medium text-foreground">World-specific context:</span> {props.worldContext || "None"}
-      </p>
     </article>
   );
 }
@@ -106,6 +84,7 @@ export function NewCampaignPage(props: {
     refreshCharacters();
   }, []);
 
+  const worldCharactersState = useWorldCharacters(draft.worldId);
   useEffect(() => {
     if (worlds === undefined || characters === undefined) return;
     const worldSeedChanged = props.selectedWorldId !== seededWorldId.current;
@@ -118,12 +97,14 @@ export function NewCampaignPage(props: {
         : worlds.some((item) => item.id === current.worldId)
           ? current.worldId
           : worlds[0]?.id ?? "";
+      const worldChanged = nextWorldId !== current.worldId;
+      const pickable = (id: string) => characters.some((item) => item.id === id)
+        || (!worldChanged && (worldCharactersState.items ?? []).some((item) => item.id === id));
       const nextProtagonistId = characterSeedChanged && characters.some((item) => item.id === props.selectedCharacterId)
         ? props.selectedCharacterId!
-        : characters.some((item) => item.id === current.protagonistId)
+        : pickable(current.protagonistId)
           ? current.protagonistId
-          : characters[0]?.id ?? "";
-      const worldChanged = nextWorldId !== current.worldId;
+          : characters[0]?.id ?? (worldChanged ? undefined : worldCharactersState.items?.[0]?.id) ?? "";
       const situationChanged = worldChanged && !current.situationEdited;
       return {
         ...current,
@@ -137,33 +118,46 @@ export function NewCampaignPage(props: {
           : current.selectedCharacterIds.filter((id) => id !== nextProtagonistId),
       };
     });
-  }, [worlds, characters, props.selectedCharacterId, props.selectedWorldId]);
+  }, [worlds, characters, worldCharactersState.items, props.selectedCharacterId, props.selectedWorldId]);
 
   const world = worlds?.find((item) => item.id === draft.worldId);
-  const protagonist = characters?.find((item) => item.id === draft.protagonistId);
   const worldEntriesState = useWorldEntries(draft.worldId);
-  const worldCharactersState = useWorldCharacters(draft.worldId);
+  const worldStatsState = useWorldStats(draft.worldId);
   useEffect(() => {
     if (!draft.worldId) return;
     ensureWorldEntries(draft.worldId);
     ensureWorldCharacters(draft.worldId);
+    ensureWorldStats(draft.worldId);
   }, [draft.worldId]);
+
+  const worldStats = worldStatsState.items ?? [];
+  // What the server builds at creation: the protagonist opted in at defaults, the cast off.
+  const protagonistStats: StatValues = Object.fromEntries(
+    worldStats
+      .filter((stat) => stat.applies_to === "character")
+      .map((stat) => [stat.id, stat.default_value]),
+  );
 
   const worldEntries = useMemo(
     () => [...(worldEntriesState.items ?? [])].sort((a, b) =>
       a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
     [worldEntriesState.items],
   );
+  const libraryCharacters = characters ?? [];
   const worldCharacters = worldCharactersState.items ?? [];
-  const worldCharacterById = useMemo(
-    () => new Map(worldCharacters.map((association) => [association.character_id, association])),
-    [worldCharacters],
+  const protagonist = libraryCharacters.find((item) => item.id === draft.protagonistId)
+    ?? worldCharacters.find((item) => item.id === draft.protagonistId);
+  const characterById = useMemo(
+    () => new Map([...libraryCharacters, ...worldCharacters].map((character) => [character.id, character])),
+    [characters, worldCharacters],
   );
-  const selectedCharacters = (characters ?? []).filter((character) =>
-    character.id !== draft.protagonistId && draft.selectedCharacterIds.includes(character.id),
-  );
+  const scopeOf = (character: Character) =>
+    worldCharacters.some(({ id }) => id === character.id) ? "World" : "Library";
+  const selectedCharacters = draft.selectedCharacterIds
+    .map((id) => characterById.get(id))
+    .filter((character): character is Character => character !== undefined && character.id !== draft.protagonistId);
   const compendiumEntries = worldEntries.filter((entry) => entry.kind !== "scene");
-  const openingPromptLength = world && protagonist && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined
+  const openingPromptLength = world && protagonist && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
     ? narratorSystemPrompt({
       world: {
         name: world.name,
@@ -171,9 +165,9 @@ export function NewCampaignPage(props: {
         entries: compendiumEntries,
       },
       starting_situation: draft.startingSituation.trim(),
-      protagonist: toSnapshot(protagonist, worldCharacterById.get(protagonist.id)?.context ?? ""),
-      cast: selectedCharacters.map((character) =>
-        toSnapshot(character, worldCharacterById.get(character.id)?.context ?? "")),
+      stats: worldStats,
+      protagonist: { ...protagonist, stats_enabled: true, stats: protagonistStats },
+      cast: selectedCharacters.map((character) => ({ ...character, stats_enabled: false, stats: {} })),
       notes: [],
       relationships: [],
       handoff: null,
@@ -186,6 +180,7 @@ export function NewCampaignPage(props: {
     && protagonist
     && worldEntriesState.items !== undefined
     && worldCharactersState.items !== undefined
+    && worldStatsState.items !== undefined
     && !starting
     && !overLimit,
   );
@@ -198,6 +193,9 @@ export function NewCampaignPage(props: {
     setDraft((current) => ({
       ...current,
       worldId: id,
+      protagonistId: characters?.some((item) => item.id === current.protagonistId)
+        ? current.protagonistId
+        : characters?.[0]?.id ?? "",
       selectedCharacterIds: [],
       startingSituation: current.situationEdited
         ? current.startingSituation
@@ -237,7 +235,7 @@ export function NewCampaignPage(props: {
   };
 
   const toggleAllCharacters = () => {
-    const availableIds = (characters ?? [])
+    const availableIds = [...libraryCharacters, ...worldCharacters]
       .filter((character) => character.id !== draft.protagonistId)
       .map((character) => character.id);
     const allSelected = availableIds.length > 0 && availableIds.every((id) => draft.selectedCharacterIds.includes(id));
@@ -272,7 +270,8 @@ export function NewCampaignPage(props: {
 
   const castReady = worldCharactersState.items !== undefined;
   const entriesReady = worldEntriesState.items !== undefined;
-  const selectableCharacters = (characters ?? []).filter((character) => character.id !== draft.protagonistId);
+  const selectableCharacters = [...libraryCharacters, ...worldCharacters]
+    .filter((character) => character.id !== draft.protagonistId);
   const selectedCharacterCount = selectedCharacters.length;
 
   return (
@@ -283,7 +282,7 @@ export function NewCampaignPage(props: {
           <header className="mbe-7 max-w-2xl">
             <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">A new playthrough</p>
             <h1 className="mbs-2 text-3xl font-semibold tracking-tight">Where will your story begin?</h1>
-            <p className="mbs-2 text-sm leading-6 text-muted">Choose a world and who you’ll play, then add narrator-controlled characters. All of the world’s locations, lore, and local NPCs come with the campaign.</p>
+            <p className="mbs-2 text-sm leading-6 text-muted">Choose a world and who you’ll play, then add narrator-controlled characters. All of the world’s locations and lore come with the campaign.</p>
           </header>
 
           {coldLoadError ? (
@@ -309,13 +308,13 @@ export function NewCampaignPage(props: {
                   >Retry</button>
                 </p>
               )}
-              {worlds.length === 0 || characters.length === 0 ? (
+              {worlds.length === 0 || characters.length + worldCharacters.length === 0 ? (
                 <section className="grid justify-items-start gap-4 rounded-xl border border-dashed border-border p-6">
                   <h2 className="text-lg font-semibold">Your story needs a world and a character</h2>
                   <p className="text-sm text-muted">Create both definitions before starting a campaign.</p>
                   <div className="flex flex-wrap gap-2">
                     {worlds.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/worlds">Create a world</Link>}
-                    {characters.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/characters">Create a character</Link>}
+                    {characters.length + worldCharacters.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/characters">Create a character</Link>}
                   </div>
                 </section>
               ) : (
@@ -332,7 +331,7 @@ export function NewCampaignPage(props: {
                     <section className="grid content-start gap-3 rounded-xl border border-border bg-raised p-5">
                       <label htmlFor="campaign-protagonist" className="flex items-center gap-2 text-sm font-semibold"><UserRound className="size-4 text-accent" aria-hidden="true" />Playing as</label>
                       <select id="campaign-protagonist" className="min-h-11 rounded-lg border border-border bg-background px-3 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" value={draft.protagonistId} onChange={(event) => chooseProtagonist(event.target.value)}>
-                        {characters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                        {[...libraryCharacters, ...worldCharacters].map((item) => <option key={item.id} value={item.id}>{item.name} ({scopeOf(item)})</option>)}
                       </select>
                       {protagonist && <div className="rounded-lg bg-surface p-3"><p className="flex items-center gap-2 font-medium"><Avatar name={protagonist.name} imageId={protagonist.avatar_id} className="size-6 text-[0.625rem]" />{protagonist.name}</p><p className="mbs-1 whitespace-pre-wrap text-sm leading-6 text-muted">{protagonist.description}</p></div>}
                       <Link className="text-sm font-medium text-accent underline underline-offset-2" to="/characters">Browse or edit characters</Link>
@@ -342,7 +341,7 @@ export function NewCampaignPage(props: {
                   <section className="grid gap-5 rounded-xl border border-border bg-raised p-5" aria-labelledby="campaign-context-title">
                     <header>
                       <h2 id="campaign-context-title" className="text-lg font-semibold">Choose campaign context</h2>
-                      <p className="mbs-1 text-sm leading-6 text-muted">The protagonist is captured once. Select narrator-controlled characters from your library; the world’s local NPCs, locations, and lore are included automatically.</p>
+                      <p className="mbs-1 text-sm leading-6 text-muted">The protagonist is captured once. Select narrator-controlled characters from your library or this world’s own characters; the world’s locations and lore are included automatically.</p>
                     </header>
 
                     <section className="grid gap-3 rounded-lg border border-border p-4" aria-labelledby="campaign-cast-title">
@@ -350,7 +349,7 @@ export function NewCampaignPage(props: {
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
                             <h3 id="campaign-cast-title" className="font-semibold">Narrator-controlled cast</h3>
-                            <p className="mbs-1 text-sm text-muted">{selectedCharacterCount} selected. World cast notes are included when available; library-only characters have no world-specific context.</p>
+                            <p className="mbs-1 text-sm text-muted">{selectedCharacterCount} selected.</p>
                           </div>
                           <button
                             type="button"
@@ -368,14 +367,13 @@ export function NewCampaignPage(props: {
                             <p className="text-sm text-muted">{worldCharactersState.loadError}</p>
                             <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldCharacters(draft.worldId)}>Try again</button>
                           </div>
-                        ) : <p className="text-sm text-muted" role="status">Loading this world’s cast context…</p>
+                        ) : <p className="text-sm text-muted" role="status">Loading this world’s characters…</p>
                       ) : selectableCharacters.length === 0 ? (
                         <p className="text-sm text-muted">No other characters are available to add to the cast.</p>
                       ) : (
                         <ul className="grid list-none gap-3 p-0">
-                          {characters.map((character) => {
+                          {[...libraryCharacters, ...worldCharacters].map((character) => {
                             const isProtagonist = character.id === draft.protagonistId;
-                            const association = worldCharacterById.get(character.id);
                             return (
                               <li key={character.id} className="border-bs border-border pbs-3 first:border-0 first:pbs-0">
                                 <label className={`flex items-start gap-3 text-sm ${isProtagonist ? "text-muted" : ""}`}>
@@ -390,10 +388,9 @@ export function NewCampaignPage(props: {
                                     <span className="flex flex-wrap items-center gap-2">
                                       <Avatar name={character.name} imageId={character.avatar_id} className="size-6 text-[0.625rem]" />
                                       <span className="font-medium text-foreground">{character.name}</span>
-                                      <span className="rounded-full border border-border px-2 py-0.5 text-xs">{isProtagonist ? "Playing as" : association ? "World cast" : "Global library"}</span>
+                                      <span className="rounded-full border border-border px-2 py-0.5 text-xs">{isProtagonist ? "Playing as" : scopeOf(character)}</span>
                                     </span>
                                     <span className="whitespace-pre-wrap leading-6">{character.description}</span>
-                                    {!isProtagonist && association?.context && <span className="whitespace-pre-wrap leading-6 text-muted"><span className="font-medium">World context:</span> {association.context}</span>}
                                   </span>
                                 </label>
                               </li>
@@ -437,10 +434,9 @@ export function NewCampaignPage(props: {
                       </div>
                       {protagonist ? (
                         <div className="grid gap-3">
-                          <p className="text-sm text-muted">Includes all {compendiumEntries.length} world entries: locations, lore, and local NPCs.</p>
+                          <p className="text-sm text-muted">Includes all {compendiumEntries.length} world entries: locations and lore.</p>
                           <CharacterPreview
                             character={protagonist}
-                            worldContext={worldCharacterById.get(protagonist.id)?.context ?? ""}
                             source="Playing as · included once"
                           />
                           {selectedCharacters.length > 0 && (
@@ -449,8 +445,7 @@ export function NewCampaignPage(props: {
                                 <li key={character.id}>
                                   <CharacterPreview
                                     character={character}
-                                    worldContext={worldCharacterById.get(character.id)?.context ?? ""}
-                                    source={worldCharacterById.has(character.id) ? "Narrator cast · world cast" : "Narrator cast · global library"}
+                                    source={`Narrator cast · ${scopeOf(character)}`}
                                   />
                                 </li>
                               ))}

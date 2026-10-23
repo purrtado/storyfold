@@ -1,30 +1,30 @@
-import type { RelationshipDocument } from "../../shared/domain";
+import type { StatFields, StatValues } from "../../shared/domain";
 
-type Stat = RelationshipDocument["stats"][string];
-
-function percent(value: number, stat: Stat) {
+function percent(value: number, stat: Pick<StatFields, "min" | "max">) {
   const span = stat.max - stat.min;
   if (span <= 0) return 0;
   return Math.min(100, Math.max(0, ((value - stat.min) / span) * 100));
 }
 
-/** One named range as a meter; ranges spanning zero fill outward from the zero mark. */
-export function StatBar(props: { name: string; stat: Stat }) {
+/** One stat as a meter; ranges spanning zero fill outward from the zero mark. */
+export function StatBar(props: { stat: StatFields; value: number }) {
   const { stat } = props;
   const signed = stat.min < 0 && stat.max > 0;
   const origin = signed ? percent(0, stat) : 0;
-  const end = percent(stat.value, stat);
+  const end = percent(props.value, stat);
   const start = Math.min(origin, end);
   const width = Math.abs(end - origin);
-  const negative = signed && stat.value < 0;
-  const display = signed && stat.value > 0 ? `+${stat.value}` : `${stat.value}`;
+  const scale = `${stat.low_label} → ${stat.high_label}`;
   return (
-    <div className="grid grid-cols-[minmax(0,6rem)_1fr_2.5rem] items-center gap-x-3 text-xs">
-      <span className="truncate text-muted capitalize">{props.name}</span>
+    <div
+      className="grid grid-cols-[minmax(0,6rem)_1fr_3rem] items-center gap-x-3 text-xs"
+      title={`${scale} (${stat.min} to ${stat.max})`}
+    >
+      <span className="truncate text-muted capitalize">{stat.label}</span>
       <div
         role="meter"
-        aria-label={props.name}
-        aria-valuenow={stat.value}
+        aria-label={`${stat.label} (${scale})`}
+        aria-valuenow={props.value}
         aria-valuemin={stat.min}
         aria-valuemax={stat.max}
         className="relative block-2 overflow-clip rounded-full bg-border"
@@ -34,22 +34,24 @@ export function StatBar(props: { name: string; stat: Stat }) {
           style={{
             insetInlineStart: `${start}%`,
             inlineSize: `${width}%`,
-            background: negative ? "var(--stat-negative)" : "var(--accent)",
+            background: `var(--stat-${stat.color})`,
           }}
         />
         {signed && <span className="absolute inset-bs-0 inset-be-0 inline-px bg-muted" style={{ insetInlineStart: `${origin}%` }} />}
       </div>
-      <span className="text-end font-medium tabular-nums">{display}</span>
+      <span className="text-end font-medium tabular-nums">{props.value}/{stat.max}</span>
     </div>
   );
 }
 
-export function StatBars(props: { stats: RelationshipDocument["stats"] }) {
-  const entries = Object.entries(props.stats);
-  if (entries.length === 0) return null;
+/** Bars in definition order; a stat without a value falls back to its default. */
+export function StatBars(props: { stats: ReadonlyArray<StatFields & { id: string }>; values: StatValues }) {
+  if (props.stats.length === 0) return null;
   return (
     <div className="grid gap-1.5">
-      {entries.map(([name, stat]) => <StatBar key={name} name={name} stat={stat} />)}
+      {props.stats.map((stat) => (
+        <StatBar key={stat.id} stat={stat} value={props.values[stat.id] ?? stat.default_value} />
+      ))}
     </div>
   );
 }

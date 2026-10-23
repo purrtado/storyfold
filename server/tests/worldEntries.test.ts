@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
-import type { Campaign, Character, CharacterSnapshot, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { CharacterPrompt } from "../../shared/narration";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import {
   headersWith,
@@ -92,12 +93,12 @@ describe("world entries API", () => {
     const world = await createWorld({ name: "Ember Coast", setting_brief: "Tide-locked cliffs.", suggested_starting_situation: "" });
 
     const created = await createEntry(world.id, {
-      kind: "  local_npc  ",
+      kind: "  location  ",
       name: "  Maera  ",
       description: "Keeper of the drowned lighthouse.",
     });
     expect(created.status).toBe(201);
-    expect(created.entry?.kind).toBe("local_npc");
+    expect(created.entry?.kind).toBe("location");
     expect(created.entry?.name).toBe("Maera");
     expect(created.entry?.world_id).toBe(world.id);
     expect(Number.isNaN(Date.parse(created.entry!.created_at))).toBe(false);
@@ -121,7 +122,7 @@ describe("world entries API", () => {
     const patched = await patchEntry(world.id, created.entry!.id, { name: "Maera Vane" });
     expect(patched.status).toBe(200);
     expect(patched.entry?.name).toBe("Maera Vane");
-    expect(patched.entry?.kind).toBe("local_npc");
+    expect(patched.entry?.kind).toBe("location");
     expect(patched.entry?.description).toBe("Keeper of the drowned lighthouse.");
     expect(patched.entry?.created_at).toBe(created.entry?.created_at);
 
@@ -155,8 +156,8 @@ describe("world entries API", () => {
     for (const body of [
       {},
       { kind: "monster", name: "n", description: "d" },
-      { kind: "local_npc", name: "  ", description: "d" },
-      { kind: "local_npc", name: "n", description: "" },
+      { kind: "lore", name: "  ", description: "d" },
+      { kind: "lore", name: "n", description: "" },
     ]) {
       const result = await createEntry(world.id, body);
       expect(result.status).toBe(400);
@@ -192,7 +193,7 @@ describe("campaign entry capture", () => {
     const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom.", suggested_starting_situation: "" });
     const other = await createWorld({ name: "Other", setting_brief: "o", suggested_starting_situation: "" });
     const protagonist = await createCharacter({ name: "Sable", description: "A cynical ferrywoman spy." });
-    const character = (await createEntry(world.id, { kind: "local_npc", name: "Maera", description: "Lighthouse keeper." })).entry!;
+    const character = (await createEntry(world.id, { kind: "location", name: "Maera", description: "Lighthouse keeper." })).entry!;
     const location = (await createEntry(world.id, { kind: "location", name: "Drowned Pier", description: "Sagging boards." })).entry!;
     await createEntry(world.id, { kind: "scene", name: "Dawn docking", description: "The ferry scrapes ashore." });
     const lore = (await createEntry(world.id, { kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." })).entry!;
@@ -205,7 +206,7 @@ describe("campaign entry capture", () => {
     });
     expect(created.status).toBe(201);
     expect(created.campaign?.world_snapshot.entries).toEqual([
-      { id: character.id, kind: "local_npc", name: "Maera", description: "Lighthouse keeper." },
+      { id: character.id, kind: "location", name: "Maera", description: "Lighthouse keeper." },
       { id: location.id, kind: "location", name: "Drowned Pier", description: "Sagging boards." },
       { id: lore.id, kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." },
     ]);
@@ -217,13 +218,14 @@ describe("opening prompt budget", () => {
   test("creation is refused exactly when the opening prompt passes the budget", async () => {
     const world = await createWorld({ name: "Boundary", setting_brief: "b".repeat(100_000), suggested_starting_situation: "" });
     await createEntry(world.id, { kind: "lore", name: "Compact", description: "l".repeat(40_000) });
-    const snapshot = (description: string): CharacterSnapshot => ({
-      id: "p", name: "P", description, appearance: "", personality: "", background: "",
-      baseline_motivations: "", speaking_style: "", world_context: "", avatar_id: null,
+    const snapshot = (description: string): CharacterPrompt => ({
+      name: "P", description, appearance: "", personality: "", background: "",
+      baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
     const base = narratorSystemPrompt({
       world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000) }] },
       starting_situation: "s",
+      stats: [],
       protagonist: snapshot("d"),
       cast: [],
       notes: [],
@@ -262,7 +264,7 @@ describe("captured grounding is immutable and drives narration", () => {
     const characterPayload = (await characterResponse.json()) as { character: Character };
     const protagonist = characterPayload.character;
     const entryResponse = await post("POST", `/api/worlds/${world.id}/entries`, {
-      kind: "local_npc",
+      kind: "lore",
       name: "Maera the Lighthouse Keeper",
       description: "Keeps the drowned light burning.",
     });
@@ -281,7 +283,7 @@ describe("captured grounding is immutable and drives narration", () => {
     expect((await post("DELETE", `/api/worlds/${world.id}/entries/${character.id}`)).status).toBe(200);
 
     const captured: WorldEntrySnapshot[] = [
-      { id: character.id, kind: "local_npc", name: "Maera the Lighthouse Keeper", description: "Keeps the drowned light burning." },
+      { id: character.id, kind: "lore", name: "Maera the Lighthouse Keeper", description: "Keeps the drowned light burning." },
     ];
     const detailResponse = await post("GET", `/api/campaigns/${created.id}`);
     const detail = (await detailResponse.json()) as { campaign: Campaign };
@@ -301,7 +303,7 @@ describe("captured grounding is immutable and drives narration", () => {
 
     const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom.", suggested_starting_situation: "" });
     const protagonist = await createCharacter({ name: "Sable", description: "A cynical ferrywoman spy." });
-    const kept = (await createEntry(world.id, { kind: "local_npc", name: "Maera", description: "Lighthouse keeper." })).entry!;
+    const kept = (await createEntry(world.id, { kind: "lore", name: "Maera", description: "Lighthouse keeper." })).entry!;
 
     const created = await createCampaign({
       world_id: world.id,
