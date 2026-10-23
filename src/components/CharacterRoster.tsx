@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
-import { Link } from "react-router-dom";
-import type { Campaign, CharacterSnapshot, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session } from "../../shared/domain";
+import type { Campaign, CharacterSnapshot, Relationship, RelationshipDocument, RelationshipSubject } from "../../shared/domain";
 import { Avatar } from "./Avatar";
 import { StatBars } from "./StatBar";
 import { createRequestEpoch } from "../lib/requestEpoch";
 import {
-  ApiError,
   createCampaignRelationship,
-  createCampaignRelationshipEvent,
   createCampaignRelationshipSubject,
   deleteCampaignRelationship,
-  fetchCampaignRelationshipEvents,
   fetchCampaignRelationships,
   updateCampaignRelationship,
 } from "../lib/storyApi";
@@ -136,17 +132,13 @@ function subjectLabel(subject: RelationshipSubject | undefined, id: string) {
   return subject ? `${subjectKindLabel(subject.kind)}: ${subject.name}` : `Unavailable reference (${id})`;
 }
 
-function sortEvents(events: RelationshipEvent[]) {
-  return [...events].sort((a, b) => a.created_at.localeCompare(b.created_at));
-}
-
-function CurrentState({ document, label = "Current state" }: { document: RelationshipDocument; label?: string }) {
+function CurrentState({ document }: { document: RelationshipDocument }) {
   const hasContent = document.how_met.trim() || document.status.trim()
     || Object.keys(document.stats).length > 0 || document.known_facts.length > 0 || document.sections.length > 0;
   return (
-    <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-label={label}>
+    <section className="grid gap-2 rounded-xl border border-border bg-surface p-3" aria-label="Current state">
       <div>
-        <p className="text-xs font-semibold tracking-wide text-muted uppercase">{label}</p>
+        <p className="text-xs font-semibold tracking-wide text-muted uppercase">Current state</p>
         <p className="text-xs text-muted">Latest editable snapshot</p>
       </div>
       {!hasContent ? <p className="text-sm text-muted">No current details recorded.</p> : (
@@ -186,14 +178,10 @@ function CurrentState({ document, label = "Current state" }: { document: Relatio
 }
 
 function RelationshipRow(props: {
-  campaignId: string;
   relationship: Relationship;
   sourceLabel: string;
   targetLabel: string;
-  sessions: Session[];
-  activeSessionTitle?: string;
   editing: boolean;
-  showLatest: boolean;
   editor?: ReactNode;
   onEdit: () => void;
   onDelete: () => void;
@@ -206,53 +194,11 @@ function RelationshipRow(props: {
   summaryRef: (element: HTMLElement | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [events, setEvents] = useState<RelationshipEvent[] | null>(null);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [eventsError, setEventsError] = useState("");
-  const [eventDescription, setEventDescription] = useState("");
-  const [eventBusy, setEventBusy] = useState(false);
-  const [eventError, setEventError] = useState("");
-
-  const loadEvents = useCallback(async () => {
-    setEventsLoading(true);
-    setEventsError("");
-    try {
-      const loaded = await fetchCampaignRelationshipEvents(props.campaignId, props.relationship.id);
-      setEvents(sortEvents(loaded));
-    } catch (error) {
-      setEventsError(errorMessage(error, "Could not load relationship history."));
-    } finally {
-      setEventsLoading(false);
-    }
-  }, [props.campaignId, props.relationship.id]);
 
   const reveal = (event: SyntheticEvent<HTMLDetailsElement>) => {
-    if (!event.currentTarget.open) return;
-    setExpanded(true);
-    if (events === null && !eventsLoading) void loadEvents();
+    if (event.currentTarget.open) setExpanded(true);
   };
 
-  const appendEvent = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const description = eventDescription.trim();
-    if (!description) {
-      setEventError("Describe the event before adding it.");
-      return;
-    }
-    setEventBusy(true);
-    setEventError("");
-    try {
-      const created = await createCampaignRelationshipEvent(props.campaignId, props.relationship.id, description);
-      setEvents((current) => sortEvents([...(current ?? []), created]));
-      setEventDescription("");
-    } catch (error) {
-      setEventError(errorMessage(error, "Could not add relationship event."));
-    } finally {
-      setEventBusy(false);
-    }
-  };
-
-  const sessionById = new Map(props.sessions.map((session) => [session.id, session]));
   const relationshipTitle = `${props.sourceLabel} → ${props.targetLabel}`;
   const document = props.relationship.document;
   const status = document.status.trim();
@@ -281,7 +227,7 @@ function RelationshipRow(props: {
         </summary>
         {expanded && (
           <div className="grid min-w-0 gap-3 border-bs border-border p-3">
-            <p className="text-xs text-muted">Updated {formatDate(props.relationship.updated_at)} · Revision {props.relationship.revision}</p>
+            <p className="text-xs text-muted">Updated {formatDate(props.relationship.updated_at)}</p>
             {props.editor}
             {!props.editing && (
               <div className="flex flex-wrap gap-2">
@@ -299,54 +245,7 @@ function RelationshipRow(props: {
                 </div>
               </div>
             )}
-            {(!props.editing || props.showLatest) && (
-              <CurrentState
-                document={document}
-                label={props.editing ? `Latest saved version (revision ${props.relationship.revision})` : undefined}
-              />
-            )}
-            <section className="grid gap-3 rounded-xl border border-border p-3" aria-label="Historical relationship events">
-              <div>
-                <p className="text-xs font-semibold tracking-wide text-muted uppercase">History</p>
-                <h4 className="font-medium">Historical events</h4>
-                <p className="text-xs text-muted">Events are dated and tied to the session where they were recorded; they do not replace current state.</p>
-              </div>
-              {eventsError && (
-                <div className="grid gap-2" role="alert">
-                  <p className="text-sm text-muted">{eventsError}</p>
-                  <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadEvents(); }} disabled={eventsLoading}>Retry history</button>
-                </div>
-              )}
-              {eventsLoading && events === null ? <p className="text-sm text-muted" role="status">Loading history…</p> : null}
-              {events && events.length === 0 && !eventsLoading && <p className="text-sm text-muted">No historical events recorded.</p>}
-              {events && events.length > 0 && (
-                <ol className="grid list-none gap-2 p-0">
-                  {events.map((entry) => {
-                    const session = sessionById.get(entry.session_id);
-                    const sessionLabel = session?.title ?? `Session ${entry.session_id.slice(0, 8)}`;
-                    return (
-                      <li key={entry.id} className="grid gap-1 border-is-2 border-border pis-3">
-                        <p className="whitespace-pre-wrap break-words text-sm">{entry.description}</p>
-                        <p className="text-xs text-muted">
-                          <time dateTime={entry.created_at}>{formatDate(entry.created_at)}</time>
-                          {" · "}
-                          <Link className="text-accent underline underline-offset-2" to={`/sessions/${encodeURIComponent(entry.session_id)}`}>{sessionLabel}</Link>
-                        </p>
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-              <form className="grid gap-2 border-bs border-border pbs-3" onSubmit={(event) => { void appendEvent(event); }}>
-                <label className="grid gap-1 text-sm">
-                  Append historical event
-                  <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={eventDescription} onChange={(event) => setEventDescription(event.target.value)} required />
-                </label>
-                <p className="text-xs text-muted">New events attach to the campaign&apos;s active session{props.activeSessionTitle ? ` (“${props.activeSessionTitle}”)` : ""}, even when viewing an archived session.</p>
-                {eventError && <p className="text-sm text-muted" role="alert">{eventError}</p>}
-                <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={eventBusy || props.actionsDisabled || (eventsLoading && events === null)}>{eventBusy ? "Adding…" : "Add dated event"}</button>
-              </form>
-            </section>
+            {!props.editing && <CurrentState document={document} />}
           </div>
         )}
       </details>
@@ -468,7 +367,6 @@ function CharacterCard(props: {
 
 export function CharacterRoster(props: {
   campaign: Campaign;
-  sessions: Session[];
   openId: string | null;
   onOpenChange: (id: string | null) => void;
 }) {
@@ -484,15 +382,10 @@ export function CharacterRoster(props: {
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
   const [draft, setDraft] = useState<RelationshipDocument>(emptyDocument);
-  const [draftRevision, setDraftRevision] = useState<number | null>(null);
-  const [showLatest, setShowLatest] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [editorError, setEditorError] = useState("");
-  const [editorNotice, setEditorNotice] = useState("");
-  const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [refreshingLatest, setRefreshingLatest] = useState(false);
   const [subjectBusy, setSubjectBusy] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
@@ -548,7 +441,6 @@ export function CharacterRoster(props: {
   const rosterNames = useMemo(() => new Map(roster.map((entry) => [entry.id, entry.name])), [roster]);
   const cardOwner = (relationship: Relationship) =>
     relationship.source_id === protagonistId ? relationship.target_id : relationship.source_id;
-  const activeSessionTitle = props.sessions.find((session) => session.id === props.campaign.active_session_id)?.title;
   const rawDocument = advanced ? parseDocumentJson(rawJson) : null;
   const rawValidationError = rawDocument?.error ?? "";
   const serializedDraftLength = advanced
@@ -559,16 +451,12 @@ export function CharacterRoster(props: {
     setCreatingRelationship(false);
     setCreateCardId(null);
     setEditingId(null);
-    setShowLatest(false);
     setSourceId("");
     setTargetId("");
     setDraft(emptyDocument());
-    setDraftRevision(null);
     setAdvanced(false);
     setRawJson("");
     setEditorError("");
-    setEditorNotice("");
-    setConflict(false);
   }, []);
   useEffect(() => {
     setSubjects([]);
@@ -581,7 +469,6 @@ export function CharacterRoster(props: {
     setDeleteBusyId(null);
     setDeleteErrors({});
     setSaving(false);
-    setRefreshingLatest(false);
     setPendingFocusId(null);
     summaryRefs.current.clear();
     resetEditor();
@@ -593,17 +480,13 @@ export function CharacterRoster(props: {
     setCreatingRelationship(true);
     setCreateCardId(cardId);
     setEditingId(null);
-    setShowLatest(false);
     setSourceId(subjectMap.has(cardId) ? cardId : "");
     setTargetId(cardId === protagonistId ? "" : protagonistId);
     const nextDocument = emptyDocument();
     setDraft(nextDocument);
-    setDraftRevision(null);
     setAdvanced(false);
     setRawJson(JSON.stringify(nextDocument, null, 2));
     setEditorError("");
-    setEditorNotice("");
-    setConflict(false);
   };
 
   const openEdit = (relationship: Relationship) => {
@@ -611,21 +494,16 @@ export function CharacterRoster(props: {
     setCreatingRelationship(false);
     setConfirmDeleteId(null);
     setEditingId(relationship.id);
-    setShowLatest(false);
     setSourceId(relationship.source_id);
     setTargetId(relationship.target_id);
     setDraft(nextDocument);
-    setDraftRevision(relationship.revision);
     setAdvanced(false);
     setRawJson(JSON.stringify(nextDocument, null, 2));
     setEditorError("");
-    setEditorNotice("");
-    setConflict(false);
   };
 
   const changeAdvancedMode = () => {
     setEditorError("");
-    setEditorNotice("");
     if (advanced) {
       const parsed = parseDocumentJson(rawJson);
       if (parsed.error || !parsed.document) {
@@ -669,8 +547,6 @@ export function CharacterRoster(props: {
     }
     setSaving(true);
     setEditorError("");
-    setEditorNotice("");
-    setConflict(false);
     try {
       if (creatingRelationship) {
         const created = await createCampaignRelationship(props.campaign.id, {
@@ -680,52 +556,16 @@ export function CharacterRoster(props: {
         });
         setRelationships((current) => [...current, created]);
         setPendingFocusId(created.id);
-      } else if (editingId && draftRevision !== null) {
-        const updated = await updateCampaignRelationship(props.campaign.id, editingId, {
-          document,
-          revision: draftRevision,
-        });
+      } else if (editingId) {
+        const updated = await updateCampaignRelationship(props.campaign.id, editingId, { document });
         setRelationships((current) => current.map((relationship) => relationship.id === updated.id ? updated : relationship));
         setPendingFocusId(editingId);
       }
       resetEditor();
     } catch (error) {
-      if (error instanceof ApiError && error.code === "conflict") {
-        setConflict(true);
-        setShowLatest(false);
-        setEditorError("This relationship changed on the server. Your draft is still here; check the latest version before saving again.");
-      } else {
-        setEditorError(errorMessage(error, "Could not save relationship."));
-      }
+      setEditorError(errorMessage(error, "Could not save relationship."));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const refreshLatestKeepingDraft = async () => {
-    if (!editingId) return;
-    setRefreshingLatest(true);
-    setEditorError("");
-    setShowLatest(false);
-    setEditorNotice("");
-    try {
-      const loaded = await fetchCampaignRelationships(props.campaign.id);
-      setSubjects(loaded.subjects);
-      setRelationships(loaded.relationships);
-      const latest = loaded.relationships.find((relationship) => relationship.id === editingId);
-      if (latest) {
-        setShowLatest(true);
-        setDraftRevision(latest.revision);
-        setConflict(false);
-        setEditorNotice("Latest saved version is shown below; your draft was preserved. Review both before saving again.");
-      } else {
-        setConflict(false);
-        setEditorError("This relationship was deleted on the server. Your draft is preserved, but it can no longer update that record.");
-      }
-    } catch (error) {
-      setEditorError(errorMessage(error, "Could not load the latest relationship."));
-    } finally {
-      setRefreshingLatest(false);
     }
   };
 
@@ -801,7 +641,7 @@ export function CharacterRoster(props: {
     <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
       <div>
         <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit current relationship state"}</h4>
-        <p className="text-xs text-muted">The direction is explicit; editing changes the current document, not its historical events.</p>
+        <p className="text-xs text-muted">The direction is explicit; editing changes the current relationship document.</p>
       </div>
       {creatingRelationship ? (
         <div className="grid gap-3">
@@ -930,14 +770,8 @@ export function CharacterRoster(props: {
       )}
 
       {editorError && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="alert">{editorError}</p>}
-      {editorNotice && <p className="rounded-lg border border-border p-3 text-sm text-muted" role="status">{editorNotice}</p>}
-      {conflict && (
-        <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void refreshLatestKeepingDraft(); }} disabled={refreshingLatest}>
-          {refreshingLatest ? "Checking latest…" : "Load latest version, keep my draft"}
-        </button>
-      )}
       <div className="flex flex-wrap gap-2">
-        <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving || refreshingLatest}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save current state"}</button>
+        <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving}>{saving ? "Saving…" : creatingRelationship ? "Create relationship" : "Save current state"}</button>
         <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={resetEditor} disabled={saving}>Cancel</button>
       </div>
     </form>
@@ -960,18 +794,14 @@ export function CharacterRoster(props: {
 
   const rosterIds = new Set(roster.map((entry) => entry.id));
   const orphans = relationships.filter((relationship) => !rosterIds.has(cardOwner(relationship)));
-  const actionsDisabled = saving || refreshingLatest || deleteBusyId !== null;
+  const actionsDisabled = saving || deleteBusyId !== null;
   const relationshipRow = (relationship: Relationship) => (
     <RelationshipRow
       key={relationship.id}
-      campaignId={props.campaign.id}
       relationship={relationship}
       sourceLabel={relationship.source_id === protagonistId ? "You" : rosterNames.get(relationship.source_id) ?? subjectLabel(subjectMap.get(relationship.source_id), relationship.source_id)}
       targetLabel={relationship.target_id === protagonistId ? "You" : rosterNames.get(relationship.target_id) ?? subjectLabel(subjectMap.get(relationship.target_id), relationship.target_id)}
-      sessions={props.sessions}
-      activeSessionTitle={activeSessionTitle}
       editing={editingId === relationship.id}
-      showLatest={editingId === relationship.id && showLatest}
       editor={editingId === relationship.id ? editorForm : undefined}
       onEdit={() => openEdit(relationship)}
       onDelete={() => { setConfirmDeleteId(relationship.id); setDeleteErrors((current) => ({ ...current, [relationship.id]: "" })); }}
@@ -1057,7 +887,7 @@ export function CharacterRoster(props: {
           </label>
           <p className="text-xs text-muted">Adds a campaign-only character you can track relationships with.</p>
           {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
-          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading || refreshingLatest}>{subjectBusy ? "Adding…" : "Add character"}</button>
+          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading}>{subjectBusy ? "Adding…" : "Add character"}</button>
         </form>
       </details>
     </section>

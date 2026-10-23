@@ -10,8 +10,6 @@ function journal(id: string, created_at: string, updated_at: string): CampaignSt
     campaign_id: "campaign-1",
     category: "journal",
     subject: id,
-    subject_kind: null,
-    subject_id: null,
     content: id,
     created_at,
     updated_at,

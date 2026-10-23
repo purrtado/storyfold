@@ -46,7 +46,6 @@ export default function App() {
   const sessionLoads = useRef(new Set<string>());
   const messageRequestSequence = useRef(new Map<string, number>());
   const sessionTransitionVersion = useRef(0);
-  const automaticOpeningAttempts = useRef(new Set<string>());
   const { preference, setPreference } = useTheme();
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -149,7 +148,6 @@ export default function App() {
     });
     try {
       const loaded = await fetchSessionMessages(sessionId);
-      if (loaded.length > 0) automaticOpeningAttempts.current.add(sessionId);
       if (messageRequestSequence.current.get(sessionId) === requestId) {
         setMessages((current) => ({ ...current, [sessionId]: loaded }));
       }
@@ -205,13 +203,6 @@ export default function App() {
     },
     onSettled: refreshSessionMessages,
   });
-
-  const openAutomatically = useCallback((sessionId: string, model?: string) => {
-    if (automaticOpeningAttempts.current.has(sessionId)) return false;
-    if (!open(sessionId, model)) return false;
-    automaticOpeningAttempts.current.add(sessionId);
-    return true;
-  }, [open]);
 
   const selectVariant = useCallback(async (sessionId: string, messageId: string) => {
     try {
@@ -389,8 +380,7 @@ export default function App() {
               onDraftChange={changeDraft}
               onModelChange={changeModel}
               onSend={send}
-              onOpen={openAutomatically}
-              onRetryOpening={open}
+              onOpen={open}
               onRegenerate={regenerate}
               onSelectVariant={selectVariant}
               onEditMessage={editMessage}

@@ -163,7 +163,7 @@ export function CampaignPanel(props: {
         </div>
         <div ref={scrollerRef} className="chat-scroll flex-1 min-block-0 p-3">
           <div role="tabpanel" id="campaign-panel-characters" aria-labelledby="campaign-tab-characters" hidden={tab !== "characters"}>
-            <CharacterRoster campaign={props.campaign} sessions={sessions} openId={openCharacterId} onOpenChange={setOpenCharacterId} />
+            <CharacterRoster campaign={props.campaign} openId={openCharacterId} onOpenChange={setOpenCharacterId} />
           </div>
           <div role="tabpanel" id="campaign-panel-notes" aria-labelledby="campaign-tab-notes" hidden={tab !== "notes"} className="[&>section]:mbs-0 [&>section]:border-0 [&>section]:pbs-0">
             {mounted.notes && <CampaignStateSection campaign={props.campaign} active={props.active} />}

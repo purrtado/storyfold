@@ -1,4 +1,4 @@
-import type { Campaign, CampaignStateItem, Character, Message, Relationship, RelationshipDocument, RelationshipEvent, RelationshipSubject, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignStateItem, Character, Message, Relationship, RelationshipDocument, RelationshipSubject, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
 export type CampaignRelationships = {
   subjects: RelationshipSubject[];
@@ -32,7 +32,7 @@ export async function createCampaignRelationship(
 export async function updateCampaignRelationship(
   campaignId: string,
   relationshipId: string,
-  input: { document: RelationshipDocument; revision: number },
+  input: { document: RelationshipDocument },
 ): Promise<Relationship> {
   return (await request<{ relationship: Relationship }>(
     `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
@@ -50,29 +50,9 @@ export async function deleteCampaignRelationship(
   );
 }
 
-export async function fetchCampaignRelationshipEvents(
-  campaignId: string,
-  relationshipId: string,
-): Promise<RelationshipEvent[]> {
-  return (await request<{ events: RelationshipEvent[] }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
-  )).events;
-}
-
-export async function createCampaignRelationshipEvent(
-  campaignId: string,
-  relationshipId: string,
-  description: string,
-): Promise<RelationshipEvent> {
-  return (await request<{ event: RelationshipEvent }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}/events`,
-    { method: "POST", body: JSON.stringify({ description }) },
-  )).event;
-}
-
 export type CampaignStateInput = Pick<
   CampaignStateItem,
-  "category" | "subject" | "subject_kind" | "subject_id" | "content"
+  "category" | "subject" | "content"
 >;
 
 export async function fetchCampaignState(campaignId: string): Promise<CampaignStateItem[]> {
@@ -123,13 +103,6 @@ export async function createCampaignSession(
     `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
     { method: "POST", body: JSON.stringify(input) },
   )).session;
-}
-
-export async function forkSession(sessionId: string, name: string): Promise<CampaignFork> {
-  return request<CampaignFork>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  });
 }
 
 export async function forkFromMessage(
@@ -370,7 +343,6 @@ export type CampaignInput = {
   cast_character_ids?: string[];
   starting_situation?: string;
   name?: string;
-  entry_ids?: string[];
 };
 
 export async function fetchCampaigns(): Promise<Campaign[]> {
