@@ -172,6 +172,8 @@ export interface Campaign {
   stats: CampaignStat[];
   starting_situation: string;
   active_session_id: string;
+  /** True once any session of this campaign has a message; bank stat import is offered only before that. */
+  story_begun: boolean;
   /** Set when this campaign was forked from a message of another campaign's session. */
   forked_from_campaign_id: string | null;
   forked_from_session_id: string | null;

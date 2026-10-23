@@ -30,7 +30,7 @@ import {
   protagonistOf,
 } from "../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
-import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
+import { campaignFromRow, hasAnyMessage, newId, nowIso, type CampaignRecord } from "./db";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -834,12 +834,12 @@ export function listCampaigns(db: Database): Campaign[] {
   return db
     .query<CampaignRecord, []>("SELECT * FROM campaigns ORDER BY created_at DESC, id DESC")
     .all()
-    .map((row) => campaignFromRow(row, listCampaignCharacters(db, row.id), listCampaignStats(db, row.id)));
+    .map((row) => campaignFromRow(db, row, listCampaignCharacters(db, row.id), listCampaignStats(db, row.id)));
 }
 
 export function getCampaign(db: Database, id: string): Campaign | null {
   const row = db.query<CampaignRecord, [string]>("SELECT * FROM campaigns WHERE id = ?").get(id);
-  return row ? campaignFromRow(row, listCampaignCharacters(db, id), listCampaignStats(db, id)) : null;
+  return row ? campaignFromRow(db, row, listCampaignCharacters(db, id), listCampaignStats(db, id)) : null;
 }
 
 /** Null covers both an unknown campaign and a character of another campaign. */
@@ -907,11 +907,7 @@ export function updateCampaignCharacter(
 
 /** A campaign is fresh until its story has any message; bank import is offered only then. */
 function isFreshCampaign(db: Database, campaignId: string): boolean {
-  return (
-    db
-      .query("SELECT 1 FROM messages m JOIN sessions s ON s.id = m.session_id WHERE s.campaign_id = ? LIMIT 1")
-      .get(campaignId) === null
-  );
+  return !hasAnyMessage(db, campaignId);
 }
 
 /** Rewrites every value map that carries `stat`: opted-in characters, or every relationship. */

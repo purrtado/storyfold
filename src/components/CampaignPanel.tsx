@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ChevronRight, NotebookPen, PanelRightClose, PanelRightOpen, Plus, ScrollText, Users, X } from "lucide-react";
 import { STAT_KINDS, type Campaign, type CampaignStat, type Session, type StatDefinition } from "../../shared/domain";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
@@ -6,7 +6,6 @@ import { createRequestEpoch } from "../lib/requestEpoch";
 import {
   createCampaignStat,
   deleteCampaignStat,
-  fetchSessionMessages,
   fetchStats,
   importCampaignStats,
   updateCampaignStat,
@@ -77,16 +76,6 @@ export function CampaignStatsSection(props: {
   const [bankError, setBankError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
-  // null while unknown; failures hide the importer (the server refuses late imports anyway).
-  const [begun, setBegun] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    const requestId = requestEpoch.next();
-    fetchSessionMessages(props.campaign.active_session_id)
-      .then((messages) => { if (requestEpoch.isCurrent(requestId)) setBegun(messages.length > 0); })
-      .catch(() => { if (requestEpoch.isCurrent(requestId)) setBegun(true); });
-    return () => requestEpoch.invalidate();
-  }, [props.campaign.active_session_id, requestEpoch]);
 
   const sync = () => {
     void props.onSyncSession(props.sessionId).catch(() => {});
@@ -146,7 +135,7 @@ export function CampaignStatsSection(props: {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted">Scales the narrator tracks for characters and relationships.</p>
         <div className="flex flex-wrap gap-2">
-          {begun === false && (
+          {!props.campaign.story_begun && (
             <button
               type="button"
               className="pressable inline-flex min-h-10 flex-none items-center rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"

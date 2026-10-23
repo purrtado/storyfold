@@ -337,6 +337,20 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries: entries as WorldEntrySnapshot[] };
 }
 
-export function campaignFromRow(row: CampaignRecord, characters: CampaignCharacter[], stats: CampaignStat[]): Campaign {
-  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters, stats };
+export function campaignFromRow(
+  db: Database,
+  row: CampaignRecord,
+  characters: CampaignCharacter[],
+  stats: CampaignStat[],
+): Campaign {
+  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters, stats, story_begun: hasAnyMessage(db, row.id) };
+}
+
+/** True once any session of the campaign has a message. */
+export function hasAnyMessage(db: Database, campaignId: string): boolean {
+  return (
+    db
+      .query("SELECT 1 FROM messages m JOIN sessions s ON s.id = m.session_id WHERE s.campaign_id = ? LIMIT 1")
+      .get(campaignId) !== null
+  );
 }

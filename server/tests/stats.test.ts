@@ -458,6 +458,7 @@ describe("bank import", () => {
     });
     expect(created.status).toBe(201);
     const campaignPayload = (await created.json()) as { campaign: Campaign; session: Session };
+    expect(campaignPayload.campaign.story_begun).toBe(false);
 
     const bankPayload = (await (await json("GET", "/api/stats")).json()) as { stats: StatDefinition[] };
     const health = bankPayload.stats.find((stat) => stat.label === "Health")!;
@@ -477,6 +478,7 @@ describe("bank import", () => {
     });
 
     await completeTurn(base.url, campaignPayload.session.id, "I set sail.", "The harbor opens.");
+    expect((await fetchCampaign(campaignPayload.campaign.id)).story_begun).toBe(true);
     const refused = await json("POST", `/api/campaigns/${campaignPayload.campaign.id}/stats/import`, {
       stat_ids: [health.id],
     });
