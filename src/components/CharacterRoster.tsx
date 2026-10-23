@@ -668,7 +668,7 @@ export function CharacterRoster(props: {
       <div className="flex flex-wrap items-center justify-between gap-2 border-bs border-border pbs-3">
         <div>
           <p className="text-sm font-medium">Document editor</p>
-          <p className="text-xs text-muted">Serialized document: {serializedDraftLength.toLocaleString()} characters. The server enforces a 16,000-character campaign-wide limit; drafts are never truncated.</p>
+          <p className="text-xs text-muted">Serialized document: {serializedDraftLength.toLocaleString()} characters. Relationships count toward the narration budget; drafts are never truncated.</p>
         </div>
         <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={changeAdvancedMode}>
           {advanced ? "Use native editor" : "Advanced JSON"}
