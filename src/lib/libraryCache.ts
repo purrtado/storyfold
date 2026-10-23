@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Character, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Character, World, WorldEntry } from "../../shared/domain";
 import { fetchCharacters, fetchWorlds, listWorldCharacters, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
@@ -113,7 +113,7 @@ export const worldsLibrary = createLibrary<World>(fetchWorlds, "Could not load w
 export const charactersLibrary = createLibrary<Character>(fetchCharacters, "Could not load characters.");
 
 const worldEntryLibraries = new Map<string, Library<WorldEntry>>();
-const worldCharacterLibraries = new Map<string, Library<WorldCharacter>>();
+const worldCharacterLibraries = new Map<string, Library<Character>>();
 
 function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
   let library = worldEntryLibraries.get(worldId);
@@ -127,13 +127,12 @@ function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
   return library;
 }
 
-function getWorldCharactersLibrary(worldId: string): Library<WorldCharacter> {
+function getWorldCharactersLibrary(worldId: string): Library<Character> {
   let library = worldCharacterLibraries.get(worldId);
   if (!library) {
     library = createLibrary(
       () => listWorldCharacters(worldId),
-      "Could not load this world's cast.",
-      (item) => item.character_id,
+      "Could not load this world's characters.",
     );
     worldCharacterLibraries.set(worldId, library);
   }
@@ -167,7 +166,7 @@ export function applyWorldEntryRemoved(worldId: string, entryId: string): void {
   getWorldEntriesLibrary(worldId).applyRemoved(entryId);
 }
 
-export function useWorldCharacters(worldId: string): LibrarySnapshot<WorldCharacter> {
+export function useWorldCharacters(worldId: string): LibrarySnapshot<Character> {
   const library = getWorldCharactersLibrary(worldId);
   return useSyncExternalStore(library.subscribe, library.getSnapshot);
 }
@@ -184,7 +183,7 @@ export function refreshWorldCharacters(worldId: string): void {
 
 export function applyWorldCharacterSaved(
   worldId: string,
-  saved: WorldCharacter,
+  saved: Character,
   previousId?: string,
 ): void {
   getWorldCharactersLibrary(worldId).applySaved(saved, previousId);

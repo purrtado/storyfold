@@ -1,0 +1,193 @@
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { useState, type FormEvent, type RefObject } from "react";
+import type { CharacterProfile } from "../../shared/domain";
+import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
+import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CharacterInput, type CharacterPatch } from "../lib/storyApi";
+import { Avatar } from "./Avatar";
+
+const optionalFields = CHARACTER_PROFILE_FIELDS.filter(({ required }) => !required);
+
+function emptyProfileInput(): CharacterInput {
+  return Object.fromEntries(CHARACTER_PROFILE_FIELDS.map(({ key }) => [key, ""])) as CharacterInput;
+}
+
+function profileInputOf(character: CharacterProfile): CharacterInput {
+  return Object.fromEntries(CHARACTER_PROFILE_FIELDS.map(({ key }) => [key, character[key]])) as CharacterInput;
+}
+
+/**
+ * The one character form: every profile field plus picture upload. Library,
+ * world, and campaign callers supply their own save callbacks; this component
+ * only owns the form state and error handling.
+ */
+export function CharacterProfileDialog<T extends CharacterProfile & { id: string; avatar_id: string | null }>(props: {
+  character: T | null;
+  title: string;
+  description: string;
+  openerRef?: RefObject<HTMLElement | null>;
+  onCreate: (input: CharacterInput) => Promise<T>;
+  onUpdate: (id: string, input: CharacterPatch) => Promise<T>;
+  onAvatarUpload: (id: string, file: File) => Promise<T>;
+  onAvatarRemove: (id: string) => Promise<T>;
+  onSaved: (saved: T, previousId: string | undefined) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState<CharacterInput>(() =>
+    props.character ? profileInputOf(props.character) : emptyProfileInput());
+  const [avatarId, setAvatarId] = useState(props.character?.avatar_id ?? null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+
+  const pickAvatar = async (file: File | undefined) => {
+    if (!props.character?.id || avatarBusy) return;
+    setAvatarError("");
+    if (!file) return;
+    if (file.size > AVATAR_MAX_BYTES) {
+      setAvatarError("Pictures are limited to 2 MiB.");
+      return;
+    }
+    if (file.type && !AVATAR_ACCEPTED_TYPES.split(",").includes(file.type)) {
+      setAvatarError("Use a PNG, JPEG, WebP, or GIF picture.");
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const saved = await props.onAvatarUpload(props.character.id, file);
+      props.onSaved(saved, props.character.id);
+      setAvatarId(saved.avatar_id);
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Could not upload this picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    if (!props.character?.id || avatarBusy) return;
+    setAvatarError("");
+    setAvatarBusy(true);
+    try {
+      const saved = await props.onAvatarRemove(props.character.id);
+      props.onSaved(saved, props.character.id);
+      setAvatarId(saved.avatar_id);
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Could not remove this picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (saving) return;
+    const input: CharacterInput = {
+      name: value.name.trim(),
+      description: value.description.trim(),
+      appearance: value.appearance?.trim() ?? "",
+      personality: value.personality?.trim() ?? "",
+      background: value.background?.trim() ?? "",
+      baseline_motivations: value.baseline_motivations?.trim() ?? "",
+      speaking_style: value.speaking_style?.trim() ?? "",
+    };
+    setSaving(true);
+    setSaveError("");
+    try {
+      const saved = props.character
+        ? await props.onUpdate(props.character.id, input)
+        : await props.onCreate(input);
+      props.onSaved(saved, props.character?.id);
+      props.onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save this character.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) props.onClose(); }}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="backdrop fixed inset-0 z-30 bg-black/40" />
+        <DialogPrimitive.Content
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (props.openerRef?.current?.isConnected) props.openerRef.current.focus();
+            if (props.openerRef) props.openerRef.current = null;
+          }}
+          className="fixed inset-0 z-40 flex flex-col bg-surface md:inset-bs-1/2 md:inset-be-auto md:start-1/2 md:max-h-[min(90dvh,52rem)] md:w-[min(calc(100vw-2rem),58rem)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-xl"
+        >
+          <form className="flex [min-block-size:0] flex-1 flex-col" onSubmit={submit}>
+            <header className="flex-none border-be border-border p-5 md:px-7 md:py-6">
+              <DialogPrimitive.Title className="text-xl font-semibold">{props.title}</DialogPrimitive.Title>
+              <DialogPrimitive.Description className="mbs-1 text-sm text-muted">{props.description}</DialogPrimitive.Description>
+            </header>
+            <div className="chat-scroll min-block-size-0 flex-1 p-5 md:p-7">
+              <div className="grid gap-6">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,19rem),1fr))] gap-5">
+                  <label className="grid content-start gap-2 text-sm font-medium">
+                    Name
+                    <input required autoComplete="off" value={value.name} onChange={(event) => setValue({ ...value, name: event.target.value })} className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
+                  </label>
+                  <label className="grid content-start gap-2 text-sm font-medium">
+                    Description
+                    <textarea required rows={5} value={value.description} onChange={(event) => setValue({ ...value, description: event.target.value })} className="min-h-32 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
+                  </label>
+                </div>
+                {props.character && (
+                  <div className="flex flex-wrap items-center gap-4">
+                    <Avatar name={value.name} imageId={avatarId} className="size-16 text-xl" />
+                    <div className="grid content-start gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        <label className="pressable inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface">
+                          Upload picture
+                          <input
+                            type="file"
+                            accept={AVATAR_ACCEPTED_TYPES}
+                            disabled={avatarBusy}
+                            className="sr-only"
+                            onChange={(event) => {
+                              void pickAvatar(event.target.files?.[0]);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                        {avatarId && (
+                          <button
+                            type="button"
+                            disabled={avatarBusy}
+                            className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                            onClick={() => void removeAvatar()}
+                          >
+                            Remove picture
+                          </button>
+                        )}
+                      </div>
+                      {avatarError && <p className="text-sm text-muted" role="alert">{avatarError}</p>}
+                    </div>
+                  </div>
+                )}
+                {optionalFields.map(({ key, label }) => (
+                  <label key={key} className="grid gap-2 text-sm font-medium">
+                    {label} <span className="font-normal text-muted">Optional</span>
+                    <textarea rows={4} value={value[key] ?? ""} onChange={(event) => setValue({ ...value, [key]: event.target.value })} className="min-h-28 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
+                  </label>
+                ))}
+                {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
+              </div>
+            </div>
+            <footer className="flex flex-none flex-wrap justify-end gap-2 border-bs border-border p-4 [padding-block-end:calc(1rem+env(safe-area-inset-bottom,0px))] md:p-5">
+              <DialogPrimitive.Close asChild>
+                <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 py-2 text-sm text-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={saving}>Cancel</button>
+              </DialogPrimitive.Close>
+              <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:cursor-wait disabled:opacity-60 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving}>
+                {saving ? "Saving…" : props.character ? "Save changes" : "Create character"}
+              </button>
+            </footer>
+          </form>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}

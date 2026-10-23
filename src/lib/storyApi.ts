@@ -1,22 +1,88 @@
-import type { Campaign, CampaignStateItem, Character, Message, Relationship, RelationshipDocument, RelationshipSubject, Session, World, WorldCharacter, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignCharacter, CampaignStateItem, Character, CharacterProfile, Message, Relationship, RelationshipDocument, Session, World, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
-export type CampaignRelationships = {
-  subjects: RelationshipSubject[];
-  relationships: Relationship[];
-};
 
-export async function fetchCampaignRelationships(campaignId: string): Promise<CampaignRelationships> {
-  return request<CampaignRelationships>(`/api/campaigns/${encodeURIComponent(campaignId)}/relationships`);
+export async function fetchCampaignRelationships(campaignId: string): Promise<Relationship[]> {
+  return (await request<{ relationships: Relationship[] }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
+  )).relationships;
 }
 
-export async function createCampaignRelationshipSubject(
+export async function createCampaignCharacter(
   campaignId: string,
-  name: string,
-): Promise<RelationshipSubject> {
-  return (await request<{ subject: RelationshipSubject }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationship-subjects`,
-    { method: "POST", body: JSON.stringify({ name }) },
-  )).subject;
+  input: CharacterInput,
+): Promise<CampaignCharacter> {
+  return (
+    await request<{ character: CampaignCharacter }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/characters`,
+      { method: "POST", body: JSON.stringify(input) },
+    )
+  ).character;
+}
+
+export async function updateCampaignCharacter(
+  campaignId: string,
+  characterId: string,
+  patch: CharacterPatch,
+): Promise<CampaignCharacter> {
+  return (
+    await request<{ character: CampaignCharacter }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    )
+  ).character;
+}
+
+export async function deleteCampaignCharacter(
+  campaignId: string,
+  characterId: string,
+): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Uploads the picture's raw bytes; the server rejects >2 MiB and format mismatches. */
+export async function uploadCampaignCharacterAvatar(
+  campaignId: string,
+  characterId: string,
+  file: File,
+): Promise<CampaignCharacter> {
+  return (
+    await request<{ character: CampaignCharacter }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/avatar`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    )
+  ).character;
+}
+
+export async function deleteCampaignCharacterAvatar(
+  campaignId: string,
+  characterId: string,
+): Promise<CampaignCharacter> {
+  return (
+    await request<{ character: CampaignCharacter }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/avatar`,
+      { method: "DELETE" },
+    )
+  ).character;
+}
+
+/** Copies the character's current profile and avatar into the campaign's world. */
+export async function saveCampaignCharacterToWorld(
+  campaignId: string,
+  characterId: string,
+): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/save-to-world`,
+      { method: "POST" },
+    )
+  ).character;
 }
 
 export async function createCampaignRelationship(
@@ -120,8 +186,8 @@ export type WorldInput = Pick<
   World,
   "name" | "setting_brief" | "suggested_starting_situation"
 >;
-export type CharacterInput = Pick<Character, "name" | "description">
-  & Partial<Pick<Character, "appearance" | "personality" | "background" | "baseline_motivations" | "speaking_style">>;
+export type CharacterInput = Pick<CharacterProfile, "name" | "description">
+  & Partial<Omit<CharacterProfile, "name" | "description">>;
 export type CharacterPatch = Partial<CharacterInput>;
 
 export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description">;
@@ -235,6 +301,20 @@ export async function updateCharacter(id: string, input: CharacterPatch): Promis
   ).character;
 }
 
+/** Works for world characters; the server refuses to delete library characters. */
+export async function deleteCharacter(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/characters/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function copyCharacterToLibrary(id: string): Promise<Character> {
+  return (
+    await request<{ character: Character }>(
+      `/api/characters/${encodeURIComponent(id)}/copy-to-library`,
+      { method: "POST" },
+    )
+  ).character;
+}
+
 export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 export const AVATAR_ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,image/gif";
@@ -262,45 +342,19 @@ export async function deleteCharacterAvatar(characterId: string): Promise<Charac
   ).character;
 }
 
-export async function listWorldCharacters(worldId: string): Promise<WorldCharacter[]> {
+export async function listWorldCharacters(worldId: string): Promise<Character[]> {
   const path = `/api/worlds/${encodeURIComponent(worldId)}/characters`;
-  return (await request<{ characters: WorldCharacter[] }>(path)).characters;
+  return (await request<{ characters: Character[] }>(path)).characters;
 }
 
-export async function createWorldCharacter(
-  worldId: string,
-  characterId: string,
-  context: string,
-): Promise<WorldCharacter> {
+export async function createWorldCharacter(worldId: string, input: CharacterInput): Promise<Character> {
   const path = `/api/worlds/${encodeURIComponent(worldId)}/characters`;
   return (
-    await request<{ character: WorldCharacter }>(path, {
+    await request<{ character: Character }>(path, {
       method: "POST",
-      body: JSON.stringify({ character_id: characterId, context }),
+      body: JSON.stringify(input),
     })
   ).character;
-}
-
-export async function updateWorldCharacterContext(
-  worldId: string,
-  characterId: string,
-  context: string,
-): Promise<WorldCharacter> {
-  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters/${encodeURIComponent(characterId)}`;
-  return (
-    await request<{ character: WorldCharacter }>(path, {
-      method: "PATCH",
-      body: JSON.stringify({ context }),
-    })
-  ).character;
-}
-
-export async function deleteWorldCharacter(
-  worldId: string,
-  characterId: string,
-): Promise<{ ok: true }> {
-  const path = `/api/worlds/${encodeURIComponent(worldId)}/characters/${encodeURIComponent(characterId)}`;
-  return request<{ ok: true }>(path, { method: "DELETE" });
 }
 
 export async function listWorldEntries(worldId: string): Promise<WorldEntry[]> {

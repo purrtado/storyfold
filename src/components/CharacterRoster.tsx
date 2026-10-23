@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
-import type { Campaign, CharacterSnapshot, Relationship, RelationshipDocument, RelationshipSubject } from "../../shared/domain";
+import {
+  CHARACTER_PROFILE_FIELDS,
+  type Campaign,
+  type CampaignCharacter,
+  type Relationship,
+  type RelationshipDocument,
+  protagonistOf,
+} from "../../shared/domain";
 import { Avatar } from "./Avatar";
+import { CharacterProfileDialog } from "./CharacterProfileDialog";
 import { StatBars } from "./StatBar";
 import { createRequestEpoch } from "../lib/requestEpoch";
 import {
+  createCampaignCharacter,
   createCampaignRelationship,
-  createCampaignRelationshipSubject,
+  deleteCampaignCharacter,
+  deleteCampaignCharacterAvatar,
   deleteCampaignRelationship,
   fetchCampaignRelationships,
+  saveCampaignCharacterToWorld,
+  updateCampaignCharacter,
   updateCampaignRelationship,
+  uploadCampaignCharacterAvatar,
 } from "../lib/storyApi";
 
 type RelationshipStat = RelationshipDocument["stats"][string];
@@ -120,16 +133,6 @@ function formatDate(value: string) {
   return Number.isNaN(date.valueOf())
     ? value
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-function subjectKindLabel(kind: RelationshipSubject["kind"]) {
-  if (kind === "character") return "Captured character";
-  if (kind === "local_character") return "Local NPC";
-  return "Captured world entry";
-}
-
-function subjectLabel(subject: RelationshipSubject | undefined, id: string) {
-  return subject ? `${subjectKindLabel(subject.kind)}: ${subject.name}` : `Unavailable reference (${id})`;
 }
 
 function CurrentState({ document }: { document: RelationshipDocument }) {
@@ -253,64 +256,19 @@ function RelationshipRow(props: {
   );
 }
 
-const characterSnapshotFields = [
-  ["appearance", "Appearance"],
-  ["personality", "Personality"],
-  ["background", "Background"],
-  ["baseline_motivations", "Motivations"],
-  ["speaking_style", "Speaking style"],
-] as const;
-
-type RosterEntry = {
-  id: string;
-  name: string;
-  role: string;
-  imageId: string | null;
-  description: string;
-  profile: CharacterSnapshot | null;
-};
-
-function rosterEntries(campaign: Campaign, subjects: RelationshipSubject[]): RosterEntry[] {
-  const fromSnapshot = (character: CharacterSnapshot, role: string): RosterEntry => ({
-    id: character.id,
-    name: character.name,
-    role,
-    imageId: character.avatar_id,
-    description: character.description,
-    profile: character,
-  });
-  return [
-    fromSnapshot(campaign.protagonist_snapshot, "You"),
-    ...campaign.cast.map((character) => fromSnapshot(character, "Cast")),
-    ...campaign.world_snapshot.entries
-      .filter((entry) => entry.kind === "local_npc")
-      .map((entry) => ({ id: entry.id, name: entry.name, role: "Compendium NPC", imageId: null, description: entry.description, profile: null })),
-    ...subjects
-      .filter((subject) => subject.kind === "local_character")
-      .map((subject) => ({ id: subject.id, name: subject.name, role: "Local NPC", imageId: null, description: "", profile: null })),
-  ];
-}
-
-function Profile({ entry }: { entry: RosterEntry }) {
-  const fields = entry.profile ? characterSnapshotFields.filter(([field]) => entry.profile![field]) : [];
-  if (!entry.description && fields.length === 0 && !entry.profile?.world_context) return null;
+function Profile({ character }: { character: CampaignCharacter }) {
+  const fields = CHARACTER_PROFILE_FIELDS.filter((field) => !field.required && character[field.key]);
   return (
-    <section className="grid gap-2 text-sm" aria-label={`${entry.name} profile`}>
-      {entry.description && <p className="whitespace-pre-wrap leading-6">{entry.description}</p>}
-      {(fields.length > 0 || entry.profile?.world_context) && (
+    <section className="grid gap-2 text-sm" aria-label={`${character.name} profile`}>
+      <p className="whitespace-pre-wrap leading-6">{character.description}</p>
+      {fields.length > 0 && (
         <dl className="grid gap-2">
-          {fields.map(([field, label]) => (
-            <div key={field} className="grid gap-0.5">
-              <dt className="text-xs font-medium text-muted">{label}</dt>
-              <dd className="whitespace-pre-wrap leading-6">{entry.profile![field]}</dd>
+          {fields.map((field) => (
+            <div key={field.key} className="grid gap-0.5">
+              <dt className="text-xs font-medium text-muted">{field.label}</dt>
+              <dd className="whitespace-pre-wrap leading-6">{character[field.key]}</dd>
             </div>
           ))}
-          {entry.profile?.world_context && (
-            <div className="grid gap-0.5">
-              <dt className="text-xs font-medium text-muted">In this world</dt>
-              <dd className="whitespace-pre-wrap leading-6">{entry.profile.world_context}</dd>
-            </div>
-          )}
         </dl>
       )}
     </section>
@@ -318,7 +276,7 @@ function Profile({ entry }: { entry: RosterEntry }) {
 }
 
 function CharacterCard(props: {
-  entry: RosterEntry;
+  character: CampaignCharacter;
   you: boolean;
   open: boolean;
   onToggle: () => void;
@@ -327,9 +285,9 @@ function CharacterCard(props: {
   toggleRef: (element: HTMLButtonElement | null) => void;
   children: ReactNode;
 }) {
-  const panelId = `character-panel-${props.entry.id}`;
+  const panelId = `character-panel-${props.character.id}`;
   return (
-    <article className="grid min-w-0 rounded-2xl border border-border bg-background" aria-label={props.entry.name}>
+    <article className="grid min-w-0 rounded-2xl border border-border bg-background" aria-label={props.character.name}>
       <button
         ref={props.toggleRef}
         type="button"
@@ -338,15 +296,15 @@ function CharacterCard(props: {
         onClick={props.onToggle}
         className="flex min-w-0 items-center gap-3 rounded-2xl p-3 text-start active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
       >
-        <Avatar name={props.entry.name} imageId={props.entry.imageId} className={props.you ? "size-14 text-lg" : "size-11 text-sm"} />
+        <Avatar name={props.character.name} imageId={props.character.avatar_id} className={props.you ? "size-14 text-lg" : "size-11 text-sm"} />
         <span className="grid min-w-0 flex-1 gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
-            <span className={`truncate font-semibold ${props.you ? "text-base" : "text-sm"}`}>{props.entry.name}</span>
-            <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.entry.role}</span>
+            <span className={`truncate font-semibold ${props.you ? "text-base" : "text-sm"}`}>{props.character.name}</span>
+            <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.you ? "You" : "Cast"}</span>
           </span>
           {props.status
             ? <span className="truncate text-sm text-muted">{props.status}</span>
-            : props.you && props.entry.description && <span className="line-clamp-2 text-sm text-muted">{props.entry.description}</span>}
+            : props.you && props.character.description && <span className="line-clamp-2 text-sm text-muted">{props.character.description}</span>}
         </span>
         <ChevronDown className={`size-4 flex-none text-muted [@media(prefers-reduced-motion:no-preference)]:transition-transform ${props.open ? "rotate-180" : ""}`} aria-hidden="true" />
       </button>
@@ -367,16 +325,15 @@ function CharacterCard(props: {
 
 export function CharacterRoster(props: {
   campaign: Campaign;
+  sessionId: string;
   openId: string | null;
   onOpenChange: (id: string | null) => void;
+  onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const [requestEpoch] = useState(createRequestEpoch);
-  const [subjects, setSubjects] = useState<RelationshipSubject[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [npcName, setNpcName] = useState("");
-  const [npcError, setNpcError] = useState("");
   const [creatingRelationship, setCreatingRelationship] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sourceId, setSourceId] = useState("");
@@ -386,13 +343,17 @@ export function CharacterRoster(props: {
   const [rawJson, setRawJson] = useState("");
   const [editorError, setEditorError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [subjectBusy, setSubjectBusy] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const [createCardId, setCreateCardId] = useState<string | null>(null);
-  const npcDisclosureRef = useRef<HTMLDetailsElement>(null);
+  const [editor, setEditor] = useState<{ character: CampaignCharacter | null } | null>(null);
+  const [saveConfirmId, setSaveConfirmId] = useState<string | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [characterBusyId, setCharacterBusyId] = useState<string | null>(null);
+  const [characterAction, setCharacterAction] = useState<{ id: string; message: string } | null>(null);
   const summaryRefs = useRef(new Map<string, HTMLElement>());
   const cardRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -402,43 +363,34 @@ export function CharacterRoster(props: {
     setLoadError("");
     try {
       const loaded = await fetchCampaignRelationships(props.campaign.id);
-      if (requestEpoch.isCurrent(requestId)) {
-        setSubjects(loaded.subjects);
-        setRelationships(loaded.relationships);
-      }
+      if (requestEpoch.isCurrent(requestId)) setRelationships(loaded);
     } catch (error) {
       if (requestEpoch.isCurrent(requestId)) setLoadError(errorMessage(error, "Could not load campaign relationships."));
     } finally {
       if (requestEpoch.isCurrent(requestId)) setLoading(false);
     }
   }, [props.campaign.id, requestEpoch]);
-  const subjectLabels = useMemo(() => {
+
+  const characterLabels = useMemo(() => {
     const counts = new Map<string, number>();
-    const castIds = new Set(props.campaign.cast.map((character) => character.id));
-    for (const subject of subjects) {
-      const key = `${subject.kind}\u0000${subject.name}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+    for (const character of props.campaign.characters) {
+      counts.set(character.name, (counts.get(character.name) ?? 0) + 1);
     }
-    return new Map<string, string>(subjects.map((subject): [string, string] => {
-      const key = `${subject.kind}\u0000${subject.name}`;
-      const duplicate = (counts.get(key) ?? 0) > 1;
-      const role = subject.kind !== "character"
-        ? subjectKindLabel(subject.kind)
-        : subject.id === props.campaign.protagonist_snapshot.id
-          ? "Protagonist"
-          : castIds.has(subject.id)
-            ? "Cast"
-            : subjectKindLabel(subject.kind);
-      return [subject.id, `${role}: ${subject.name}${duplicate ? ` · ${subject.id.slice(0, 8)}` : ""}`];
+    return new Map(props.campaign.characters.map((character): [string, string] => {
+      if (character.role === "protagonist") return [character.id, "You"];
+      const duplicate = (counts.get(character.name) ?? 0) > 1;
+      return [character.id, duplicate ? `${character.name} · ${character.id.slice(0, 8)}` : character.name];
     }));
-  }, [props.campaign.cast, props.campaign.protagonist_snapshot.id, subjects]);
-  const subjectMap = useMemo(
-    () => new Map<string, RelationshipSubject>(subjects.map((subject): [string, RelationshipSubject] => [subject.id, subject])),
-    [subjects],
-  );
-  const protagonistId = props.campaign.protagonist_snapshot.id;
-  const roster = useMemo(() => rosterEntries(props.campaign, subjects), [props.campaign, subjects]);
-  const rosterNames = useMemo(() => new Map(roster.map((entry) => [entry.id, entry.name])), [roster]);
+  }, [props.campaign.characters]);
+
+  // The write already succeeded; a failed refresh is recovered by the next focus/session load.
+  const syncCampaign = useCallback(() => {
+    void props.onSyncSession(props.sessionId).catch(() => {});
+  }, [props.onSyncSession, props.sessionId]);
+
+  const protagonistId = protagonistOf(props.campaign).id;
+  const worldName = props.campaign.world_snapshot.name;
+  const relationshipLabel = (id: string) => characterLabels.get(id) ?? `Unavailable reference (${id})`;
   const cardOwner = (relationship: Relationship) =>
     relationship.source_id === protagonistId ? relationship.target_id : relationship.source_id;
   const rawDocument = advanced ? parseDocumentJson(rawJson) : null;
@@ -459,17 +411,19 @@ export function CharacterRoster(props: {
     setEditorError("");
   }, []);
   useEffect(() => {
-    setSubjects([]);
     setRelationships([]);
     setLoadError("");
-    setNpcName("");
-    setNpcError("");
-    setSubjectBusy(false);
     setConfirmDeleteId(null);
     setDeleteBusyId(null);
     setDeleteErrors({});
     setSaving(false);
     setPendingFocusId(null);
+    setEditor(null);
+    setSaveConfirmId(null);
+    setSavedId(null);
+    setDeleteConfirmId(null);
+    setCharacterBusyId(null);
+    setCharacterAction(null);
     summaryRefs.current.clear();
     resetEditor();
     void loadRelationships();
@@ -480,7 +434,7 @@ export function CharacterRoster(props: {
     setCreatingRelationship(true);
     setCreateCardId(cardId);
     setEditingId(null);
-    setSourceId(subjectMap.has(cardId) ? cardId : "");
+    setSourceId(cardId);
     setTargetId(cardId === protagonistId ? "" : protagonistId);
     const nextDocument = emptyDocument();
     setDraft(nextDocument);
@@ -538,11 +492,11 @@ export function CharacterRoster(props: {
       document = validation.document;
     }
     if (creatingRelationship && (!sourceId || !targetId)) {
-      setEditorError("Choose both a source and a target reference.");
+      setEditorError("Choose both a source and a target character.");
       return;
     }
     if (creatingRelationship && sourceId === targetId) {
-      setEditorError("A relationship source and target must be different references.");
+      setEditorError("A relationship source and target must be different characters.");
       return;
     }
     setSaving(true);
@@ -566,29 +520,6 @@ export function CharacterRoster(props: {
       setEditorError(errorMessage(error, "Could not save relationship."));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const createNpc = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const name = npcName.trim();
-    if (!name) {
-      setNpcError("Enter a name for the local NPC.");
-      return;
-    }
-    setSubjectBusy(true);
-    setNpcError("");
-    try {
-      const created = await createCampaignRelationshipSubject(props.campaign.id, name);
-      setSubjects((current) => [...current, created]);
-      setNpcName("");
-      if (npcDisclosureRef.current) npcDisclosureRef.current.open = false;
-      props.onOpenChange(created.id);
-      setPendingFocusId(`card:${created.id}`);
-    } catch (error) {
-      setNpcError(errorMessage(error, "Could not create campaign-local NPC."));
-    } finally {
-      setSubjectBusy(false);
     }
   };
 
@@ -637,6 +568,43 @@ export function CharacterRoster(props: {
     }));
   };
 
+  const profileSaved = (saved: CampaignCharacter, previousId: string | undefined) => {
+    if (!previousId) props.onOpenChange(saved.id);
+    syncCampaign();
+  };
+
+  const saveToWorld = async (character: CampaignCharacter) => {
+    setCharacterBusyId(character.id);
+    setCharacterAction(null);
+    try {
+      await saveCampaignCharacterToWorld(props.campaign.id, character.id);
+      setSaveConfirmId(null);
+      setSavedId(character.id);
+      syncCampaign();
+    } catch (error) {
+      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not save this character to the world.") });
+    } finally {
+      setCharacterBusyId(null);
+    }
+  };
+
+  const removeCharacter = async (character: CampaignCharacter) => {
+    setCharacterBusyId(character.id);
+    setCharacterAction(null);
+    try {
+      await deleteCampaignCharacter(props.campaign.id, character.id);
+      setDeleteConfirmId(null);
+      if (props.openId === character.id) props.onOpenChange(null);
+      if (editor?.character?.id === character.id) setEditor(null);
+      void loadRelationships();
+      syncCampaign();
+    } catch (error) {
+      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not delete this character.") });
+    } finally {
+      setCharacterBusyId(null);
+    }
+  };
+
   const editorForm = (creatingRelationship || editingId) && (
     <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
       <div>
@@ -648,21 +616,21 @@ export function CharacterRoster(props: {
           <label className="grid min-w-0 gap-1 text-sm">
             Source
             <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setEditorError(""); }} required>
-              <option value="">Choose source reference</option>
-              {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
+              <option value="">Choose source character</option>
+              {props.campaign.characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
             </select>
           </label>
           <p className="text-center text-sm font-medium text-muted" aria-label="points to">→</p>
           <label className="grid min-w-0 gap-1 text-sm">
             Target
             <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={targetId} onChange={(event) => { setTargetId(event.target.value); setEditorError(""); }} required>
-              <option value="">Choose target reference</option>
-              {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subjectLabels.get(subject.id) ?? subjectLabel(subject, subject.id)}</option>)}
+              <option value="">Choose target character</option>
+              {props.campaign.characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
             </select>
           </label>
         </div>
       ) : (
-        <p className="break-words rounded-lg border border-border p-3 text-sm font-medium">{subjectLabel(subjectMap.get(sourceId), sourceId)} <span aria-hidden="true" className="text-muted">→</span> {subjectLabel(subjectMap.get(targetId), targetId)}</p>
+        <p className="break-words rounded-lg border border-border p-3 text-sm font-medium">{relationshipLabel(sourceId)} <span aria-hidden="true" className="text-muted">→</span> {relationshipLabel(targetId)}</p>
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-bs border-border pbs-3">
@@ -704,7 +672,7 @@ export function CharacterRoster(props: {
                 <div className="grid grid-cols-2 gap-2">
                   {(["value", "min", "max"] as const).map((field) => (
                     <label key={field} className="grid min-w-0 gap-1 text-xs text-muted">
-                      {field === "value" ? "Value" : field === "min" ? "Minimum" : "Maximum"}
+                      {field === "value" ? "Value" : field === "min" ? "Minimum" : field === "max" ? "Maximum" : ""}
                       <input className="min-h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground tabular-nums" type="number" step="any" value={Number.isNaN(stat[field]) ? "" : stat[field]} onChange={(event) => updateStat(index, name, { ...stat, [field]: event.currentTarget.valueAsNumber })} required />
                     </label>
                   ))}
@@ -786,21 +754,19 @@ export function CharacterRoster(props: {
       target.focus();
       setPendingFocusId(null);
     }
-  }, [pendingFocusId, relationships, subjects]);
+  }, [pendingFocusId, relationships]);
 
   useEffect(() => {
     if (props.openId) cardRefs.current.get(props.openId)?.scrollIntoView({ block: "nearest" });
   }, [props.openId]);
 
-  const rosterIds = new Set(roster.map((entry) => entry.id));
-  const orphans = relationships.filter((relationship) => !rosterIds.has(cardOwner(relationship)));
   const actionsDisabled = saving || deleteBusyId !== null;
   const relationshipRow = (relationship: Relationship) => (
     <RelationshipRow
       key={relationship.id}
       relationship={relationship}
-      sourceLabel={relationship.source_id === protagonistId ? "You" : rosterNames.get(relationship.source_id) ?? subjectLabel(subjectMap.get(relationship.source_id), relationship.source_id)}
-      targetLabel={relationship.target_id === protagonistId ? "You" : rosterNames.get(relationship.target_id) ?? subjectLabel(subjectMap.get(relationship.target_id), relationship.target_id)}
+      sourceLabel={relationshipLabel(relationship.source_id)}
+      targetLabel={relationshipLabel(relationship.target_id)}
       editing={editingId === relationship.id}
       editor={editingId === relationship.id ? editorForm : undefined}
       onEdit={() => openEdit(relationship)}
@@ -825,71 +791,104 @@ export function CharacterRoster(props: {
       )}
       {loading && <p className="text-sm text-muted" role="status">Loading relationships…</p>}
 
-      {roster.map((entry) => {
-        const you = entry.id === protagonistId;
-        const owned = relationships.filter((relationship) => cardOwner(relationship) === entry.id);
+      {props.campaign.characters.map((character) => {
+        const you = character.role === "protagonist";
+        const owned = relationships.filter((relationship) => cardOwner(relationship) === character.id);
         const towardYou = you ? undefined : owned.find((relationship) => relationship.target_id === protagonistId);
         const fromYou = you ? undefined : owned.find((relationship) => relationship.source_id === protagonistId);
         const stats = [
           ...(towardYou && Object.keys(towardYou.document.stats).length > 0 ? [{ label: "How they see you", stats: towardYou.document.stats }] : []),
           ...(fromYou && Object.keys(fromYou.document.stats).length > 0 ? [{ label: "How you see them", stats: fromYou.document.stats }] : []),
         ];
-        const open = props.openId === entry.id;
+        const open = props.openId === character.id;
         return (
           <CharacterCard
-            key={entry.id}
-            entry={entry}
+            key={character.id}
+            character={character}
             you={you}
             open={open}
-            onToggle={() => props.onOpenChange(open ? null : entry.id)}
+            onToggle={() => props.onOpenChange(open ? null : character.id)}
             status={towardYou?.document.status.trim() || fromYou?.document.status.trim() || ""}
             stats={stats}
-            toggleRef={(element) => { if (element) cardRefs.current.set(entry.id, element); else cardRefs.current.delete(entry.id); }}
+            toggleRef={(element) => { if (element) cardRefs.current.set(character.id, element); else cardRefs.current.delete(character.id); }}
           >
-            <Profile entry={entry} />
-            {owned.length > 0 && (
-              <section className="grid min-w-0 gap-2" aria-label={`${entry.name} relationships`}>
-                <p className="text-xs font-semibold tracking-wide text-muted uppercase">Relationships</p>
-                {owned.map(relationshipRow)}
-              </section>
-            )}
-            {createCardId === entry.id && editorForm}
-            {createCardId !== entry.id && (
-              <button
-                type="button"
-                className="pressable inline-flex min-h-10 w-fit items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-                onClick={() => openCreate(entry.id)}
-                disabled={loading || Boolean(loadError) || actionsDisabled}
-              >
-                <Plus className="size-4" aria-hidden="true" />Add relationship
-              </button>
-            )}
+            <>
+              <Profile character={character} />
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor({ character })} disabled={characterBusyId !== null}>Edit</button>
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setSaveConfirmId(character.id); setSavedId(null); setCharacterAction(null); }} disabled={characterBusyId !== null}>Save to world</button>
+                {!you && (
+                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setDeleteConfirmId(character.id); setCharacterAction(null); }} disabled={characterBusyId !== null}>Delete</button>
+                )}
+              </div>
+              {saveConfirmId === character.id && (
+                <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm saving ${character.name} to the world`}>
+                  <p className="text-sm">Save “{character.name}” to the world “{worldName}”? The world gets its own copy of the current profile and picture.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void saveToWorld(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Saving…" : "Save to world"}</button>
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setSaveConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              {savedId === character.id && <p className="text-sm text-muted" role="status">Saved to “{worldName}”. The world now has its own copy.</p>}
+              {deleteConfirmId === character.id && (
+                <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${character.name}`}>
+                  <p className="text-sm">Delete “{character.name}” from this campaign? Their relationships are deleted too.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void removeCharacter(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Deleting…" : "Delete character"}</button>
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setDeleteConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
+              {owned.length > 0 && (
+                <section className="grid min-w-0 gap-2" aria-label={`${character.name} relationships`}>
+                  <p className="text-xs font-semibold tracking-wide text-muted uppercase">Relationships</p>
+                  {owned.map(relationshipRow)}
+                </section>
+              )}
+              {createCardId === character.id && editorForm}
+              {createCardId !== character.id && (
+                <button
+                  type="button"
+                  className="pressable inline-flex min-h-10 w-fit items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+                  onClick={() => openCreate(character.id)}
+                  disabled={loading || Boolean(loadError) || actionsDisabled}
+                >
+                  <Plus className="size-4" aria-hidden="true" />Add relationship
+                </button>
+              )}
+            </>
           </CharacterCard>
         );
       })}
 
-      {orphans.length > 0 && (
-        <section className="grid min-w-0 gap-2" aria-label="Other relationships">
-          <p className="text-xs font-semibold tracking-wide text-muted uppercase">Other relationships</p>
-          {orphans.map(relationshipRow)}
-        </section>
-      )}
-
-      <details ref={npcDisclosureRef} className="group rounded-xl border border-dashed border-border">
-        <summary className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-3 text-sm text-muted active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [&::-webkit-details-marker]:hidden">
+      <div className="flex">
+        <button
+          type="button"
+          className="pressable inline-flex min-h-11 items-center gap-2 rounded-xl border border-dashed border-border px-3 text-sm text-muted active:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+          onClick={() => setEditor({ character: null })}
+        >
           <Plus className="size-4 shrink-0" aria-hidden="true" />
-          Add someone you met
-        </summary>
-        <form className="grid gap-2 border-bs border-border p-3" onSubmit={(event) => { void createNpc(event); }}>
-          <label className="grid gap-1 text-sm">
-            Name
-            <input className="min-h-11 rounded-lg border border-border bg-background px-3" value={npcName} onChange={(event) => setNpcName(event.target.value)} required />
-          </label>
-          <p className="text-xs text-muted">Adds a campaign-only character you can track relationships with.</p>
-          {npcError && <p className="text-sm text-muted" role="alert">{npcError}</p>}
-          <button type="submit" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={subjectBusy || loading}>{subjectBusy ? "Adding…" : "Add character"}</button>
-        </form>
-      </details>
+          New character
+        </button>
+      </div>
+
+      {editor && (
+        <CharacterProfileDialog
+          character={editor.character}
+          title={editor.character ? `Edit ${editor.character.name}` : "New character"}
+          description={editor.character
+            ? "Edits change this campaign's own copy of the character."
+            : "Adds a narrator-controlled cast character to this campaign."}
+          onCreate={(input) => createCampaignCharacter(props.campaign.id, input)}
+          onUpdate={(id, input) => updateCampaignCharacter(props.campaign.id, id, input)}
+          onAvatarUpload={(id, file) => uploadCampaignCharacterAvatar(props.campaign.id, id, file)}
+          onAvatarRemove={(id) => deleteCampaignCharacterAvatar(props.campaign.id, id)}
+          onSaved={profileSaved}
+          onClose={() => setEditor(null)}
+        />
+      )}
     </section>
   );
 }
