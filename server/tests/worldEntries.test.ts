@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
-import type { Campaign, Character, CharacterProfile, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { CharacterPrompt } from "../../shared/narration";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import {
   headersWith,
@@ -217,13 +218,14 @@ describe("opening prompt budget", () => {
   test("creation is refused exactly when the opening prompt passes the budget", async () => {
     const world = await createWorld({ name: "Boundary", setting_brief: "b".repeat(100_000), suggested_starting_situation: "" });
     await createEntry(world.id, { kind: "lore", name: "Compact", description: "l".repeat(40_000) });
-    const snapshot = (description: string): CharacterProfile => ({
+    const snapshot = (description: string): CharacterPrompt => ({
       name: "P", description, appearance: "", personality: "", background: "",
-      baseline_motivations: "", speaking_style: "",
+      baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
     const base = narratorSystemPrompt({
       world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000) }] },
       starting_situation: "s",
+      stats: [],
       protagonist: snapshot("d"),
       cast: [],
       notes: [],

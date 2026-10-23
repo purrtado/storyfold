@@ -1,4 +1,4 @@
-import type { Campaign, CampaignCharacter, CampaignStateItem, Character, CharacterProfile, Message, Relationship, RelationshipDocument, Session, World, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignCharacter, CampaignStateItem, CampaignStat, Character, CharacterProfile, Message, Relationship, Session, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
 
 export async function fetchCampaignRelationships(campaignId: string): Promise<Relationship[]> {
@@ -22,7 +22,7 @@ export async function createCampaignCharacter(
 export async function updateCampaignCharacter(
   campaignId: string,
   characterId: string,
-  patch: CharacterPatch,
+  patch: CampaignCharacterPatch,
 ): Promise<CampaignCharacter> {
   return (
     await request<{ character: CampaignCharacter }>(
@@ -85,9 +85,20 @@ export async function saveCampaignCharacterToWorld(
   ).character;
 }
 
+export type RelationshipInput = {
+  source_id: string;
+  target_id: string;
+  how_met?: string;
+  status?: string;
+  known_facts?: string[];
+  stats?: StatValues;
+};
+
+export type RelationshipPatch = Partial<Pick<RelationshipInput, "how_met" | "status" | "known_facts" | "stats">>;
+
 export async function createCampaignRelationship(
   campaignId: string,
-  input: { source_id: string; target_id: string; document: RelationshipDocument },
+  input: RelationshipInput,
 ): Promise<Relationship> {
   return (await request<{ relationship: Relationship }>(
     `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
@@ -98,7 +109,7 @@ export async function createCampaignRelationship(
 export async function updateCampaignRelationship(
   campaignId: string,
   relationshipId: string,
-  input: { document: RelationshipDocument },
+  input: RelationshipPatch,
 ): Promise<Relationship> {
   return (await request<{ relationship: Relationship }>(
     `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
@@ -114,6 +125,55 @@ export async function deleteCampaignRelationship(
     `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
     { method: "DELETE" },
   );
+}
+
+export type StatFieldsPatch = Partial<Omit<StatFields, "applies_to">>;
+
+export async function createCampaignStat(
+  campaignId: string,
+  input: StatFields,
+): Promise<CampaignStat> {
+  return (
+    await request<{ stat: CampaignStat }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/stats`,
+      { method: "POST", body: JSON.stringify(input) },
+    )
+  ).stat;
+}
+
+export async function updateCampaignStat(
+  campaignId: string,
+  statId: string,
+  patch: StatFieldsPatch,
+): Promise<CampaignStat> {
+  return (
+    await request<{ stat: CampaignStat }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/stats/${encodeURIComponent(statId)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    )
+  ).stat;
+}
+
+export async function deleteCampaignStat(
+  campaignId: string,
+  statId: string,
+): Promise<{ ok: true }> {
+  return request<{ ok: true }>(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/stats/${encodeURIComponent(statId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function importCampaignStats(
+  campaignId: string,
+  statIds: string[],
+): Promise<CampaignStat[]> {
+  return (
+    await request<{ stats: CampaignStat[] }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/stats/import`,
+      { method: "POST", body: JSON.stringify({ stat_ids: statIds }) },
+    )
+  ).stats;
 }
 
 export type CampaignStateInput = Pick<
@@ -189,6 +249,10 @@ export type WorldInput = Pick<
 export type CharacterInput = Pick<CharacterProfile, "name" | "description">
   & Partial<Omit<CharacterProfile, "name" | "description">>;
 export type CharacterPatch = Partial<CharacterInput>;
+export type CampaignCharacterPatch = CharacterPatch & {
+  stats_enabled?: boolean;
+  stats?: StatValues;
+};
 
 export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description">;
 export type WorldEntryPatch = Partial<WorldEntryInput>;
@@ -261,7 +325,8 @@ export async function fetchWorlds(): Promise<World[]> {
   return (await request<{ worlds: World[] }>("/api/worlds")).worlds;
 }
 
-export async function createWorld(input: WorldInput): Promise<World> {
+/** `stat_ids` copies bank stats into the new world; only offered at creation. */
+export async function createWorld(input: WorldInput & { stat_ids?: string[] }): Promise<World> {
   return (
     await request<{ world: World }>("/api/worlds", {
       method: "POST",
@@ -389,6 +454,49 @@ export async function updateWorldEntry(
 export async function deleteWorldEntry(worldId: string, entryId: string): Promise<{ ok: true }> {
   const path = `/api/worlds/${encodeURIComponent(worldId)}/entries/${encodeURIComponent(entryId)}`;
   return request<{ ok: true }>(path, { method: "DELETE" });
+}
+
+/** The stat bank: the library stats new worlds can import. */
+export async function fetchStats(): Promise<StatDefinition[]> {
+  return (await request<{ stats: StatDefinition[] }>("/api/stats")).stats;
+}
+
+export async function createStat(input: StatFields): Promise<StatDefinition> {
+  return (
+    await request<{ stat: StatDefinition }>("/api/stats", {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  ).stat;
+}
+
+/** One route serves bank and world definitions alike; `applies_to` is immutable. */
+export async function updateStat(id: string, patch: StatFieldsPatch): Promise<StatDefinition> {
+  return (
+    await request<{ stat: StatDefinition }>(`/api/stats/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    })
+  ).stat;
+}
+
+export async function deleteStat(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/stats/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function fetchWorldStats(worldId: string): Promise<StatDefinition[]> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/stats`;
+  return (await request<{ stats: StatDefinition[] }>(path)).stats;
+}
+
+export async function createWorldStat(worldId: string, input: StatFields): Promise<StatDefinition> {
+  const path = `/api/worlds/${encodeURIComponent(worldId)}/stats`;
+  return (
+    await request<{ stat: StatDefinition }>(path, {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  ).stat;
 }
 
 export type CampaignInput = {

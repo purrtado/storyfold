@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { Character, World, WorldEntry } from "../../shared/domain";
-import { fetchCharacters, fetchWorlds, listWorldCharacters, listWorldEntries } from "./storyApi";
+import type { Character, StatDefinition, World, WorldEntry } from "../../shared/domain";
+import { fetchCharacters, fetchStats, fetchWorlds, fetchWorldStats, listWorldCharacters, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
   /** undefined until the first read completes; an empty array is a real, loaded library */
@@ -111,9 +111,11 @@ export function createLibrary<T>(
 
 export const worldsLibrary = createLibrary<World>(fetchWorlds, "Could not load worlds.");
 export const charactersLibrary = createLibrary<Character>(fetchCharacters, "Could not load characters.");
+export const statsLibrary = createLibrary<StatDefinition>(fetchStats, "Could not load stats.");
 
 const worldEntryLibraries = new Map<string, Library<WorldEntry>>();
 const worldCharacterLibraries = new Map<string, Library<Character>>();
+const worldStatLibraries = new Map<string, Library<StatDefinition>>();
 
 function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
   let library = worldEntryLibraries.get(worldId);
@@ -135,6 +137,18 @@ function getWorldCharactersLibrary(worldId: string): Library<Character> {
       "Could not load this world's characters.",
     );
     worldCharacterLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+function getWorldStatsLibrary(worldId: string): Library<StatDefinition> {
+  let library = worldStatLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => fetchWorldStats(worldId),
+      "Could not load this world's stats.",
+    );
+    worldStatLibraries.set(worldId, library);
   }
   return library;
 }
@@ -193,6 +207,33 @@ export function applyWorldCharacterRemoved(worldId: string, characterId: string)
   getWorldCharactersLibrary(worldId).applyRemoved(characterId);
 }
 
+export function useWorldStats(worldId: string): LibrarySnapshot<StatDefinition> {
+  const library = getWorldStatsLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function ensureWorldStats(worldId: string): void {
+  const library = getWorldStatsLibrary(worldId);
+  const snapshot = library.getSnapshot();
+  if (snapshot.items === undefined && !snapshot.loading) void library.load();
+}
+
+export function refreshWorldStats(worldId: string): void {
+  void getWorldStatsLibrary(worldId).load();
+}
+
+export function applyWorldStatSaved(
+  worldId: string,
+  saved: StatDefinition,
+  previousId?: string,
+): void {
+  getWorldStatsLibrary(worldId).applySaved(saved, previousId);
+}
+
+export function applyWorldStatRemoved(worldId: string, statId: string): void {
+  getWorldStatsLibrary(worldId).applyRemoved(statId);
+}
+
 export function useWorlds(): LibrarySnapshot<World> {
   return useSyncExternalStore(worldsLibrary.subscribe, worldsLibrary.getSnapshot);
 }
@@ -207,6 +248,22 @@ export function refreshWorlds(): void {
 
 export function refreshCharacters(): void {
   void charactersLibrary.load();
+}
+
+export function useStats(): LibrarySnapshot<StatDefinition> {
+  return useSyncExternalStore(statsLibrary.subscribe, statsLibrary.getSnapshot);
+}
+
+export function refreshStats(): void {
+  void statsLibrary.load();
+}
+
+export function applyStatSaved(saved: StatDefinition, previousId?: string): void {
+  statsLibrary.applySaved(saved, previousId);
+}
+
+export function applyStatRemoved(statId: string): void {
+  statsLibrary.applyRemoved(statId);
 }
 
 /** Loads each library once per app lifetime; skips anything already loaded or loading. */

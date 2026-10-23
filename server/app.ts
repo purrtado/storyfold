@@ -74,13 +74,25 @@ import {
   setCampaignCharacterAvatar,
   updateCampaignCharacter,
   updateWorldEntry,
+  createCampaignStat,
+  createStatDefinition,
+  deleteCampaignStat,
+  deleteStatDefinition,
+  importCampaignStats,
+  listStatDefinitions,
+  parseCampaignCharacterPatch,
+  parseIdList,
+  parseStatInput,
+  parseStatPatch,
+  updateCampaignStat,
+  updateStatDefinition,
 } from "./library";
 import {
   RelationshipValidationError,
   createRelationship,
   deleteRelationship,
   listRelationships,
-  parseRelationshipDocument,
+  parseRelationshipPatch,
   updateRelationship,
 } from "./relationships";
 import {
@@ -234,7 +246,7 @@ async function handleWorlds(request: Request, id: string | undefined, db: Databa
       const body = await readObjectBody(request);
       if (body instanceof Response) return body;
       try {
-        return jsonResponse({ world: createWorld(db, parseWorldInput(body)) }, 201);
+        return jsonResponse({ world: createWorld(db, parseWorldInput(body), parseIdList(body.stat_ids, "stat_ids")) }, 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
       }
@@ -588,7 +600,7 @@ async function handleCampaignCharacters(
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      const patch = parseCharacterPatch(body);
+      const patch = parseCampaignCharacterPatch(body);
       assertCampaignIdle(ctx, campaignId);
       const character = updateCampaignCharacter(ctx.db, campaignId, characterId, patch);
       return character ? jsonResponse({ character }) : notFound("Unknown character");
@@ -627,7 +639,7 @@ async function handleCampaignRelationships(
         const activeCampaign = getCampaign(ctx.db, campaignId);
         if (!activeCampaign) return notFound("Unknown campaign");
         if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-        const relationship = createRelationship(ctx.db, activeCampaign, body.source_id as string, body.target_id as string, parseRelationshipDocument(body.document));
+        const relationship = createRelationship(ctx.db, activeCampaign, body.source_id, body.target_id, parseRelationshipPatch(body, activeCampaign));
         return jsonResponse({ relationship }, 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -642,7 +654,7 @@ async function handleCampaignRelationships(
       const activeCampaign = getCampaign(ctx.db, campaignId);
       if (!activeCampaign) return notFound("Unknown campaign");
       if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipDocument(body.document));
+      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipPatch(body, activeCampaign));
       return relationship ? jsonResponse({ relationship }) : notFound("Unknown relationship");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -659,6 +671,103 @@ async function handleCampaignRelationships(
   return jsonError(405, "Method not allowed");
 }
 
+/** Bank and world stat definitions share these routes: an id resolves in either scope. */
+async function handleStats(request: Request, id: string | undefined, db: Database): Promise<Response> {
+  if (id === undefined) {
+    if (request.method === "GET") return jsonResponse({ stats: listStatDefinitions(db, null) });
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        return jsonResponse({ stat: createStatDefinition(db, null, parseStatInput(body)) }, 201);
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const stat = updateStatDefinition(db, id, parseStatPatch(body));
+      return stat ? jsonResponse({ stat }) : notFound("Unknown stat");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    return deleteStatDefinition(db, id) ? jsonResponse({ ok: true }) : notFound("Unknown stat");
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+async function handleWorldStats(request: Request, worldId: string | undefined, db: Database): Promise<Response> {
+  if (worldId === undefined || !getWorld(db, worldId)) return notFound("Unknown world");
+  if (request.method === "GET") return jsonResponse({ stats: listStatDefinitions(db, worldId) });
+  if (request.method === "POST") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      return jsonResponse({ stat: createStatDefinition(db, worldId, parseStatInput(body)) }, 201);
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
+/**
+ * Campaign stats are the campaign's own copies, listed on the campaign itself.
+ * `import` copies bank stats while the story has not begun. Every write
+ * re-checks pending narration after the body is read.
+ */
+async function handleCampaignStats(
+  request: Request,
+  campaignId: string | undefined,
+  statId: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  if (campaignId === undefined || !getCampaign(ctx.db, campaignId)) return notFound("Unknown campaign");
+  if (statId === undefined || statId === "import") {
+    if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      if (statId === "import") {
+        const ids = parseIdList(body.stat_ids, "stat_ids");
+        assertCampaignIdle(ctx, campaignId);
+        return jsonResponse({ stats: importCampaignStats(ctx.db, campaignId, ids) }, 201);
+      }
+      const input = parseStatInput(body);
+      assertCampaignIdle(ctx, campaignId);
+      return jsonResponse({ stat: createCampaignStat(ctx.db, campaignId, input) }, 201);
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const patch = parseStatPatch(body);
+      assertCampaignIdle(ctx, campaignId);
+      const stat = updateCampaignStat(ctx.db, campaignId, statId, patch);
+      return stat ? jsonResponse({ stat }) : notFound("Unknown stat");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    try {
+      assertCampaignIdle(ctx, campaignId);
+      return deleteCampaignStat(ctx.db, campaignId, statId) ? jsonResponse({ ok: true }) : notFound("Unknown stat");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
 
 /**
  * Sessions are listed in story order. POST closes the campaign's open session
@@ -807,7 +916,9 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   const mutating = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
   if (mutating && origin === null) return jsonError(403, "Origin not allowed");
 
+  if (resource === "stats") return handleStats(request, segments[2], ctx.db);
   if (resource === "worlds") {
+    if (segments[3] === "stats") return handleWorldStats(request, segments[2], ctx.db);
     if (segments[3] === "entries") {
       return handleWorldEntries(request, segments[2], segments[4], ctx.db);
     }
@@ -827,6 +938,7 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
     if (segments[3] === "characters") {
       return handleCampaignCharacters(request, segments[2], segments[4], segments[5], ctx);
     }
+    if (segments[3] === "stats") return handleCampaignStats(request, segments[2], segments[4], ctx);
     if (segments[3] === "relationships") {
       return handleCampaignRelationships(request, segments[2], segments[4], ctx);
     }

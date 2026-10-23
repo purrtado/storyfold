@@ -592,6 +592,26 @@ describe("pending-run exclusivity", () => {
       const castDelete = await json(`/api/campaigns/${seeded.campaign.id}/characters/${protagonistId}`, "DELETE");
       expect(castDelete.status).toBe(409);
 
+      const statCreate = await json(`/api/campaigns/${seeded.campaign.id}/stats`, "POST", {
+        applies_to: "character",
+        label: "While pending",
+        description: "Should not save.",
+        low_label: "low",
+        high_label: "high",
+        min: 0,
+        max: 10,
+        default_value: 5,
+        color: "red",
+      });
+      expect(statCreate.status).toBe(409);
+      expect(((await statCreate.json()) as { code?: string }).code).toBe("busy");
+      const statPatch = await json(`/api/campaigns/${seeded.campaign.id}/stats/nope`, "PATCH", { label: "Should not save." });
+      expect(statPatch.status).toBe(409);
+      const statDelete = await json(`/api/campaigns/${seeded.campaign.id}/stats/nope`, "DELETE");
+      expect(statDelete.status).toBe(409);
+      const statImport = await json(`/api/campaigns/${seeded.campaign.id}/stats/import`, "POST", { stat_ids: ["nope"] });
+      expect(statImport.status).toBe(409);
+
       expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
       expect(await campaignSessions(seeded.campaign.id)).toHaveLength(1);
       const characters = (await (
@@ -1228,37 +1248,34 @@ test("campaign relationship API validates campaign characters and the last save 
   expect(companion.status).toBe(201);
   const target = ((await companion.json()) as { character: { id: string } }).character.id;
 
-  const document = { how_met: "At the harbor.", status: "cautious", stats: {}, known_facts: [], sections: [] };
   const created = await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
     source_id: protagonistId,
     target_id: target,
-    document,
+    how_met: "At the harbor.",
+    status: "cautious",
   });
   expect(created.status).toBe(201);
-  const relationship = ((await created.json()) as { relationship: { id: string } }).relationship;
+  const createdPayload = (await created.json()) as { relationship: { id: string; status: string } };
+  expect(createdPayload.relationship.status).toBe("cautious");
+  const relationship = createdPayload.relationship;
   expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
     source_id: protagonistId,
     target_id: target,
-    document,
-  })).status).toBe(400);
-  expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
-    source_id: protagonistId,
-    target_id: target,
-    document: { ...document, hidden: "field" },
+    how_met: "At the harbor.",
   })).status).toBe(400);
   expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
     source_id: protagonistId,
     target_id: outsiderId,
-    document,
+    how_met: "At the harbor.",
   })).status).toBe(400);
   for (const status of ["trusting", "wary"]) {
     const updated = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
-      document: { ...document, status },
+      status,
     });
     expect(updated.status).toBe(200);
   }
   const listed = (await (await json(`/api/campaigns/${campaign.id}/relationships`, "GET")).json()) as {
-    relationships: Array<{ document: { status: string } }>;
+    relationships: Array<{ status: string }>;
   };
-  expect(listed.relationships[0]!.document.status).toBe("wary");
+  expect(listed.relationships[0]!.status).toBe("wary");
 });

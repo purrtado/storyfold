@@ -5,6 +5,7 @@ import { CampaignPlay } from "./components/CampaignPlay";
 import { NewCampaignPage } from "./components/NewCampaignPage";
 import { CharactersPage } from "./components/CharactersPage";
 import { ProvidersPage } from "./components/ProvidersPage";
+import { StatsSettingsPage } from "./components/StatsSettingsPage";
 import { SettingsPage, SettingsSidebar } from "./components/SettingsPage";
 import { Sheet } from "./components/Sheet";
 import { Sidebar } from "./components/Sidebar";
@@ -320,6 +321,10 @@ export default function App() {
         <Route
           path="/settings/providers"
           element={<ProvidersPage onOpenSidebar={() => setMobileOpen(true)} />}
+        />
+        <Route
+          path="/settings/stats"
+          element={<StatsSettingsPage onOpenSidebar={() => setMobileOpen(true)} />}
         />
         <Route
           path="/worlds"

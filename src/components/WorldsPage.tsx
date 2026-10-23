@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Globe2, Pencil, Plus, Search } from "lucide-react";
-import type { World } from "../../shared/domain";
+import { STAT_KINDS, type World } from "../../shared/domain";
 import { createWorld, updateWorld, type WorldInput } from "../lib/storyApi";
-import { refreshWorlds, useWorlds, worldsLibrary } from "../lib/libraryCache";
+import { refreshStats, refreshWorlds, useStats, useWorlds, worldsLibrary } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
+import { STAT_KIND_LABELS } from "./StatDefinitionList";
 import { WorldCompendium } from "./WorldCompendium";
 
 const emptyWorld: WorldInput = {
@@ -18,15 +19,18 @@ export function WorldsPage(props: {
 }) {
   const library = useWorlds();
   const worlds = library.items;
+  const bankLibrary = useStats();
+  const bankStats = bankLibrary.items;
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
-  const [editor, setEditor] = useState<{ id: string | null; value: WorldInput } | null>(null);
+  const [editor, setEditor] = useState<{ id: string | null; value: WorldInput; statIds: string[] } | null>(null);
   const [saveError, setSaveError] = useState("");
   const [compendiumWorldId, setCompendiumWorldId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     refreshWorlds();
+    refreshStats();
   }, []);
 
   const coldLoading = worlds === undefined && library.loadError === undefined;
@@ -51,7 +55,7 @@ export function WorldsPage(props: {
   const compendiumWorld = worlds?.find((item) => item.id === compendiumWorldId);
 
   const openNew = () => {
-    setEditor({ id: null, value: { ...emptyWorld } });
+    setEditor({ id: null, value: { ...emptyWorld }, statIds: [] });
     setSaveError("");
   };
 
@@ -63,8 +67,18 @@ export function WorldsPage(props: {
         setting_brief: world.setting_brief,
         suggested_starting_situation: world.suggested_starting_situation,
       },
+      statIds: [],
     });
     setSaveError("");
+  };
+
+  const toggleBankStat = (statId: string) => {
+    setEditor((current) => current && {
+      ...current,
+      statIds: current.statIds.includes(statId)
+        ? current.statIds.filter((id) => id !== statId)
+        : [...current.statIds, statId],
+    });
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -80,7 +94,7 @@ export function WorldsPage(props: {
     try {
       const saved = editor.id
         ? await updateWorld(editor.id, input)
-        : await createWorld(input);
+        : await createWorld({ ...input, ...(editor.statIds.length ? { stat_ids: editor.statIds } : {}) });
       worldsLibrary.applySaved(saved, editor.id ?? undefined);
       setEditor(null);
     } catch (error) {
@@ -152,6 +166,49 @@ export function WorldsPage(props: {
                       className="min-h-24 resize-y rounded-lg border border-border bg-raised px-3 py-2 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                     />
                   </label>
+                  {!editor.id && (
+                    <fieldset className="grid gap-2 text-sm font-medium">
+                      <legend>
+                        Import stats from the bank <span className="font-normal text-muted">Optional</span>
+                      </legend>
+                      {bankStats === undefined ? (
+                        bankLibrary.loadError ? (
+                          <div className="grid justify-items-start gap-2" role="alert">
+                            <p className="font-normal text-muted">{bankLibrary.loadError}</p>
+                            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshStats()}>Try again</button>
+                          </div>
+                        ) : <p className="font-normal text-muted" role="status">Loading stats…</p>
+                      ) : bankStats.length === 0 ? (
+                        <p className="font-normal text-muted">The bank has no stats yet. Add them under Settings → Stats.</p>
+                      ) : (
+                        STAT_KINDS.map((kind) => {
+                          const group = bankStats.filter((stat) => stat.applies_to === kind);
+                          if (group.length === 0) return null;
+                          return (
+                            <div key={kind} className="grid gap-1.5">
+                              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">{STAT_KIND_LABELS[kind]}</p>
+                              <ul className="grid list-none gap-1 p-0 sm:grid-cols-2">
+                                {group.map((stat) => (
+                                  <li key={stat.id}>
+                                    <label className="flex cursor-pointer items-center gap-2 text-sm font-normal">
+                                      <input
+                                        type="checkbox"
+                                        className="size-4 flex-none accent-accent"
+                                        checked={editor.statIds.includes(stat.id)}
+                                        onChange={() => toggleBankStat(stat.id)}
+                                      />
+                                      <span className="size-3 flex-none rounded-full" style={{ background: `var(--stat-${stat.color})` }} aria-hidden="true" />
+                                      <span className="min-w-0 truncate">{stat.label}</span>
+                                    </label>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          );
+                        })
+                      )}
+                    </fieldset>
+                  )}
                 </div>
                 {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
                 <div className="flex flex-wrap justify-end gap-2">

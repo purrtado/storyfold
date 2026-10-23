@@ -269,8 +269,8 @@ function MessageRow(props: {
       <p className="text-sm text-muted">
         Copies the story up to this message into a new campaign.{" "}
         {props.activeSession
-          ? "Characters, notes, and relationships are copied as they are now."
-          : "Characters, notes, and relationships are restored as they were when this session closed."}
+          ? "Characters, stats, notes, and relationships are copied as they are now."
+          : "Characters, stats, notes, and relationships are restored as they were when this session closed."}
       </p>
       <div className="flex flex-wrap gap-2">
         <button

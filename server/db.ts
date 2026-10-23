@@ -2,7 +2,15 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Campaign, CampaignCharacter, WorldEntryKind, WorldEntrySnapshot, WorldSnapshot } from "../shared/domain";
+import type {
+  Campaign,
+  CampaignCharacter,
+  CampaignStat,
+  StatFields,
+  WorldEntryKind,
+  WorldEntrySnapshot,
+  WorldSnapshot,
+} from "../shared/domain";
 import { WORLD_ENTRY_KINDS } from "../shared/domain";
 
 const SCHEMA = `
@@ -70,6 +78,8 @@ CREATE TABLE IF NOT EXISTS campaign_characters (
   baseline_motivations TEXT NOT NULL,
   speaking_style TEXT NOT NULL,
   avatar_id TEXT REFERENCES images(id),
+  stats_enabled INTEGER NOT NULL CHECK (stats_enabled IN (0, 1)),
+  stats TEXT NOT NULL CHECK (json_valid(stats)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (id, campaign_id)
@@ -77,6 +87,44 @@ CREATE TABLE IF NOT EXISTS campaign_characters (
 
 CREATE UNIQUE INDEX IF NOT EXISTS campaign_characters_one_protagonist
   ON campaign_characters(campaign_id) WHERE role = 'protagonist';
+
+CREATE TABLE IF NOT EXISTS stat_definitions (
+  id TEXT PRIMARY KEY,
+  world_id TEXT REFERENCES worlds(id),
+  applies_to TEXT NOT NULL CHECK (applies_to IN ('character', 'relationship')),
+  label TEXT NOT NULL,
+  description TEXT NOT NULL,
+  low_label TEXT NOT NULL,
+  high_label TEXT NOT NULL,
+  min INTEGER NOT NULL,
+  max INTEGER NOT NULL,
+  default_value INTEGER NOT NULL,
+  color TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (min < max AND default_value BETWEEN min AND max)
+);
+
+CREATE INDEX IF NOT EXISTS stat_definitions_world ON stat_definitions(world_id);
+
+CREATE TABLE IF NOT EXISTS campaign_stats (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  applies_to TEXT NOT NULL CHECK (applies_to IN ('character', 'relationship')),
+  label TEXT NOT NULL,
+  description TEXT NOT NULL,
+  low_label TEXT NOT NULL,
+  high_label TEXT NOT NULL,
+  min INTEGER NOT NULL,
+  max INTEGER NOT NULL,
+  default_value INTEGER NOT NULL,
+  color TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (min < max AND default_value BETWEEN min AND max)
+);
+
+CREATE INDEX IF NOT EXISTS campaign_stats_campaign ON campaign_stats(campaign_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -116,7 +164,10 @@ CREATE TABLE IF NOT EXISTS relationships (
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
   source_id TEXT NOT NULL,
   target_id TEXT NOT NULL,
-  document TEXT NOT NULL CHECK (json_valid(document)),
+  how_met TEXT NOT NULL,
+  status TEXT NOT NULL,
+  known_facts TEXT NOT NULL CHECK (json_valid(known_facts)),
+  stats TEXT NOT NULL CHECK (json_valid(stats)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (source_id != target_id),
@@ -171,11 +222,24 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no migrations. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+
+/** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
+const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
+  { applies_to: "character", label: "Health", description: "Physical condition. Low health limits what they can attempt and how hard they can push.", low_label: "dying", high_label: "unharmed", min: 0, max: 10, default_value: 10, color: "red" },
+  { applies_to: "character", label: "Stamina", description: "Energy for exertion. Low stamina means they tire quickly and need rest.", low_label: "spent", high_label: "fresh", min: 0, max: 10, default_value: 10, color: "amber" },
+  { applies_to: "character", label: "Stress", description: "Mental strain. High stress shows in mistakes, short tempers, and rash choices.", low_label: "calm", high_label: "breaking point", min: 0, max: 10, default_value: 0, color: "violet" },
+  { applies_to: "character", label: "Morale", description: "Hope and resolve. Low morale makes them hesitant; high morale makes them bold.", low_label: "hopeless", high_label: "resolute", min: 0, max: 10, default_value: 5, color: "blue" },
+  { applies_to: "relationship", label: "Trust", description: "How much the source relies on the target's word and intentions.", low_label: "none", high_label: "complete", min: 0, max: 10, default_value: 5, color: "teal" },
+  { applies_to: "relationship", label: "Affection", description: "How warmly the source feels toward the target.", low_label: "cold", high_label: "devoted", min: 0, max: 10, default_value: 5, color: "pink" },
+  { applies_to: "relationship", label: "Respect", description: "How highly the source regards the target's abilities and judgment.", low_label: "contempt", high_label: "admiration", min: 0, max: 10, default_value: 5, color: "green" },
+  { applies_to: "relationship", label: "Tension", description: "Unresolved friction between them. High tension colors every exchange.", low_label: "at ease", high_label: "hostile", min: 0, max: 10, default_value: 0, color: "orange" },
+];
 
 /**
  * Opens the workspace database with foreign keys and the schema in place. A
- * workspace written by another schema version is refused rather than migrated.
+ * workspace written by another schema version is refused rather than
+ * migrated; a fresh one gets the stat bank seed.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -189,6 +253,17 @@ export function openDatabase(path: string): Database {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
+  if (!populated) {
+    const now = nowIso();
+    const insert = db.query(
+      `INSERT INTO stat_definitions
+         (id, world_id, applies_to, label, description, low_label, high_label, min, max, default_value, color, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const stat of STAT_BANK_SEED) {
+      insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
+    }
+  }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return db;
 }
@@ -262,6 +337,6 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries: entries as WorldEntrySnapshot[] };
 }
 
-export function campaignFromRow(row: CampaignRecord, characters: CampaignCharacter[]): Campaign {
-  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters };
+export function campaignFromRow(row: CampaignRecord, characters: CampaignCharacter[], stats: CampaignStat[]): Campaign {
+  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters, stats };
 }

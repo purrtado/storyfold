@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
-import type { Campaign, Character, Session, WorldEntry } from "../../shared/domain";
+import type { Campaign, Character, Session, StatValues, WorldEntry } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import { createCampaign } from "../lib/storyApi";
 import {
   ensureWorldCharacters,
   ensureWorldEntries,
+  ensureWorldStats,
   refreshCharacters,
   refreshWorldCharacters,
   refreshWorldEntries,
@@ -15,6 +16,7 @@ import {
   useCharacters,
   useWorldCharacters,
   useWorldEntries,
+  useWorldStats,
   useWorlds,
 } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
@@ -120,11 +122,21 @@ export function NewCampaignPage(props: {
 
   const world = worlds?.find((item) => item.id === draft.worldId);
   const worldEntriesState = useWorldEntries(draft.worldId);
+  const worldStatsState = useWorldStats(draft.worldId);
   useEffect(() => {
     if (!draft.worldId) return;
     ensureWorldEntries(draft.worldId);
     ensureWorldCharacters(draft.worldId);
+    ensureWorldStats(draft.worldId);
   }, [draft.worldId]);
+
+  const worldStats = worldStatsState.items ?? [];
+  // What the server builds at creation: the protagonist opted in at defaults, the cast off.
+  const protagonistStats: StatValues = Object.fromEntries(
+    worldStats
+      .filter((stat) => stat.applies_to === "character")
+      .map((stat) => [stat.id, stat.default_value]),
+  );
 
   const worldEntries = useMemo(
     () => [...(worldEntriesState.items ?? [])].sort((a, b) =>
@@ -145,7 +157,7 @@ export function NewCampaignPage(props: {
     .map((id) => characterById.get(id))
     .filter((character): character is Character => character !== undefined && character.id !== draft.protagonistId);
   const compendiumEntries = worldEntries.filter((entry) => entry.kind !== "scene");
-  const openingPromptLength = world && protagonist && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined
+  const openingPromptLength = world && protagonist && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
     ? narratorSystemPrompt({
       world: {
         name: world.name,
@@ -153,8 +165,9 @@ export function NewCampaignPage(props: {
         entries: compendiumEntries,
       },
       starting_situation: draft.startingSituation.trim(),
-      protagonist,
-      cast: selectedCharacters,
+      stats: worldStats,
+      protagonist: { ...protagonist, stats_enabled: true, stats: protagonistStats },
+      cast: selectedCharacters.map((character) => ({ ...character, stats_enabled: false, stats: {} })),
       notes: [],
       relationships: [],
       handoff: null,
@@ -167,6 +180,7 @@ export function NewCampaignPage(props: {
     && protagonist
     && worldEntriesState.items !== undefined
     && worldCharactersState.items !== undefined
+    && worldStatsState.items !== undefined
     && !starting
     && !overLimit,
   );

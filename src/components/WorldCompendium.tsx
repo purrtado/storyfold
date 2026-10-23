@@ -1,15 +1,18 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Copy, Pencil, Plus, Trash2, X } from "lucide-react";
-import type { Character, World, WorldEntry, WorldEntryKind } from "../../shared/domain";
+import type { Character, StatDefinition, World, WorldEntry, WorldEntryKind } from "../../shared/domain";
 import {
   copyCharacterToLibrary,
   createWorldCharacter,
   createWorldEntry,
+  createWorldStat,
   deleteCharacter,
   deleteCharacterAvatar,
+  deleteStat,
   deleteWorldEntry,
   updateCharacter,
+  updateStat,
   updateWorldEntry,
   uploadCharacterAvatar,
   type WorldEntryInput,
@@ -19,17 +22,24 @@ import {
   applyWorldCharacterSaved,
   applyWorldEntryRemoved,
   applyWorldEntrySaved,
+  applyWorldStatRemoved,
+  applyWorldStatSaved,
   ensureWorldCharacters,
   ensureWorldEntries,
+  ensureWorldStats,
   refreshCharacters,
   refreshWorldCharacters,
   refreshWorldEntries,
+  refreshWorldStats,
   useWorldCharacters,
   useWorldEntries,
+  useWorldStats,
 } from "../lib/libraryCache";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
 import { Avatar } from "./Avatar";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
+import { StatDefinitionEditor } from "./StatDefinitionEditor";
+import { StatDefinitionList } from "./StatDefinitionList";
 
 type EntryEditor = WorldEntryInput & { id: string | null };
 
@@ -46,11 +56,14 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
   const entryOpenerRef = useRef<HTMLElement | null>(null);
   const characterOpenerRef = useRef<HTMLElement | null>(null);
   const [characterEditor, setCharacterEditor] = useState<{ character: Character | null } | null>(null);
+  const [statEditor, setStatEditor] = useState<{ stat: StatDefinition | null } | null>(null);
+  const statOpenerRef = useRef<HTMLElement | null>(null);
   const [saveError, setSaveError] = useState("");
   const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busyCharacterId, setBusyCharacterId] = useState<string | null>(null);
+  const [deletingStatId, setDeletingStatId] = useState<string | null>(null);
   const entries = useMemo(
     () => [...(entriesLibrary.items ?? [])].sort((a, b) =>
       a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
@@ -61,11 +74,28 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
       a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
     [charactersLibrary.items],
   );
+  const statsLibrary = useWorldStats(props.world.id);
+  const worldStats = statsLibrary.items ?? [];
 
   useEffect(() => {
     ensureWorldEntries(props.world.id);
     ensureWorldCharacters(props.world.id);
+    ensureWorldStats(props.world.id);
   }, [props.world.id]);
+
+  const removeStat = async (stat: StatDefinition) => {
+    if (!window.confirm(`Delete “${stat.label}” from ${props.world.name}? Campaigns that already use it keep their copy.`)) return;
+    setDeletingStatId(stat.id);
+    setActionError("");
+    try {
+      await deleteStat(stat.id);
+      applyWorldStatRemoved(props.world.id, stat.id);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not delete this stat.");
+    } finally {
+      setDeletingStatId(null);
+    }
+  };
 
   const openNew = (kind: WorldEntryKind) => {
     setEditor({ id: null, kind, name: "", description: "" });
@@ -327,6 +357,52 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
             })}
           </div>
         )}
+
+        <section className="grid gap-4 rounded-xl border border-border bg-raised p-5" aria-labelledby="world-stats-title">
+          <header className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Reusable meters</p>
+              <h3 id="world-stats-title" className="mbs-1 text-lg font-semibold">Stats</h3>
+              <p className="mbs-1 max-w-2xl text-sm leading-6 text-muted">Scales that campaigns of {props.world.name} can track for characters and relationships. Bank stats can only be imported when a world is created.</p>
+            </div>
+            <button
+              type="button"
+              className="pressable inline-flex min-h-10 flex-none items-center gap-2 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+              onClick={(event) => {
+                statOpenerRef.current = event.currentTarget;
+                setStatEditor({ stat: null });
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />Add stat
+            </button>
+          </header>
+
+          {statsLibrary.refreshError && (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted" role="status">
+              {statsLibrary.refreshError}
+              <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => refreshWorldStats(props.world.id)}>Retry</button>
+            </p>
+          )}
+          {actionError && <p className="text-sm text-muted" role="alert">{actionError}</p>}
+
+          {statsLibrary.items === undefined ? (
+            statsLibrary.loadError ? (
+              <section className="grid justify-items-start gap-3 rounded-lg border border-border p-5" role="alert">
+                <p className="text-sm text-muted">{statsLibrary.loadError}</p>
+                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldStats(props.world.id)}>Try again</button>
+              </section>
+            ) : <p className="text-sm text-muted" role="status">Loading this world's stats…</p>
+          ) : worldStats.length === 0 ? (
+            <p className="text-sm text-muted">No stats in this world yet.</p>
+          ) : (
+            <StatDefinitionList
+              stats={worldStats}
+              busy={deletingStatId !== null}
+              onDelete={(stat) => { void removeStat(stat); }}
+              onEdit={(stat) => setStatEditor({ stat })}
+            />
+          )}
+        </section>
       </section>
 
       {editor && (
@@ -397,6 +473,19 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
           onAvatarRemove={deleteCharacterAvatar}
           onSaved={(saved, previousId) => applyWorldCharacterSaved(props.world.id, saved, previousId)}
           onClose={() => setCharacterEditor(null)}
+        />
+      )}
+
+      {statEditor && (
+        <StatDefinitionEditor
+          stat={statEditor.stat}
+          title={statEditor.stat ? `Edit ${statEditor.stat.label}` : "Add a world stat"}
+          description={statEditor.stat ? "Changes apply to new campaigns; existing campaigns keep their copy." : `This stat belongs to ${props.world.name}.`}
+          openerRef={statOpenerRef}
+          onCreate={(input) => createWorldStat(props.world.id, input)}
+          onUpdate={updateStat}
+          onSaved={(saved, previousId) => applyWorldStatSaved(props.world.id, saved, previousId)}
+          onClose={() => setStatEditor(null)}
         />
       )}
     </DialogPrimitive.Root>
