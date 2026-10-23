@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Message } from "../shared/domain";
+import { protagonistOf } from "../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
 import {
@@ -416,16 +417,16 @@ export class PlayService {
 
   /**
    * Narrator grounding for this session from what its campaign owns: the
-   * captured snapshots, current notes and relationships, and the handoff that
-   * grounds the session. The live library is never consulted.
+   * world snapshot, its characters, current notes and relationships, and the
+   * handoff that grounds the session. The library and worlds are never consulted.
    */
   systemPrompt(sessionId: string): string {
     const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
     return narratorSystemPrompt({
       world: campaign.world_snapshot,
       starting_situation: campaign.starting_situation,
-      protagonist: campaign.protagonist_snapshot,
-      cast: campaign.cast,
+      protagonist: protagonistOf(campaign),
+      cast: campaign.characters.filter((character) => character.role === "cast"),
       notes: listCampaignState(this.db, campaign.id),
       relationships: relationshipNarrationContext(this.db, campaign),
       handoff: sessionGroundingHandoff(this.db, campaign.id, sessionId),

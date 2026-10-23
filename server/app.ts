@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
+import { protagonistOf } from "../shared/domain";
 import {
   CredentialStore,
   DATABASE_FILENAME,
@@ -25,7 +26,6 @@ import {
   SessionClosedError,
   UnknownEntityError,
   ValidationError,
-  associateWorldCharacter,
   beginNextSession,
   clearCharacterAvatar,
   createCampaignStateItem,
@@ -33,7 +33,10 @@ import {
   createCharacter,
   createWorld,
   createWorldEntry,
-  deleteWorldCharacter,
+  copyCharacterToLibrary,
+  createCampaignCharacter,
+  deleteCampaignCharacter,
+  deleteCharacter,
   deleteCampaignStateItem,
   deleteWorldEntry,
   forkCampaignFromMessage,
@@ -46,10 +49,12 @@ import {
   listCampaignState,
   listCampaigns,
   listCharacters,
+  listCampaignCharacters,
   listWorldCharacters,
   listWorldEntries,
   listWorlds,
   IMAGE_MIME_TYPES,
+  type ImageMime,
   parseCampaignInput,
   parseCampaignStateInput,
   parseCampaignStatePatch,
@@ -57,8 +62,6 @@ import {
   parseCharacterPatch,
   parseForkInput,
   parseSessionCreateInput,
-  parseWorldCharacterInput,
-  parseWorldCharacterPatch,
   parseWorldEntryInput,
   parseWorldEntryPatch,
   parseWorldInput,
@@ -67,13 +70,14 @@ import {
   updateCampaignStateItem,
   updateCharacter,
   updateWorld,
-  updateWorldCharacter,
+  saveCampaignCharacterToWorld,
+  setCampaignCharacterAvatar,
+  updateCampaignCharacter,
   updateWorldEntry,
 } from "./library";
 import {
   RelationshipValidationError,
   createRelationship,
-  createRelationshipSubject,
   deleteRelationship,
   listRelationships,
   parseRelationshipDocument,
@@ -254,7 +258,12 @@ async function handleWorlds(request: Request, id: string | undefined, db: Databa
   return jsonError(405, "Method not allowed");
 }
 
-async function handleCharacters(request: Request, id: string | undefined, db: Database): Promise<Response> {
+async function handleCharacters(
+  request: Request,
+  id: string | undefined,
+  action: string | undefined,
+  db: Database,
+): Promise<Response> {
   if (id === undefined) {
     if (request.method === "GET") return jsonResponse({ characters: listCharacters(db) });
     if (request.method === "POST") {
@@ -268,6 +277,16 @@ async function handleCharacters(request: Request, id: string | undefined, db: Da
     }
     return jsonError(405, "Method not allowed");
   }
+  if (action === "copy-to-library") {
+    if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    try {
+      const character = copyCharacterToLibrary(db, id);
+      return character ? jsonResponse({ character }, 201) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (action !== undefined) return jsonError(404, "Not found");
   if (request.method === "GET") {
     const character = getCharacter(db, id);
     return character ? jsonResponse({ character }) : notFound("Unknown character");
@@ -282,6 +301,13 @@ async function handleCharacters(request: Request, id: string | undefined, db: Da
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
   }
+  if (request.method === "DELETE") {
+    try {
+      return deleteCharacter(db, id) ? jsonResponse({ ok: true }) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
   return jsonError(405, "Method not allowed");
 }
 
@@ -289,9 +315,20 @@ async function handleCharacters(request: Request, id: string | undefined, db: Da
  * Character pictures are raw byte uploads, not multipart: the declared content
  * type must be one of the four accepted image formats, the magic bytes must
  * agree with it (SVG and everything else is rejected), and the body caps at
- * 2 MiB — the avatar route's own limit, not the JSON body cap. PUT is not in
- * the generic mutating set, so the trusted-Origin rule is enforced here.
+ * 2 MiB — the avatar route's own limit, not the JSON body cap.
  */
+async function readAvatarUpload(request: Request): Promise<{ bytes: Uint8Array; mime: ImageMime } | Response> {
+  const declared = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!(IMAGE_MIME_TYPES as readonly string[]).includes(declared)) {
+    return jsonError(415, "Content-Type must be image/png, image/jpeg, image/webp, or image/gif");
+  }
+  const body = await readRawBody(request, AVATAR_BODY_MAX_BYTES);
+  if (!body.ok) return body.response;
+  if (body.data.byteLength === 0) return jsonError(400, "Request body required");
+  return { bytes: body.data, mime: declared as ImageMime };
+}
+
+/** PUT is not in the generic mutating set, so the trusted-Origin rule is enforced here. */
 async function handleCharacterAvatar(
   request: Request,
   id: string | undefined,
@@ -303,15 +340,10 @@ async function handleCharacterAvatar(
   if (!existing) return notFound("Unknown character");
 
   if (request.method === "PUT") {
-    const declared = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-    if (!(IMAGE_MIME_TYPES as readonly string[]).includes(declared)) {
-      return jsonError(415, "Content-Type must be image/png, image/jpeg, image/webp, or image/gif");
-    }
-    const body = await readRawBody(request, AVATAR_BODY_MAX_BYTES);
-    if (!body.ok) return body.response;
-    if (body.data.byteLength === 0) return jsonError(400, "Request body required");
+    const upload = await readAvatarUpload(request);
+    if (upload instanceof Response) return upload;
     try {
-      const character = setCharacterAvatar(db, id, body.data, declared as (typeof IMAGE_MIME_TYPES)[number]);
+      const character = setCharacterAvatar(db, id, upload.bytes, upload.mime);
       return character ? jsonResponse({ character }) : notFound("Unknown character");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -342,50 +374,25 @@ function handleImageGet(request: Request, id: string | undefined, db: Database):
   });
 }
 
-/**
- * World cast is world-scoped like entries: every route carries the world id,
- * and a character id is only ever resolved inside that scope, so another
- * world's association is indistinguishable from a missing one.
- */
+/** World characters are listed and created under their world; edits use /api/characters/:id. */
 async function handleWorldCharacters(
   request: Request,
   worldId: string | undefined,
-  characterId: string | undefined,
   db: Database,
 ): Promise<Response> {
   if (worldId === undefined) return notFound("Unknown world");
   if (!getWorld(db, worldId)) return notFound("Unknown world");
-
-  if (characterId === undefined) {
-    if (request.method === "GET") {
-      return jsonResponse({ characters: listWorldCharacters(db, worldId) });
-    }
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        const association = associateWorldCharacter(db, worldId, parseWorldCharacterInput(body));
-        return association ? jsonResponse({ character: association }, 201) : notFound("Unknown world");
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
+  if (request.method === "GET") {
+    return jsonResponse({ characters: listWorldCharacters(db, worldId) });
   }
-
-  if (request.method === "PATCH") {
+  if (request.method === "POST") {
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      const association = updateWorldCharacter(db, worldId, characterId, parseWorldCharacterPatch(body));
-      return association ? jsonResponse({ character: association }) : notFound("Unknown character");
+      return jsonResponse({ character: createCharacter(db, parseCharacterInput(body), worldId) }, 201);
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
-  }
-  if (request.method === "DELETE") {
-    if (!deleteWorldCharacter(db, worldId, characterId)) return notFound("Unknown character");
-    return jsonResponse({ ok: true });
   }
   return jsonError(405, "Method not allowed");
 }
@@ -521,30 +528,98 @@ async function handleCampaignState(
   }
   return jsonError(405, "Method not allowed");
 }
+
+/** Campaign writes are refused while the campaign's active session generates. */
+function assertCampaignIdle(ctx: AppContext, campaignId: string): void {
+  const campaign = getCampaign(ctx.db, campaignId);
+  if (campaign && ctx.play.hasPending(campaign.active_session_id)) {
+    throw new BusyError("A reply is already being generated for this session");
+  }
+}
+
+/**
+ * Campaign characters are the campaign's own copies: an id resolves only
+ * inside its campaign's URL. Every write re-checks pending narration after the
+ * body is read; Save to world writes only to the world.
+ */
+async function handleCampaignCharacters(
+  request: Request,
+  campaignId: string | undefined,
+  characterId: string | undefined,
+  action: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  if (campaignId === undefined || !getCampaign(ctx.db, campaignId)) return notFound("Unknown campaign");
+  if (characterId === undefined) {
+    if (request.method === "GET") return jsonResponse({ characters: listCampaignCharacters(ctx.db, campaignId) });
+    if (request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const input = parseCharacterInput(body);
+        assertCampaignIdle(ctx, campaignId);
+        return jsonResponse({ character: createCampaignCharacter(ctx.db, campaignId, input) }, 201);
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (action === "save-to-world") {
+    if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    const character = saveCampaignCharacterToWorld(ctx.db, campaignId, characterId);
+    return character ? jsonResponse({ character }, 201) : notFound("Unknown character");
+  }
+  if (action === "avatar") {
+    if (!hasTrustedOrigin(request)) return jsonError(403, "Origin not allowed");
+    if (request.method !== "PUT" && request.method !== "DELETE") return jsonError(405, "Method not allowed");
+    const upload = request.method === "PUT" ? await readAvatarUpload(request) : null;
+    if (upload instanceof Response) return upload;
+    try {
+      assertCampaignIdle(ctx, campaignId);
+      const character = setCampaignCharacterAvatar(ctx.db, campaignId, characterId, upload);
+      return character ? jsonResponse({ character }) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (action !== undefined) return jsonError(404, "Not found");
+  if (request.method === "PATCH") {
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const patch = parseCharacterPatch(body);
+      assertCampaignIdle(ctx, campaignId);
+      const character = updateCampaignCharacter(ctx.db, campaignId, characterId, patch);
+      return character ? jsonResponse({ character }) : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (request.method === "DELETE") {
+    try {
+      assertCampaignIdle(ctx, campaignId);
+      return deleteCampaignCharacter(ctx.db, campaignId, characterId)
+        ? jsonResponse({ ok: true })
+        : notFound("Unknown character");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  return jsonError(405, "Method not allowed");
+}
+
 async function handleCampaignRelationships(
   request: Request,
   campaignId: string | undefined,
   relationshipId: string | undefined,
-  action: string | undefined,
   ctx: AppContext,
 ): Promise<Response> {
   if (campaignId === undefined) return notFound("Unknown campaign");
   const campaign = getCampaign(ctx.db, campaignId);
   if (!campaign) return notFound("Unknown campaign");
-  if (relationshipId === undefined && action === "relationship-subjects" && request.method === "POST") {
-    const body = await readObjectBody(request);
-    if (body instanceof Response) return body;
-    try {
-      const activeCampaign = getCampaign(ctx.db, campaignId);
-      if (!activeCampaign) return notFound("Unknown campaign");
-      if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      return jsonResponse({ subject: createRelationshipSubject(ctx.db, campaignId, body.name as string) }, 201);
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
   if (relationshipId === undefined) {
-    if (request.method === "GET") return jsonResponse(listRelationships(ctx.db, campaign));
+    if (request.method === "GET") return jsonResponse({ relationships: listRelationships(ctx.db, campaignId) });
     if (request.method === "POST") {
       const body = await readObjectBody(request);
       if (body instanceof Response) return body;
@@ -677,7 +752,7 @@ async function handlePlayPost(
   const settings = await ctx.store.load();
   const reserveTurn = (): ReservedTurn => {
     if (kind === "messages") {
-      return ctx.play.reservePlayerTurn(sessionId, content, campaign.protagonist_snapshot.name);
+      return ctx.play.reservePlayerTurn(sessionId, content, protagonistOf(campaign).name);
     }
     if (kind === "opening") {
       return ctx.play.reserveOpening(sessionId);
@@ -737,20 +812,23 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
       return handleWorldEntries(request, segments[2], segments[4], ctx.db);
     }
     if (segments[3] === "characters") {
-      return handleWorldCharacters(request, segments[2], segments[4], ctx.db);
+      return handleWorldCharacters(request, segments[2], ctx.db);
     }
     return handleWorlds(request, segments[2], ctx.db);
   }
   if (resource === "characters") {
     if (segments[3] === "avatar") return handleCharacterAvatar(request, segments[2], ctx.db);
-    return handleCharacters(request, segments[2], ctx.db);
+    return handleCharacters(request, segments[2], segments[3], ctx.db);
   }
   if (resource === "images") return handleImageGet(request, segments[2], ctx.db);
   if (resource === "campaigns") {
     if (segments[3] === "state") return handleCampaignState(request, segments[2], segments[4], ctx);
     if (segments[3] === "sessions") return handleCampaignSessions(request, segments[2], ctx);
-    if (segments[3] === "relationships" || segments[3] === "relationship-subjects") {
-      return handleCampaignRelationships(request, segments[2], segments[4], segments[5] ?? segments[3], ctx);
+    if (segments[3] === "characters") {
+      return handleCampaignCharacters(request, segments[2], segments[4], segments[5], ctx);
+    }
+    if (segments[3] === "relationships") {
+      return handleCampaignRelationships(request, segments[2], segments[4], ctx);
     }
     return handleCampaigns(request, segments[2], ctx.db);
   }

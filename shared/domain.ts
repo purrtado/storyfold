@@ -3,7 +3,7 @@
  * JSON APIs are snake_case with ISO timestamps; ids are server-generated text.
  */
 
-export const WORLD_ENTRY_KINDS = ["local_npc", "location", "lore", "scene"] as const;
+export const WORLD_ENTRY_KINDS = ["location", "lore", "scene"] as const;
 
 export type WorldEntryKind = (typeof WORLD_ENTRY_KINDS)[number];
 
@@ -28,57 +28,51 @@ export interface WorldEntrySnapshot {
 export interface WorldSnapshot {
   name: string;
   setting_brief: string;
-  suggested_starting_situation: string;
   entries: WorldEntrySnapshot[];
 }
 
 /**
- * A global character. name/description are required; the remaining authored
- * fields are optional but always present, empty when unauthored.
+ * The one character profile shape, at every scope. `prompt` labels the field
+ * in narrator grounding; name and description are rendered without a label.
  */
-export interface Character {
+export const CHARACTER_PROFILE_FIELDS = [
+  { key: "name", label: "Name", prompt: "", required: true },
+  { key: "description", label: "Description", prompt: "", required: true },
+  { key: "appearance", label: "Appearance", prompt: "Appearance", required: false },
+  { key: "personality", label: "Personality", prompt: "Personality", required: false },
+  { key: "background", label: "Background", prompt: "Background", required: false },
+  { key: "baseline_motivations", label: "Motivations", prompt: "Motivations", required: false },
+  { key: "speaking_style", label: "Speaking style", prompt: "Speaking style", required: false },
+] as const;
+
+export type CharacterProfileKey = (typeof CHARACTER_PROFILE_FIELDS)[number]["key"];
+
+/** Name and description are non-empty; the other fields are "" when unauthored. */
+export type CharacterProfile = Record<CharacterProfileKey, string>;
+
+/**
+ * A library character (`world_id` null) or a world character. Copies between
+ * scopes are independent; nothing links them.
+ */
+export interface Character extends CharacterProfile {
   id: string;
-  name: string;
-  description: string;
-  appearance: string;
-  personality: string;
-  background: string;
-  baseline_motivations: string;
-  speaking_style: string;
+  world_id: string | null;
   /** Content-addressed image id (sha256 hex), null when no picture was uploaded. */
   avatar_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-/**
- * A global character definition captured at campaign creation, together with
- * the world-specific context of the world it was cast from ("" outside any
- * world cast). `id` is the captured global character id; later library edits
- * never rewrite a campaign snapshot.
- */
-export interface CharacterSnapshot {
-  id: string;
-  name: string;
-  description: string;
-  appearance: string;
-  personality: string;
-  background: string;
-  baseline_motivations: string;
-  speaking_style: string;
-  world_context: string;
-  /** Captured image id at campaign creation; never re-resolved against the library. */
-  avatar_id: string | null;
-}
+export type CampaignCharacterRole = "protagonist" | "cast";
 
-/** Association of a global character with a world plus freeform world-specific context. */
-export interface WorldCharacter {
-  world_id: string;
-  character_id: string;
-  context: string;
+/** A campaign's own copy of a character; edits never reach the library or world. */
+export interface CampaignCharacter extends CharacterProfile {
+  id: string;
+  campaign_id: string;
+  role: CampaignCharacterRole;
+  avatar_id: string | null;
   created_at: string;
   updated_at: string;
-  character: Character;
 }
 
 export interface World {
@@ -117,12 +111,7 @@ export interface RelationshipDocument {
   sections: { id: string; label: string; type: "text" | "list"; value: string | string[] }[];
 }
 
-export interface RelationshipSubject {
-  id: string;
-  name: string;
-  kind: "character" | "entry" | "local_character";
-}
-
+/** A directed relationship between two characters of the same campaign. */
 export interface Relationship {
   id: string;
   campaign_id: string;
@@ -137,11 +126,9 @@ export interface Campaign {
   id: string;
   name: string;
   world_id: string;
-  protagonist_id: string;
   world_snapshot: WorldSnapshot;
-  protagonist_snapshot: CharacterSnapshot;
-  /** Narrator-controlled cast; excludes the protagonist, who grounds once. */
-  cast: CharacterSnapshot[];
+  /** The protagonist first, then the narrator-controlled cast in creation order. */
+  characters: CampaignCharacter[];
   starting_situation: string;
   active_session_id: string;
   /** Set when this campaign was forked from a message of another campaign's session. */
@@ -149,6 +136,11 @@ export interface Campaign {
   forked_from_session_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The character the player controls; every campaign has exactly one, listed first. */
+export function protagonistOf(campaign: Campaign): CampaignCharacter {
+  return campaign.characters[0]!;
 }
 
 export interface Session {

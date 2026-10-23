@@ -2,19 +2,20 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type {
   Campaign,
+  CampaignCharacter,
+  CampaignCharacterRole,
   CampaignStateCategory,
   CampaignStateItem,
   Character,
-  CharacterSnapshot,
+  CharacterProfile,
   RelationshipDocument,
   Session,
   World,
-  WorldCharacter,
   WorldEntry,
   WorldEntryKind,
   WorldEntrySnapshot,
 } from "../shared/domain";
-import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
+import { CAMPAIGN_STATE_CATEGORIES, CHARACTER_PROFILE_FIELDS, WORLD_ENTRY_KINDS } from "../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
 
@@ -81,36 +82,17 @@ export function parseWorldPatch(body: Record<string, unknown>): Partial<WorldInp
   return patch;
 }
 
-export interface CharacterInput {
-  name: string;
-  description: string;
-  appearance?: string;
-  personality?: string;
-  background?: string;
-  baseline_motivations?: string;
-  speaking_style?: string;
-}
+export type CharacterInput = CharacterProfile;
 
-const CHARACTER_OPTIONAL_FIELDS = [
-  "appearance",
-  "personality",
-  "background",
-  "baseline_motivations",
-  "speaking_style",
-] as const;
-
+/** Every profile field: required ones must be non-empty, the rest default to "". */
 export function parseCharacterInput(body: Record<string, unknown>): CharacterInput {
-  const input: CharacterInput = {
-    name: requiredText(body.name, "name"),
-    description: requiredText(body.description, "description"),
-    appearance: "",
-    personality: "",
-    background: "",
-    baseline_motivations: "",
-    speaking_style: "",
-  };
-  for (const field of CHARACTER_OPTIONAL_FIELDS) {
-    if (body[field] !== undefined) input[field] = optionalText(body[field], field);
+  const input = {} as CharacterInput;
+  for (const field of CHARACTER_PROFILE_FIELDS) {
+    input[field.key] = field.required
+      ? requiredText(body[field.key], field.key)
+      : body[field.key] === undefined
+        ? ""
+        : optionalText(body[field.key], field.key);
   }
   return input;
 }
@@ -118,15 +100,26 @@ export function parseCharacterInput(body: Record<string, unknown>): CharacterInp
 /** PATCH applies only the provided fields; at least one must be present. */
 export function parseCharacterPatch(body: Record<string, unknown>): Partial<CharacterInput> {
   const patch: Partial<CharacterInput> = {};
-  if (body.name !== undefined) patch.name = requiredText(body.name, "name");
-  if (body.description !== undefined) patch.description = requiredText(body.description, "description");
-  for (const field of CHARACTER_OPTIONAL_FIELDS) {
-    if (body[field] !== undefined) patch[field] = optionalText(body[field], field);
+  for (const field of CHARACTER_PROFILE_FIELDS) {
+    if (body[field.key] === undefined) continue;
+    patch[field.key] = field.required
+      ? requiredText(body[field.key], field.key)
+      : optionalText(body[field.key], field.key);
   }
   if (Object.keys(patch).length === 0) {
     throw new ValidationError("at least one character field is required");
   }
   return patch;
+}
+
+const PROFILE_COLUMNS = CHARACTER_PROFILE_FIELDS.map((field) => field.key);
+
+function profileOf(source: CharacterProfile): CharacterProfile {
+  return Object.fromEntries(PROFILE_COLUMNS.map((key) => [key, source[key]])) as CharacterProfile;
+}
+
+function profileValues(source: CharacterProfile): string[] {
+  return PROFILE_COLUMNS.map((key) => source[key]);
 }
 
 export function listWorlds(db: Database): World[] {
@@ -164,60 +157,56 @@ export function updateWorld(db: Database, id: string, patch: Partial<WorldInput>
   return next;
 }
 
+const CHARACTER_SELECT = `SELECT c.*, ca.image_id AS avatar_id FROM characters c
+  LEFT JOIN character_avatars ca ON ca.character_id = c.id`;
+
+/** The global library: characters owned by no world. */
 export function listCharacters(db: Database): Character[] {
   return db
-    .query<Character, []>(
-      `SELECT c.*, ca.image_id AS avatar_id FROM characters c
-       LEFT JOIN character_avatars ca ON ca.character_id = c.id
-       ORDER BY c.created_at, c.id`,
-    )
+    .query<Character, []>(`${CHARACTER_SELECT} WHERE c.world_id IS NULL ORDER BY c.created_at, c.id`)
     .all();
 }
 
-export function getCharacter(db: Database, id: string): Character | null {
-  return (
-    db
-      .query<Character, [string]>(
-        `SELECT c.*, ca.image_id AS avatar_id FROM characters c
-         LEFT JOIN character_avatars ca ON ca.character_id = c.id
-         WHERE c.id = ?`,
-      )
-      .get(id) ?? null
-  );
+export function listWorldCharacters(db: Database, worldId: string): Character[] {
+  return db
+    .query<Character, [string]>(`${CHARACTER_SELECT} WHERE c.world_id = ? ORDER BY c.created_at, c.id`)
+    .all(worldId);
 }
 
-export function createCharacter(db: Database, input: CharacterInput): Character {
+export function getCharacter(db: Database, id: string): Character | null {
+  return db.query<Character, [string]>(`${CHARACTER_SELECT} WHERE c.id = ?`).get(id) ?? null;
+}
+
+/** A library character when `worldId` is null, otherwise one owned by that world. */
+export function createCharacter(
+  db: Database,
+  input: CharacterInput,
+  worldId: string | null = null,
+  avatarId: string | null = null,
+): Character {
   const now = nowIso();
   const character: Character = {
     id: newId(),
-    name: input.name,
-    description: input.description,
-    appearance: input.appearance ?? "",
-    personality: input.personality ?? "",
-    background: input.background ?? "",
-    baseline_motivations: input.baseline_motivations ?? "",
-    speaking_style: input.speaking_style ?? "",
-    avatar_id: null,
+    world_id: worldId,
+    ...profileOf(input),
+    avatar_id: avatarId,
     created_at: now,
     updated_at: now,
   };
-  db.query(
-    `INSERT INTO characters
-       (id, name, description, appearance, personality, background, baseline_motivations,
-        speaking_style, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    character.id,
-    character.name,
-    character.description,
-    character.appearance,
-    character.personality,
-    character.background,
-    character.baseline_motivations,
-    character.speaking_style,
-    character.created_at,
-    character.updated_at,
-  );
+  const insert = db.transaction(() => {
+    db.query(
+      `INSERT INTO characters (id, world_id, ${PROFILE_COLUMNS.join(", ")}, created_at, updated_at)
+       VALUES (?, ?, ${PROFILE_COLUMNS.map(() => "?").join(", ")}, ?, ?)`,
+    ).run(character.id, worldId, ...profileValues(character), now, now);
+    if (avatarId !== null) {
+      db.query("INSERT INTO character_avatars (character_id, image_id, updated_at) VALUES (?, ?, ?)").run(
+        character.id,
+        avatarId,
+        now,
+      );
+    }
+  });
+  insert();
   return character;
 }
 
@@ -230,20 +219,25 @@ export function updateCharacter(
   if (!existing) return null;
   const next: Character = { ...existing, ...patch, updated_at: nowIso() };
   db.query(
-    `UPDATE characters SET name = ?, description = ?, appearance = ?, personality = ?,
-       background = ?, baseline_motivations = ?, speaking_style = ?, updated_at = ? WHERE id = ?`,
-  ).run(
-    next.name,
-    next.description,
-    next.appearance,
-    next.personality,
-    next.background,
-    next.baseline_motivations,
-    next.speaking_style,
-    next.updated_at,
-    id,
-  );
+    `UPDATE characters SET ${PROFILE_COLUMNS.map((key) => `${key} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+  ).run(...profileValues(next), next.updated_at, id);
   return next;
+}
+
+/** Only world characters can be deleted; library characters stay forever. */
+export function deleteCharacter(db: Database, id: string): boolean {
+  const existing = getCharacter(db, id);
+  if (!existing) return false;
+  if (existing.world_id === null) throw new ValidationError("library characters cannot be deleted");
+  return db.query("DELETE FROM characters WHERE id = ?").run(id).changes > 0;
+}
+
+/** Copies a world character into the library; the world keeps its own. */
+export function copyCharacterToLibrary(db: Database, id: string): Character | null {
+  const source = getCharacter(db, id);
+  if (!source) return null;
+  if (source.world_id === null) throw new ValidationError("character is already in the library");
+  return createCharacter(db, source, null, source.avatar_id);
 }
 
 /** Image formats accepted for character pictures, by magic-byte detection. */
@@ -318,30 +312,33 @@ export function getImage(db: Database, id: string): ImageRecord | null {
 }
 
 /**
- * Stores the bytes content-addressed (lowercase hex sha256) and points the
- * character at them in one transaction. Identical bytes are deduplicated by
- * the primary key; the previous image row stays — there is no garbage
- * collection, because past campaigns still reference their captured snapshot.
+ * Stores the bytes content-addressed (lowercase hex sha256) and returns the
+ * image id. Identical bytes are deduplicated by the primary key; images are
+ * never garbage collected, because copies at other scopes share them.
  */
+function storeImage(db: Database, bytes: Uint8Array, mime: ImageMime): string {
+  if (detectImageMime(bytes) !== mime) {
+    throw new ValidationError("image data does not match its declared type");
+  }
+  const id = createHash("sha256").update(bytes).digest("hex");
+  db.query(
+    "INSERT INTO images (id, mime, data, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+  ).run(id, mime, bytes, nowIso());
+  return id;
+}
+
 export function setCharacterAvatar(
   db: Database,
   characterId: string,
   bytes: Uint8Array,
   mime: ImageMime,
 ): Character | null {
-  if (detectImageMime(bytes) !== mime) {
-    throw new ValidationError("image data does not match its declared type");
-  }
-  const id = createHash("sha256").update(bytes).digest("hex");
-  const now = nowIso();
   const store = db.transaction(() => {
-    db.query(
-      "INSERT INTO images (id, mime, data, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
-    ).run(id, mime, bytes, now);
+    const id = storeImage(db, bytes, mime);
     db.query(
       `INSERT INTO character_avatars (character_id, image_id, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(character_id) DO UPDATE SET image_id = excluded.image_id, updated_at = excluded.updated_at`,
-    ).run(characterId, id, now);
+    ).run(characterId, id, nowIso());
   });
   store();
   return getCharacter(db, characterId);
@@ -351,119 +348,6 @@ export function setCharacterAvatar(
 export function clearCharacterAvatar(db: Database, characterId: string): Character | null {
   db.query("DELETE FROM character_avatars WHERE character_id = ?").run(characterId);
   return getCharacter(db, characterId);
-}
-
-export interface WorldCharacterInput {
-  character_id: string;
-  context: string;
-}
-
-export function parseWorldCharacterInput(body: Record<string, unknown>): WorldCharacterInput {
-  if (typeof body.character_id !== "string" || body.character_id.length === 0) {
-    throw new ValidationError("character_id must be a non-empty string");
-  }
-  return {
-    character_id: body.character_id,
-    ...(body.context !== undefined ? { context: optionalText(body.context, "context") } : { context: "" }),
-  };
-}
-
-export function parseWorldCharacterPatch(body: Record<string, unknown>): Partial<WorldCharacterInput> {
-  const patch: Partial<WorldCharacterInput> = {};
-  if (body.context !== undefined) patch.context = optionalText(body.context, "context");
-  if (Object.keys(patch).length === 0) {
-    throw new ValidationError("context is required");
-  }
-  return patch;
-}
-
-function worldCharacterFromRow(db: Database, row: WorldCharacterRow): WorldCharacter {
-  const character = getCharacter(db, row.character_id)!;
-  return { ...row, character };
-}
-
-/** Row shape before the character is joined in. */
-interface WorldCharacterRow extends Omit<WorldCharacter, "character"> {}
-
-export function listWorldCharacters(db: Database, worldId: string): WorldCharacter[] {
-  return db
-    .query<WorldCharacterRow, [string]>(
-      "SELECT * FROM world_characters WHERE world_id = ? ORDER BY created_at, character_id",
-    )
-    .all(worldId)
-    .map((row) => worldCharacterFromRow(db, row));
-}
-
-/** Null covers both an unknown world and an association in another world. */
-function getWorldCharacterScoped(
-  db: Database,
-  worldId: string,
-  characterId: string,
-): WorldCharacterRow | null {
-  return (
-    db
-      .query<WorldCharacterRow, [string, string]>(
-        "SELECT * FROM world_characters WHERE character_id = ? AND world_id = ?",
-      )
-      .get(characterId, worldId) ?? null
-  );
-}
-
-/**
- * Associates an existing global character with a world plus optional
- * world-specific context. The global definition is never copied here; context
- * is the only world-owned text.
- */
-export function associateWorldCharacter(
-  db: Database,
-  worldId: string,
-  input: WorldCharacterInput,
-): WorldCharacter | null {
-  if (!getWorld(db, worldId)) return null;
-  const character = getCharacter(db, input.character_id);
-  if (!character) throw new UnknownEntityError("character_id does not match an existing character");
-  if (getWorldCharacterScoped(db, worldId, input.character_id)) {
-    throw new ValidationError("character is already in this world's cast");
-  }
-  const now = nowIso();
-  db.query(
-    `INSERT INTO world_characters (world_id, character_id, context, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(worldId, character.id, input.context, now, now);
-  return {
-    world_id: worldId,
-    character_id: character.id,
-    context: input.context,
-    created_at: now,
-    updated_at: now,
-    character,
-  };
-}
-
-export function updateWorldCharacter(
-  db: Database,
-  worldId: string,
-  characterId: string,
-  patch: Partial<WorldCharacterInput>,
-): WorldCharacter | null {
-  const existing = getWorldCharacterScoped(db, worldId, characterId);
-  if (!existing) return null;
-  const next = { ...existing, ...patch, updated_at: nowIso() };
-  db.query("UPDATE world_characters SET context = ?, updated_at = ? WHERE world_id = ? AND character_id = ?").run(
-    next.context,
-    next.updated_at,
-    worldId,
-    characterId,
-  );
-  return worldCharacterFromRow(db, next);
-}
-
-export function deleteWorldCharacter(db: Database, worldId: string, characterId: string): boolean {
-  return (
-    db
-      .query("DELETE FROM world_characters WHERE character_id = ? AND world_id = ?")
-      .run(characterId, worldId).changes > 0
-  );
 }
 
 export interface WorldEntryInput {
@@ -605,84 +489,58 @@ export interface CreatedCampaign {
   session: Session;
 }
 
-/** Captures a global character definition plus the world context it carries. */
-function characterSnapshot(character: Character, worldContext: string): CharacterSnapshot {
-  return {
-    id: character.id,
-    name: character.name,
-    description: character.description,
-    appearance: character.appearance,
-    personality: character.personality,
-    background: character.background,
-    baseline_motivations: character.baseline_motivations,
-    speaking_style: character.speaking_style,
-    world_context: worldContext,
-    avatar_id: character.avatar_id,
-  };
+/** A library character, or one owned by `worldId`; anything else is unknown. */
+function pickableCharacter(db: Database, worldId: string, id: string, field: string): Character {
+  const character = getCharacter(db, id);
+  if (!character || (character.world_id !== null && character.world_id !== worldId)) {
+    throw new UnknownEntityError(`${field} does not match a library or world character`);
+  }
+  return character;
 }
 
-/** World-specific context of a character's membership in this world's cast, "" outside it. */
-function worldContextFor(db: Database, worldId: string, characterId: string): string {
-  const row = db
-    .query<{ context: string }, [string, string]>(
-      "SELECT context FROM world_characters WHERE character_id = ? AND world_id = ?",
-    )
-    .get(characterId, worldId);
-  return row?.context ?? "";
+function insertCampaignCharacter(
+  db: Database,
+  campaignId: string,
+  role: CampaignCharacterRole,
+  profile: CharacterProfile,
+  avatarId: string | null,
+  createdAt: string,
+  now: string,
+): string {
+  const id = newId();
+  db.query(
+    `INSERT INTO campaign_characters
+       (id, campaign_id, role, ${PROFILE_COLUMNS.join(", ")}, avatar_id, created_at, updated_at)
+     VALUES (?, ?, ?, ${PROFILE_COLUMNS.map(() => "?").join(", ")}, ?, ?, ?)`,
+  ).run(id, campaignId, role, ...profileValues(profile), avatarId, createdAt, now);
+  return id;
 }
 
 /**
- * Creates the campaign, its captured snapshots — every non-scene world entry,
- * the protagonist (once), and the narrator-controlled cast — and the opening
- * session in one transaction: the deferred (active_session_id, id) foreign
- * key only needs to hold at commit, so the campaign row may reference the
- * preallocated session id before the session row exists. COMMIT happens
- * before any model call. Captured characters and entries are copied by value;
- * later library edits and deletes never rewrite a campaign snapshot. Cast
- * picks may sit outside the world's cast; they then carry no world context.
- * Refused when the opening prompt alone exceeds the narration budget.
+ * Creates the campaign, its own copies of the picked characters (library or
+ * this world's), the world snapshot with every non-scene entry, and the
+ * opening session in one transaction: the deferred (active_session_id, id)
+ * foreign key only needs to hold at commit, so the campaign row may reference
+ * the preallocated session id before the session row exists. COMMIT happens
+ * before any model call. Later library or world edits never reach the
+ * campaign. Refused when the opening prompt alone exceeds the narration budget.
  */
 export function createCampaign(db: Database, input: CampaignInput): CreatedCampaign {
   const create = db.transaction(() => {
     const world = getWorld(db, input.world_id);
     if (!world) throw new UnknownEntityError("world_id does not match an existing world");
-    const protagonist = getCharacter(db, input.protagonist_id);
-    if (!protagonist) {
-      throw new UnknownEntityError("protagonist_id does not match an existing character");
-    }
-
-    const castIds = input.cast_character_ids ?? [];
-    const castCharacters = new Map<string, Character>();
-    if (castIds.length > 0) {
-      const placeholders = castIds.map(() => "?").join(", ");
-      for (const row of db
-        .query<Character, string[]>(
-          `SELECT c.*, ca.image_id AS avatar_id FROM characters c
-           LEFT JOIN character_avatars ca ON ca.character_id = c.id
-           WHERE c.id IN (${placeholders})`,
-        )
-        .all(...castIds)) {
-        castCharacters.set(row.id, row);
-      }
-      for (const id of castIds) {
-        if (!castCharacters.has(id)) {
-          throw new UnknownEntityError("cast_character_ids entry does not match an existing character");
-        }
-      }
-    }
-
+    const protagonist = pickableCharacter(db, world.id, input.protagonist_id, "protagonist_id");
+    const cast = (input.cast_character_ids ?? []).map((id) =>
+      pickableCharacter(db, world.id, id, "cast_character_ids entry"),
+    );
     const captured: WorldEntrySnapshot[] = listWorldEntries(db, world.id)
       .filter((entry) => entry.kind !== "scene")
       .map((entry) => ({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description }));
-    const protagonistSnapshot = characterSnapshot(protagonist, worldContextFor(db, world.id, protagonist.id));
-    const cast = castIds.map((id) =>
-      characterSnapshot(castCharacters.get(id)!, worldContextFor(db, world.id, id)),
-    );
 
     const opening = narratorSystemPrompt({
       world: { name: world.name, setting_brief: world.setting_brief, entries: captured },
       starting_situation: input.starting_situation,
-      protagonist: protagonistSnapshot,
+      protagonist,
       cast,
       notes: [],
       relationships: [],
@@ -701,51 +559,122 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
 
     db.query(
       `INSERT INTO campaigns
-         (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
-          cast_snapshot, starting_situation, active_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, name, world_id, world_snapshot, starting_situation, active_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       campaignId,
       input.name ?? world.name,
       world.id,
-      protagonist.id,
-      JSON.stringify({
-        name: world.name,
-        setting_brief: world.setting_brief,
-        suggested_starting_situation: world.suggested_starting_situation,
-        entries: captured,
-      }),
-      JSON.stringify(protagonistSnapshot),
-      JSON.stringify(cast),
+      JSON.stringify({ name: world.name, setting_brief: world.setting_brief, entries: captured }),
       input.starting_situation,
       sessionId,
       now,
       now,
     );
+    insertCampaignCharacter(db, campaignId, "protagonist", protagonist, protagonist.avatar_id, now, now);
+    for (const member of cast) {
+      insertCampaignCharacter(db, campaignId, "cast", member, member.avatar_id, now, now);
+    }
 
     db.query(
       "INSERT INTO sessions (id, campaign_id, ordinal, title, handoff, closed_at, created_at, updated_at) VALUES (?, ?, 1, ?, NULL, NULL, ?, ?)",
     ).run(sessionId, campaignId, "Opening session", now, now);
 
-    const campaign = campaignFromRow(
-      db.query<CampaignRecord, [string]>("SELECT * FROM campaigns WHERE id = ?").get(campaignId)!,
-    );
+    const campaign = getCampaign(db, campaignId)!;
     const session = db.query<Session, [string]>("SELECT * FROM sessions WHERE id = ?").get(sessionId)!;
     return { campaign, session };
   });
   return create.immediate();
 }
 
+/** Protagonist first, then cast in creation order; rowid keeps same-instant inserts in pick order. */
+const CAMPAIGN_CHARACTER_ORDER = "ORDER BY role = 'protagonist' DESC, created_at, rowid";
+
+export function listCampaignCharacters(db: Database, campaignId: string): CampaignCharacter[] {
+  return db
+    .query<CampaignCharacter, [string]>(
+      `SELECT * FROM campaign_characters WHERE campaign_id = ? ${CAMPAIGN_CHARACTER_ORDER}`,
+    )
+    .all(campaignId);
+}
+
 export function listCampaigns(db: Database): Campaign[] {
   return db
     .query<CampaignRecord, []>("SELECT * FROM campaigns ORDER BY created_at DESC, id DESC")
     .all()
-    .map(campaignFromRow);
+    .map((row) => campaignFromRow(row, listCampaignCharacters(db, row.id)));
 }
 
 export function getCampaign(db: Database, id: string): Campaign | null {
   const row = db.query<CampaignRecord, [string]>("SELECT * FROM campaigns WHERE id = ?").get(id);
-  return row ? campaignFromRow(row) : null;
+  return row ? campaignFromRow(row, listCampaignCharacters(db, id)) : null;
+}
+
+/** Null covers both an unknown campaign and a character of another campaign. */
+export function getCampaignCharacter(db: Database, campaignId: string, id: string): CampaignCharacter | null {
+  return (
+    db
+      .query<CampaignCharacter, [string, string]>("SELECT * FROM campaign_characters WHERE id = ? AND campaign_id = ?")
+      .get(id, campaignId) ?? null
+  );
+}
+
+/** A new narrator-controlled character owned by this campaign. */
+export function createCampaignCharacter(
+  db: Database,
+  campaignId: string,
+  input: CharacterInput,
+): CampaignCharacter | null {
+  if (!getCampaign(db, campaignId)) return null;
+  const now = nowIso();
+  return getCampaignCharacter(db, campaignId, insertCampaignCharacter(db, campaignId, "cast", input, null, now, now));
+}
+
+export function updateCampaignCharacter(
+  db: Database,
+  campaignId: string,
+  id: string,
+  patch: Partial<CharacterInput>,
+): CampaignCharacter | null {
+  const existing = getCampaignCharacter(db, campaignId, id);
+  if (!existing) return null;
+  const next: CampaignCharacter = { ...existing, ...patch, updated_at: nowIso() };
+  db.query(
+    `UPDATE campaign_characters SET ${PROFILE_COLUMNS.map((key) => `${key} = ?`).join(", ")}, updated_at = ?
+     WHERE id = ?`,
+  ).run(...profileValues(next), next.updated_at, id);
+  return next;
+}
+
+/** Any character but the protagonist; its relationships go with it. */
+export function deleteCampaignCharacter(db: Database, campaignId: string, id: string): boolean {
+  const existing = getCampaignCharacter(db, campaignId, id);
+  if (!existing) return false;
+  if (existing.role === "protagonist") throw new ValidationError("the protagonist cannot be deleted");
+  return db.query("DELETE FROM campaign_characters WHERE id = ?").run(id).changes > 0;
+}
+
+/** Copies the campaign character's current profile and picture into the campaign's world. */
+export function saveCampaignCharacterToWorld(db: Database, campaignId: string, id: string): Character | null {
+  const campaign = getCampaign(db, campaignId);
+  const character = getCampaignCharacter(db, campaignId, id);
+  if (!campaign || !character) return null;
+  return createCharacter(db, character, campaign.world_id, character.avatar_id);
+}
+
+export function setCampaignCharacterAvatar(
+  db: Database,
+  campaignId: string,
+  id: string,
+  image: { bytes: Uint8Array; mime: ImageMime } | null,
+): CampaignCharacter | null {
+  if (!getCampaignCharacter(db, campaignId, id)) return null;
+  const store = db.transaction(() => {
+    const imageId = image ? storeImage(db, image.bytes, image.mime) : null;
+    db.query("UPDATE campaign_characters SET avatar_id = ?, updated_at = ? WHERE id = ?").run(imageId, nowIso(), id);
+  });
+  store();
+  return getCampaignCharacter(db, campaignId, id);
 }
 
 export function getSession(db: Database, id: string): Session | null {
@@ -825,25 +754,29 @@ export interface BeginNextSessionResult {
 
 /**
  * A campaign's changeable state as one JSON value: what a session checkpoint
- * stores and what a fork restores. Captured snapshots are not part of it —
- * they never change after creation.
+ * stores and what a fork restores. The world snapshot is not part of it — it
+ * never changes after creation.
  */
 interface CampaignStateSnapshot {
+  characters: Array<
+    CharacterProfile & Pick<CampaignCharacter, "id" | "role" | "avatar_id" | "created_at">
+  >;
   notes: Array<Pick<CampaignStateItem, "category" | "subject" | "content" | "created_at">>;
-  relationship_subjects: Array<{ id: string; name: string; created_at: string }>;
   relationships: Array<{ source_id: string; target_id: string; document: RelationshipDocument; created_at: string }>;
 }
 
 function serializeCampaignState(db: Database, campaignId: string): CampaignStateSnapshot {
   return {
+    characters: listCampaignCharacters(db, campaignId).map((character) => ({
+      id: character.id,
+      role: character.role,
+      ...profileOf(character),
+      avatar_id: character.avatar_id,
+      created_at: character.created_at,
+    })),
     notes: db
       .query<CampaignStateSnapshot["notes"][number], [string]>(
         "SELECT category, subject, content, created_at FROM campaign_state_items WHERE campaign_id = ? ORDER BY created_at, id",
-      )
-      .all(campaignId),
-    relationship_subjects: db
-      .query<CampaignStateSnapshot["relationship_subjects"][number], [string]>(
-        "SELECT id, name, created_at FROM relationship_subjects WHERE campaign_id = ? ORDER BY created_at, id",
       )
       .all(campaignId),
     relationships: db
@@ -855,24 +788,23 @@ function serializeCampaignState(db: Database, campaignId: string): CampaignState
   };
 }
 
-/** Writes a snapshot into another campaign under new ids; `now` stamps the copies. */
+/**
+ * Writes a snapshot into another campaign under new ids, remapping character
+ * ids in relationships; `now` stamps the copies.
+ */
 function restoreCampaignState(db: Database, campaignId: string, state: CampaignStateSnapshot, now: string): void {
+  const characterIds = new Map<string, string>();
+  for (const character of state.characters) {
+    characterIds.set(
+      character.id,
+      insertCampaignCharacter(db, campaignId, character.role, character, character.avatar_id, character.created_at, now),
+    );
+  }
   for (const note of state.notes) {
     db.query(
       `INSERT INTO campaign_state_items (id, campaign_id, category, subject, content, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(newId(), campaignId, note.category, note.subject, note.content, note.created_at, now);
-  }
-  const subjectIds = new Map<string, string>();
-  for (const subject of state.relationship_subjects) {
-    const id = newId();
-    subjectIds.set(subject.id, id);
-    db.query("INSERT INTO relationship_subjects (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)").run(
-      id,
-      campaignId,
-      subject.name,
-      subject.created_at,
-    );
   }
   for (const relationship of state.relationships) {
     db.query(
@@ -881,8 +813,8 @@ function restoreCampaignState(db: Database, campaignId: string, state: CampaignS
     ).run(
       newId(),
       campaignId,
-      subjectIds.get(relationship.source_id) ?? relationship.source_id,
-      subjectIds.get(relationship.target_id) ?? relationship.target_id,
+      characterIds.get(relationship.source_id)!,
+      characterIds.get(relationship.target_id)!,
       JSON.stringify(relationship.document),
       relationship.created_at,
       now,
@@ -962,7 +894,7 @@ export interface CreatedFork {
 }
 
 /**
- * Inserts the fork's campaign row: captured snapshots and starting situation
+ * Inserts the fork's campaign row: world snapshot and starting situation
  * copied by value from the origin, origin ids recorded for provenance. Returns
  * the new campaign id; the origin is never re-resolved afterwards.
  */
@@ -977,18 +909,14 @@ function insertForkCampaign(
   const campaignId = newId();
   db.query(
     `INSERT INTO campaigns
-       (id, name, world_id, protagonist_id, world_snapshot, protagonist_snapshot,
-        cast_snapshot, starting_situation, active_session_id,
+       (id, name, world_id, world_snapshot, starting_situation, active_session_id,
         forked_from_campaign_id, forked_from_session_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     campaignId,
     name,
     origin.world_id,
-    origin.protagonist_id,
     JSON.stringify(origin.world_snapshot),
-    JSON.stringify(origin.protagonist_snapshot),
-    JSON.stringify(origin.cast),
     origin.starting_situation,
     forkSessionId,
     origin.id,
@@ -1017,10 +945,10 @@ function insertForkSession(
 
 /**
  * "Fork from here": forks from a message in the open or a closed session into
- * a new independent campaign. Captured snapshots and the starting situation
- * are copied by value; the campaign state comes from the closed session's
- * checkpoint, or from the campaign's current state for the open session, and
- * is restored under new ids. The handoff that grounded the source session
+ * a new independent campaign. The world snapshot and starting situation are
+ * copied by value; characters, notes, and relationships come from the closed
+ * session's checkpoint, or from the campaign's current state for the open
+ * session, and are restored under new ids. The handoff that grounded the source session
  * grounds the fork's first session, and the transcript is the selected rows
  * up to and including the chosen message — drafts and unselected alternates
  * excluded — renumbered from 1 with their timestamps kept. Null when the

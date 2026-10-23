@@ -1,4 +1,5 @@
-import type { CampaignStateItem, CharacterSnapshot, RelationshipDocument, WorldEntrySnapshot } from "./domain";
+import type { CampaignStateItem, CharacterProfile, RelationshipDocument, WorldEntrySnapshot } from "./domain";
+import { CHARACTER_PROFILE_FIELDS } from "./domain";
 
 /**
  * One size budget, in characters, for everything sent to the narrator: the
@@ -16,8 +17,8 @@ export interface RelationshipPrompt {
 export interface NarrationContext {
   world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">> };
   starting_situation: string;
-  protagonist: CharacterSnapshot;
-  cast: ReadonlyArray<CharacterSnapshot>;
+  protagonist: CharacterProfile;
+  cast: ReadonlyArray<CharacterProfile>;
   notes: ReadonlyArray<Pick<CampaignStateItem, "category" | "subject" | "content">>;
   relationships: ReadonlyArray<RelationshipPrompt>;
   /** Handoff grounding this session; replaces the starting situation when set. */
@@ -27,19 +28,14 @@ export interface NarrationContext {
 
 /**
  * One authored character as prompt text: description first, then only the
- * fields actually authored — blank fields add no scaffold text.
+ * labelled fields actually authored — blank fields add no scaffold text.
  */
-function characterDefinition(character: CharacterSnapshot): string {
+function characterDefinition(character: CharacterProfile): string {
   return [
     character.description,
-    ...(character.appearance.length > 0 ? [`Appearance: ${character.appearance}`] : []),
-    ...(character.personality.length > 0 ? [`Personality: ${character.personality}`] : []),
-    ...(character.background.length > 0 ? [`Background: ${character.background}`] : []),
-    ...(character.baseline_motivations.length > 0
-      ? [`Motivations: ${character.baseline_motivations}`]
-      : []),
-    ...(character.speaking_style.length > 0 ? [`Speaking style: ${character.speaking_style}`] : []),
-    ...(character.world_context.length > 0 ? [`In this world: ${character.world_context}`] : []),
+    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.prompt !== "" && character[field.key].length > 0).map(
+      (field) => `${field.prompt}: ${character[field.key]}`,
+    ),
   ].join("; ");
 }
 
@@ -62,7 +58,7 @@ export function narratorSystemPrompt(context: NarrationContext): string {
   const cast =
     context.cast.length > 0
       ? [
-          "Narrator-controlled cast (captured at campaign creation):",
+          "Narrator-controlled cast:",
           ...context.cast.map((member) => `- ${member.name}: ${characterDefinition(member)}`),
           "Respect these definitions as written.",
         ]

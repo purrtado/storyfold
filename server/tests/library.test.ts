@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Campaign, Character, Session, World } from "../../shared/domain";
+import { protagonistOf, type Campaign, type Character, type Session, type World } from "../../shared/domain";
 import {
   headersWith,
   makeConfigDirectory,
@@ -164,7 +164,7 @@ describe("campaigns API", () => {
     }
   });
 
-  test("campaign detail exposes parsed snapshots and unknown ids 404", async () => {
+  test("campaign detail exposes characters and unknown ids 404", async () => {
     const world = (await createWorld({ name: "Detail World", setting_brief: "deep", suggested_starting_situation: "opt" })).world!;
     const protagonist = (await createCharacter({ name: "Detail Hero", description: "deep hero" })).character!;
     const created = await fetch(`${base.url}/api/campaigns`, {
@@ -176,10 +176,9 @@ describe("campaigns API", () => {
     const detail = (await (
       await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() })
     ).json()) as { campaign: Campaign };
-    expect(detail.campaign.world_snapshot.suggested_starting_situation).toBe("opt");
-    expect(detail.campaign.protagonist_snapshot.description).toBe("deep hero");
-    expect(detail.campaign.protagonist_snapshot.id).toBe(protagonist.id);
-    expect(detail.campaign.cast).toEqual([]);
+    expect(protagonistOf(detail.campaign).description).toBe("deep hero");
+    expect(detail.campaign.characters).toHaveLength(1);
+    expect(detail.campaign.characters[0]?.role).toBe("protagonist");
     expect(detail.campaign.starting_situation).toBe("Detail situation");
     expect((await fetch(`${base.url}/api/campaigns/missing`, { headers: headersWith() })).status).toBe(404);
   });

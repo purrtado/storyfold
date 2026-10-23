@@ -2,13 +2,7 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type {
-  Campaign,
-  CharacterSnapshot,
-  WorldEntryKind,
-  WorldEntrySnapshot,
-  WorldSnapshot,
-} from "../shared/domain";
+import type { Campaign, CampaignCharacter, WorldEntryKind, WorldEntrySnapshot, WorldSnapshot } from "../shared/domain";
 import { WORLD_ENTRY_KINDS } from "../shared/domain";
 
 const SCHEMA = `
@@ -23,6 +17,7 @@ CREATE TABLE IF NOT EXISTS worlds (
 
 CREATE TABLE IF NOT EXISTS characters (
   id TEXT PRIMARY KEY,
+  world_id TEXT REFERENCES worlds(id),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   appearance TEXT NOT NULL,
@@ -34,19 +29,12 @@ CREATE TABLE IF NOT EXISTS characters (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS world_characters (
-  world_id TEXT NOT NULL REFERENCES worlds(id),
-  character_id TEXT NOT NULL REFERENCES characters(id),
-  context TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (world_id, character_id)
-);
+CREATE INDEX IF NOT EXISTS characters_world ON characters(world_id);
 
 CREATE TABLE IF NOT EXISTS world_entries (
   id TEXT PRIMARY KEY,
   world_id TEXT NOT NULL REFERENCES worlds(id),
-  kind TEXT NOT NULL CHECK (kind IN ('local_npc', 'location', 'lore', 'scene')),
+  kind TEXT NOT NULL CHECK (kind IN ('location', 'lore', 'scene')),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -59,10 +47,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   world_id TEXT NOT NULL REFERENCES worlds(id),
-  protagonist_id TEXT NOT NULL REFERENCES characters(id),
   world_snapshot TEXT NOT NULL CHECK (json_valid(world_snapshot)),
-  protagonist_snapshot TEXT NOT NULL CHECK (json_valid(protagonist_snapshot)),
-  cast_snapshot TEXT NOT NULL CHECK (json_valid(cast_snapshot)),
   starting_situation TEXT NOT NULL,
   active_session_id TEXT NOT NULL,
   forked_from_campaign_id TEXT REFERENCES campaigns(id),
@@ -72,6 +57,26 @@ CREATE TABLE IF NOT EXISTS campaigns (
   FOREIGN KEY (active_session_id, id) REFERENCES sessions(id, campaign_id)
     DEFERRABLE INITIALLY DEFERRED
 );
+
+CREATE TABLE IF NOT EXISTS campaign_characters (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  role TEXT NOT NULL CHECK (role IN ('protagonist', 'cast')),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  appearance TEXT NOT NULL,
+  personality TEXT NOT NULL,
+  background TEXT NOT NULL,
+  baseline_motivations TEXT NOT NULL,
+  speaking_style TEXT NOT NULL,
+  avatar_id TEXT REFERENCES images(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (id, campaign_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_characters_one_protagonist
+  ON campaign_characters(campaign_id) WHERE role = 'protagonist';
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -106,14 +111,6 @@ CREATE TABLE IF NOT EXISTS session_checkpoints (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS relationship_subjects (
-  id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE (id, campaign_id)
-);
-
 CREATE TABLE IF NOT EXISTS relationships (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
@@ -124,7 +121,8 @@ CREATE TABLE IF NOT EXISTS relationships (
   updated_at TEXT NOT NULL,
   CHECK (source_id != target_id),
   UNIQUE (campaign_id, source_id, target_id),
-  UNIQUE (id, campaign_id)
+  FOREIGN KEY (source_id, campaign_id) REFERENCES campaign_characters(id, campaign_id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id, campaign_id) REFERENCES campaign_characters(id, campaign_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS relationships_campaign ON relationships(campaign_id);
@@ -158,7 +156,7 @@ CREATE TABLE IF NOT EXISTS images (
 );
 
 CREATE TABLE IF NOT EXISTS character_avatars (
-  character_id TEXT PRIMARY KEY REFERENCES characters(id),
+  character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
   image_id TEXT NOT NULL REFERENCES images(id),
   updated_at TEXT NOT NULL
 );
@@ -173,7 +171,7 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no migrations. */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /**
  * Opens the workspace database with foreign keys and the schema in place. A
@@ -209,15 +207,12 @@ export function sweepAbandonedPending(db: Database): number {
     .run(nowIso()).changes;
 }
 
-/** Storage shape of a campaign row: snapshots are JSON text until parsed. */
+/** Storage shape of a campaign row: the world snapshot is JSON text until parsed. */
 export interface CampaignRecord {
   id: string;
   name: string;
   world_id: string;
-  protagonist_id: string;
   world_snapshot: string;
-  protagonist_snapshot: string;
-  cast_snapshot: string;
   starting_situation: string;
   active_session_id: string;
   forked_from_campaign_id: string | null;
@@ -226,25 +221,11 @@ export interface CampaignRecord {
   updated_at: string;
 }
 
-const CHARACTER_SNAPSHOT_FIELDS = [
-  "name",
-  "description",
-  "appearance",
-  "personality",
-  "background",
-  "baseline_motivations",
-  "speaking_style",
-  "world_context",
-] as const;
-
 /**
- * Snapshot columns are written only by campaign creation from API-validated
+ * The snapshot column is written only by campaign creation from API-validated
  * fields; on read we re-check the shape so a corrupt workspace can never reach
- * prompts as undefined. name/setting_brief stay non-empty;
- * suggested_starting_situation may be blank; entries must be present — there
- * is no pre-M2 snapshot compatibility. A character snapshot must carry its
- * captured global id and a non-empty name/description; every other authored
- * field may be blank.
+ * prompts as undefined. name/setting_brief stay non-empty and entries must be
+ * present.
  */
 function parseWorldSnapshot(text: string): WorldSnapshot {
   let value: unknown;
@@ -255,10 +236,12 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   }
   if (typeof value !== "object" || value === null) throw new Error("corrupt campaign snapshot");
   const snapshot = value as Record<string, unknown>;
-  for (const key of ["name", "setting_brief", "suggested_starting_situation"]) {
-    if (typeof snapshot[key] !== "string") throw new Error("corrupt campaign snapshot");
-  }
-  if ((snapshot.name as string).length === 0 || (snapshot.setting_brief as string).length === 0) {
+  if (
+    typeof snapshot.name !== "string" ||
+    typeof snapshot.setting_brief !== "string" ||
+    snapshot.name.length === 0 ||
+    snapshot.setting_brief.length === 0
+  ) {
     throw new Error("corrupt campaign snapshot");
   }
   const entries = snapshot.entries;
@@ -276,76 +259,9 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
       throw new Error("corrupt campaign snapshot");
     }
   }
-  return { ...(value as WorldSnapshot), entries: entries as WorldEntrySnapshot[] };
+  return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries: entries as WorldEntrySnapshot[] };
 }
 
-function parseCharacterSnapshot(text: string): CharacterSnapshot {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("corrupt campaign snapshot");
-  }
-  if (typeof value !== "object" || value === null) throw new Error("corrupt campaign snapshot");
-  const snapshot = value as Record<string, unknown>;
-  if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
-    throw new Error("corrupt campaign snapshot");
-  }
-  for (const key of CHARACTER_SNAPSHOT_FIELDS) {
-    if (typeof snapshot[key] !== "string") throw new Error("corrupt campaign snapshot");
-  }
-  if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
-    throw new Error("corrupt campaign snapshot");
-  }
-  normalizeSnapshotAvatar(snapshot);
-  return value as CharacterSnapshot;
-}
-
-/**
- * Snapshots written before avatars existed lack `avatar_id`; it is filled with
- * null at this single parse boundary so the wire shape is always
- * `string | null`. A present value must be text or null.
- */
-function normalizeSnapshotAvatar(snapshot: Record<string, unknown>): void {
-  if (snapshot.avatar_id !== undefined && typeof snapshot.avatar_id !== "string" && snapshot.avatar_id !== null) {
-    throw new Error("corrupt campaign snapshot");
-  }
-  snapshot.avatar_id = snapshot.avatar_id ?? null;
-}
-
-function parseCastSnapshot(text: string): CharacterSnapshot[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("corrupt campaign snapshot");
-  }
-  if (!Array.isArray(value)) throw new Error("corrupt campaign snapshot");
-  const ids = new Set<string>();
-  return value.map((member) => {
-    if (typeof member !== "object" || member === null) throw new Error("corrupt campaign snapshot");
-    const snapshot = member as Record<string, unknown>;
-    if (typeof snapshot.id !== "string" || snapshot.id.length === 0 || ids.has(snapshot.id)) {
-      throw new Error("corrupt campaign snapshot");
-    }
-    ids.add(snapshot.id);
-    for (const key of CHARACTER_SNAPSHOT_FIELDS) {
-      if (typeof snapshot[key] !== "string") throw new Error("corrupt campaign snapshot");
-    }
-    if ((snapshot.name as string).length === 0 || (snapshot.description as string).length === 0) {
-      throw new Error("corrupt campaign snapshot");
-    }
-    normalizeSnapshotAvatar(snapshot);
-    return member as CharacterSnapshot;
-  });
-}
-
-export function campaignFromRow(row: CampaignRecord): Campaign {
-  const { cast_snapshot: _rawCast, ...rest } = row;
-  return {
-    ...rest,
-    world_snapshot: parseWorldSnapshot(row.world_snapshot),
-    protagonist_snapshot: parseCharacterSnapshot(row.protagonist_snapshot),
-    cast: parseCastSnapshot(row.cast_snapshot),
-  };
+export function campaignFromRow(row: CampaignRecord, characters: CampaignCharacter[]): Campaign {
+  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters };
 }

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { Campaign, Relationship, RelationshipDocument, RelationshipSubject } from "../shared/domain";
+import type { Campaign, Relationship, RelationshipDocument } from "../shared/domain";
 import type { RelationshipPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
 
@@ -67,21 +67,10 @@ export function parseRelationshipDocument(value: unknown): RelationshipDocument 
   };
 }
 
-function subjects(db: Database, campaign: Campaign): RelationshipSubject[] {
-  return [
-    { id: campaign.protagonist_snapshot.id, name: campaign.protagonist_snapshot.name, kind: "character" as const },
-    ...campaign.cast.map((item) => ({ id: item.id, name: item.name, kind: "character" as const })),
-    ...campaign.world_snapshot.entries.filter((item) => item.kind === "local_npc")
-      .map((item) => ({ id: item.id, name: item.name, kind: "entry" as const })),
-    ...db.query<{ id: string; name: string }, [string]>("SELECT id,name FROM relationship_subjects WHERE campaign_id = ? ORDER BY created_at,id")
-      .all(campaign.id).map((item) => ({ ...item, kind: "local_character" as const })),
-  ];
-}
-
-export function listRelationships(db: Database, campaign: Campaign): { subjects: RelationshipSubject[]; relationships: Relationship[] } {
-  return { subjects: subjects(db, campaign), relationships: db.query<RelationshipRow, [string]>(
+export function listRelationships(db: Database, campaignId: string): Relationship[] {
+  return db.query<RelationshipRow, [string]>(
     "SELECT * FROM relationships WHERE campaign_id = ? ORDER BY created_at,id",
-  ).all(campaign.id).map(relationshipFromRow) };
+  ).all(campaignId).map(relationshipFromRow);
 }
 
 interface RelationshipRow extends Omit<Relationship, "document"> { document: string }
@@ -89,26 +78,9 @@ function relationshipFromRow(row: RelationshipRow): Relationship {
   return { ...row, document: JSON.parse(row.document) as RelationshipDocument };
 }
 
-export function createRelationshipSubject(db: Database, campaignId: string, name: string): RelationshipSubject {
-  if (typeof name !== "string" || name.trim().length === 0 || name.length > 120) {
-    throw new RelationshipValidationError("name must contain 1 to 120 characters");
-  }
-  const now = nowIso();
-  const subject = { id: newId(), name: name.trim(), kind: "local_character" as const };
-  db.query("INSERT INTO relationship_subjects (id,campaign_id,name,created_at) VALUES (?,?,?,?)")
-    .run(subject.id, campaignId, subject.name, now);
-  return subject;
-}
-
-function requireSubject(db: Database, campaign: Campaign, id: string): void {
-  if (subjects(db, campaign).some((subject) => subject.id === id)) return;
-  throw new RelationshipValidationError("source_id and target_id must identify campaign subjects");
-}
-
 export function relationshipNarrationContext(db: Database, campaign: Campaign): RelationshipPrompt[] {
-  const { subjects: available, relationships } = listRelationships(db, campaign);
-  const names = new Map(available.map((subject) => [subject.id, subject.name]));
-  return relationships.map((relationship) => ({
+  const names = new Map(campaign.characters.map((character) => [character.id, character.name]));
+  return listRelationships(db, campaign.id).map((relationship) => ({
     source_name: names.get(relationship.source_id)!,
     target_name: names.get(relationship.target_id)!,
     document: relationship.document,
@@ -117,8 +89,9 @@ export function relationshipNarrationContext(db: Database, campaign: Campaign): 
 
 export function createRelationship(db: Database, campaign: Campaign, sourceId: string, targetId: string, document: RelationshipDocument): Relationship {
   if (sourceId === targetId) throw new RelationshipValidationError("source_id and target_id must differ");
-  requireSubject(db, campaign, sourceId);
-  requireSubject(db, campaign, targetId);
+  if (![sourceId, targetId].every((id) => campaign.characters.some((character) => character.id === id))) {
+    throw new RelationshipValidationError("source_id and target_id must identify characters of this campaign");
+  }
   if (db.query("SELECT 1 FROM relationships WHERE campaign_id=? AND source_id=? AND target_id=?")
     .get(campaign.id, sourceId, targetId)) {
     throw new RelationshipValidationError("a relationship already exists for this directional pair");
