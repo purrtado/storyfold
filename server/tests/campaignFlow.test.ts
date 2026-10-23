@@ -1,17 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Campaign, Message, Session } from "../../shared/domain";
-import { newId, nowIso, openDatabase } from "../db";
+import { NARRATION_CHARACTER_BUDGET } from "../../shared/narration";
+import { openDatabase } from "../db";
 import {
   beginNextSession,
-  CAMPAIGN_STATE_GROUNDING_LIMIT,
   createCampaign,
   createCharacter,
   createWorld,
   getCampaign,
   SessionClosedError,
 } from "../library";
-import { AlreadyOpenedError, HISTORY_CHARACTER_LIMIT, PlayService } from "../play";
+import { AlreadyOpenedError, PlayService } from "../play";
 import {
   headersWith,
   makeConfigDirectory,
@@ -249,7 +249,7 @@ describe("campaign state items", () => {
     expect(await stateItems(campaign.id)).toHaveLength(1);
   });
 
-  test("rejects malformed items and unknown references without saving", async () => {
+  test("rejects malformed items without saving", async () => {
     const { campaign } = await seedCampaign("StateGuard", "State situation two.");
     for (const body of [
       { category: "mood", subject: "X", content: "Y" },
@@ -317,100 +317,6 @@ describe("campaign state items", () => {
     } finally {
       await server.stop();
     }
-  });
-});
-
-describe("campaign state grounding cap", () => {
-  test("at-cap state is accepted; over-cap create and update are refused with nothing saved", async () => {
-    const seeded = await seedCampaign("StateCap", "State cap situation.");
-    const url = `/api/campaigns/${seeded.campaign.id}/state`;
-    const atCap = await json(url, "POST", {
-      category: "goal",
-      subject: "L",
-      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1),
-    });
-    expect(atCap.status).toBe(201);
-    const atCapPayload = (await atCap.json()) as { id: string }; // JSON API envelope
-    const item = atCapPayload;
-
-    const overCreate = await json(url, "POST", {
-      category: "journal",
-      subject: "One more",
-      content: "y",
-    });
-    expect(overCreate.status).toBe(400);
-    const createError = (await overCreate.json()) as { code?: string; error?: string }; // JSON API error envelope
-    expect(createError.code).toBe("invalid_input");
-    expect(createError.error).toContain("16000");
-    expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
-
-    const overUpdate = await json(`${url}/${item.id}`, "PATCH", {
-      content: "x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT),
-    });
-    expect(overUpdate.status).toBe(400);
-    const updateError = (await overUpdate.json()) as { code?: string }; // JSON API error envelope
-    expect(updateError.code).toBe("invalid_input");
-    const items = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
-    expect(items).toHaveLength(1);
-    expect(items[0].content).toBe("x".repeat(CAMPAIGN_STATE_GROUNDING_LIMIT - 1));
-
-    // Freeing capacity re-opens writes: shrink, then accumulate back to the cap.
-    const shrink = await json(`${url}/${item.id}`, "PATCH", { content: "Short now." });
-    expect(shrink.status).toBe(200);
-    const remaining = CAMPAIGN_STATE_GROUNDING_LIMIT - ("L".length + "Short now.".length);
-    const refill = await json(url, "POST", {
-      category: "journal",
-      subject: "Refill",
-      content: "y".repeat(remaining - "Refill".length),
-    });
-    expect(refill.status).toBe(201);
-  });
-
-  test("a legacy over-cap campaign accepts shrinking writes and rejects growing ones", async () => {
-    const seeded = await seedCampaign("LegacyCap", "Legacy cap situation.");
-    const url = `/api/campaigns/${seeded.campaign.id}/state`;
-
-    // Rows written before the cap existed, seeded directly into the database.
-    const db = openDatabase(databasePath);
-    const insert = db.query(
-      "INSERT INTO campaign_state_items (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
-    );
-    const now = nowIso();
-    const firstId = newId();
-    const secondId = newId();
-    insert.run(firstId, seeded.campaign.id, "goal", "First", "x".repeat(10_000), now, now);
-    insert.run(secondId, seeded.campaign.id, "journal", "Second", "y".repeat(10_000), now, now);
-    db.close();
-    // 10,005 + 10,006 = 20,011 characters, above the 16,000 cap.
-    const items = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
-    expect(items).toHaveLength(2);
-
-    // Growing the total past the cap is still refused, and nothing is saved.
-    const grow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_500) });
-    expect(grow.status).toBe(400);
-    const growError = (await grow.json()) as { code?: string }; // JSON API error envelope
-    expect(growError.code).toBe("invalid_input");
-    const afterGrow = (await stateItems(seeded.campaign.id)) as Array<{ id: string; content: string }>;
-    expect(afterGrow.find((item) => item.id === firstId)!.content).toHaveLength(10_000);
-
-    // New items stay refused while the campaign sits above the cap.
-    const add = await json(url, "POST", { category: "goal", subject: "Third", content: "z" });
-    expect(add.status).toBe(400);
-
-    // Shrinking is accepted even though the campaign remains over the cap.
-    const shrink = await json(`${url}/${secondId}`, "PATCH", { content: "y".repeat(9_000) });
-    expect(shrink.status).toBe(200);
-    const growAgain = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(10_400) });
-    expect(growAgain.status).toBe(400);
-
-    // Worked back under the cap, ordinary rules resume: growth up to the cap succeeds.
-    const under = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(5_000) });
-    expect(under.status).toBe(200);
-    const regrow = await json(`${url}/${firstId}`, "PATCH", { content: "x".repeat(6_900) });
-    expect(regrow.status).toBe(200);
-    const final = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
-    // Both rows share one created_at, so list order falls back to id order.
-    expect(final.map((item) => item.content.length).sort((a, b) => a - b)).toEqual([6_900, 9_000]);
   });
 });
 
@@ -597,7 +503,7 @@ describe("sequential sessions and handoffs", () => {
   test("the initial session's prompt still grounds on the starting situation", async () => {
     const seeded = await seedCampaign("FirstPrompt", "Sable docks at dawn while the harbor bells ring.");
     await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
-      category: "attribute",
+      category: "internal",
       subject: "Sable's cut",
       content: "A fresh gash across the left palm.",
     });
@@ -621,7 +527,7 @@ describe("sequential sessions and handoffs", () => {
       const prompt = history[0].content;
       expect(prompt).toContain(`Starting situation: ${seeded.situation}`);
       expect(prompt).not.toContain("Handoff from the previous session:");
-      expect(prompt).toContain("attribute — Sable's cut: A fresh gash across the left palm.");
+      expect(prompt).toContain("internal — Sable's cut: A fresh gash across the left palm.");
     } finally {
       await server.stop();
     }
@@ -671,10 +577,6 @@ describe("pending-run exclusivity", () => {
         handoff: "Should not close.",
       });
       expect(transition.status).toBe(409);
-      const fork = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "Fork while pending" });
-      expect(fork.status).toBe(409);
-      const forkError = (await fork.json()) as { code?: string };
-      expect(forkError.code).toBe("busy");
 
       expect(await stateItems(seeded.campaign.id)).toHaveLength(1);
       expect(await campaignSessions(seeded.campaign.id)).toHaveLength(1);
@@ -806,124 +708,6 @@ describe("stale busy guards", () => {
   });
 });
 
-describe("forking completed sessions", () => {
-  test("fork copies checkpoint state, definitions, and handoff into an independent campaign", async () => {
-    const seeded = await seedCampaign("ForkOrigin", "Fork origin situation.");
-    const firstItem = (await (
-      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
-        category: "goal",
-        subject: "Find the ledger",
-        content: "Checkpoint content.",
-      })
-    ).json()) as { id: string; created_at: string };
-    const secondItem = (await (
-      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
-        category: "journal",
-        subject: "First night",
-        content: "Slept aboard the ferry.",
-      })
-    ).json()) as { id: string; created_at: string };
-
-    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
-    const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
-      title: "The northern road",
-      handoff: "The party reached the northern pass at dusk.",
-    });
-    expect(closed.status).toBe(201);
-
-    // Campaign state moves on after the boundary; the fork must not see it.
-    await json(`/api/campaigns/${seeded.campaign.id}/state/${firstItem.id}`, "PATCH", {
-      content: "Edited after the boundary.",
-    });
-    await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
-      category: "internal",
-      subject: "Post-boundary doubt",
-      content: "Added after the boundary.",
-    });
-    await json(`/api/campaigns/${seeded.campaign.id}/state/${secondItem.id}`, "DELETE");
-
-    const forked = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "The southern road" });
-    expect(forked.status).toBe(201);
-    const fork = (await forked.json()) as { campaign: Campaign; session: Session };
-    expect(fork.campaign.name).toBe("The southern road");
-    expect(fork.campaign.forked_from_campaign_id).toBe(seeded.campaign.id);
-    expect(fork.campaign.forked_from_session_id).toBe(seeded.session.id);
-    expect(fork.campaign.world_snapshot).toEqual(seeded.campaign.world_snapshot);
-    expect(fork.campaign.protagonist_snapshot).toEqual(seeded.campaign.protagonist_snapshot);
-    expect(fork.campaign.cast).toEqual(seeded.campaign.cast);
-    expect(fork.campaign.starting_situation).toBe(seeded.campaign.starting_situation);
-    expect(fork.campaign.active_session_id).toBe(fork.session.id);
-    expect(fork.session.handoff).toBe("The party reached the northern pass at dusk.");
-    expect(fork.session.closed_at).toBeNull();
-    expect(fork.session.title).toBe("Opening session");
-
-    // Checkpoint values, not the live edited state; journal chronology survives.
-    const items = (await stateItems(fork.campaign.id)) as Array<{
-      category: string;
-      subject: string;
-      content: string;
-      created_at: string;
-    }>;
-    expect(items).toEqual([
-      expect.objectContaining({ category: "goal", subject: "Find the ledger", content: "Checkpoint content." }),
-      expect.objectContaining({ category: "journal", subject: "First night", content: "Slept aboard the ferry." }),
-    ]);
-    expect(items.map((item) => item.created_at)).toEqual([firstItem.created_at, secondItem.created_at]);
-
-    // The origin keeps its later state and sessions; the fork starts fresh.
-    const originItems = (await stateItems(seeded.campaign.id)) as Array<{ content: string }>;
-    expect(originItems.map((item) => item.content)).toEqual([
-      "Edited after the boundary.",
-      "Added after the boundary.",
-    ]);
-    expect(await campaignSessions(fork.campaign.id)).toHaveLength(1);
-
-    // Opening the fork continues from the handoff and checkpoint, not the situation.
-    const calls: Array<Record<string, unknown>> = [];
-    const server = await startTestServer({
-      configDirectory,
-      databasePath,
-      upstreamFetch: (async (_input: string | URL | Request, init?: RequestInit) => {
-        calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        return new Response(openAiChatCompletionSse("glm-5.3", ["The pass widens."]), {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        });
-      }) as typeof fetch,
-    });
-    try {
-      const opening = await fetch(`${server.url}/api/sessions/${fork.session.id}/opening`, {
-        method: "POST",
-        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-        body: JSON.stringify({}),
-      });
-      expect(opening.status).toBe(200);
-      await opening.body?.cancel();
-      const history = calls[0].messages as Array<{ role: string; content: string }>;
-      const prompt = history[0].content;
-      expect(prompt).toContain("Handoff from the previous session: The party reached the northern pass at dusk.");
-      expect(prompt).toContain("goal — Find the ledger: Checkpoint content.");
-      expect(prompt).not.toContain("Edited after the boundary.");
-      expect(prompt).not.toContain(seeded.situation);
-      expect(history.slice(1)).toEqual([{ role: "user", content: "Begin the opening scene." }]);
-    } finally {
-      await server.stop();
-    }
-  });
-
-  test("only completed sessions can fork", async () => {
-    const seeded = await seedCampaign("ForkGuard", "Fork guard situation.");
-    const open = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "Too early" });
-    expect(open.status).toBe(409);
-    const openError = (await open.json()) as { code?: string };
-    expect(openError.code).toBe("session_not_closed");
-    const unknown = await json("/api/sessions/nope/fork", "POST", { name: "Nowhere" });
-    expect(unknown.status).toBe(404);
-    const malformed = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", {});
-    expect(malformed.status).toBe(400);
-  });
-});
-
 describe("forking from a message", () => {
   test("fork from the open session cuts the transcript and copies current state, independent afterwards", async () => {
     const seeded = await seedCampaign("MsgFork", "Message fork situation.");
@@ -1008,20 +792,25 @@ describe("forking from a message", () => {
     ]);
   });
 
-  test("a message fork from a closed opening session has no incoming handoff and takes current state", async () => {
+  test("a message fork from a closed opening session has no incoming handoff and restores its checkpoint", async () => {
     const seeded = await seedCampaign("MsgForkClosed", "Closed fork situation.");
     await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
     const message = (await transcript(base.url, seeded.session.id))[0]!;
-    await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
-      category: "goal",
-      subject: "Find the ledger",
-      content: "Current content.",
-    });
+    const checkpointed = (await (
+      await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
+        category: "goal",
+        subject: "Find the ledger",
+        content: "Checkpoint content.",
+      })
+    ).json()) as { id: string; created_at: string };
     const closed = await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
       title: "The northern road",
       handoff: "The party reached the northern pass at dusk.",
     });
     expect(closed.status).toBe(201);
+    await json(`/api/campaigns/${seeded.campaign.id}/state/${checkpointed.id}`, "PATCH", {
+      content: "Edited after the close.",
+    });
     await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
       category: "internal",
       subject: "Post-close doubt",
@@ -1038,8 +827,10 @@ describe("forking from a message", () => {
     expect(fork.session.handoff).toBeNull();
     expect(fork.session.closed_at).toBeNull();
     expect(fork.session.title).toBe(seeded.session.title);
-    const forkItems = (await stateItems(fork.campaign.id)) as Array<{ subject: string }>;
-    expect(forkItems.map((row) => row.subject)).toEqual(["Find the ledger", "Post-close doubt"]);
+    const forkItems = (await stateItems(fork.campaign.id)) as Array<{ subject: string; content: string; created_at: string }>;
+    expect(forkItems.map((row) => [row.subject, row.content, row.created_at])).toEqual([
+      ["Find the ledger", "Checkpoint content.", checkpointed.created_at],
+    ]);
   });
 
   test("a message fork from a closed session is grounded by its incoming handoff, not its outgoing one", async () => {
@@ -1072,14 +863,18 @@ describe("forking from a message", () => {
   test("a message fork from an open fork session keeps the inherited handoff", async () => {
     const seeded = await seedCampaign("MsgForkInherited", "Inherited fork situation.");
     await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
-    await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
-      title: "The northern road",
-      handoff: "The party reached the northern pass at dusk.",
-    });
+    const next = (await (
+      await json(`/api/campaigns/${seeded.campaign.id}/sessions`, "POST", {
+        title: "The northern road",
+        handoff: "The party reached the northern pass at dusk.",
+      })
+    ).json()) as { session: Session };
 
-    const boundary = await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "The boundary fork" });
-    expect(boundary.status).toBe(201);
-    const boundaryFork = (await boundary.json()) as { campaign: Campaign; session: Session };
+    await completeTurn(base.url, next.session.id, "I make camp.", "The fire catches.");
+    const camp = (await transcript(base.url, next.session.id)).at(-1)!;
+    const first = await json(`/api/sessions/${next.session.id}/messages/${camp.id}/fork`, "POST", { name: "Camp fork" });
+    expect(first.status).toBe(201);
+    const boundaryFork = (await first.json()) as { campaign: Campaign; session: Session };
     expect(boundaryFork.session.handoff).toBe("The party reached the northern pass at dusk.");
 
     await completeTurn(base.url, boundaryFork.session.id, "I climb the ridge.", "The valley opens below.");
@@ -1242,8 +1037,8 @@ describe("forking from a message", () => {
   });
 });
 
-describe("history context boundary", () => {
-  test("input that would pass the completed-history limit is refused with nothing saved", async () => {
+describe("narration budget", () => {
+  test("a request that would pass the budget is refused with nothing saved; one that fits is accepted", async () => {
     const seeded = await seedCampaign("ContextLimit", "Context limit situation.");
     const server = await startTestServer({
       configDirectory,
@@ -1255,18 +1050,27 @@ describe("history context boundary", () => {
         })) as typeof fetch,
     });
     try {
-      const first = await postMessage(server.url, seeded.session.id, "a".repeat(HISTORY_CHARACTER_LIMIT - 100));
+      const first = await postMessage(server.url, seeded.session.id, "a".repeat(100_000));
       expect(first.status).toBe(200);
-      await first.body?.cancel();
+      await first.text();
+
+      const db = openDatabase(databasePath);
+      const prompt = new PlayService(db).systemPrompt(seeded.session.id).length;
+      db.close();
+      const room = NARRATION_CHARACTER_BUDGET - prompt - 100_000 - "Short.".length;
 
       const before = await transcript(server.url, seeded.session.id);
-      const over = await postMessage(server.url, seeded.session.id, "b".repeat(200));
+      const over = await postMessage(server.url, seeded.session.id, "b".repeat(room + 1));
       expect(over.status).toBe(413);
       const body = (await over.json()) as { code?: string; accepted?: boolean; error?: string };
       expect(body.code).toBe("context_limit");
       expect(body.accepted).toBe(false);
       expect(body.error).toContain("begin the next session");
       expect(await transcript(server.url, seeded.session.id)).toEqual(before);
+
+      const fits = await postMessage(server.url, seeded.session.id, "b".repeat(room));
+      expect(fits.status).toBe(200);
+      await fits.text();
     } finally {
       await server.stop();
     }
@@ -1344,148 +1148,10 @@ describe("closed-session race guard", () => {
   });
 });
 
-describe("state subject references", () => {
-  test("subjects may reference captured snapshots or stay free-text labels", async () => {
-    const world = await json("/api/worlds", "POST", {
-      name: "Ref World",
-      setting_brief: "Harbor kingdom.",
-      suggested_starting_situation: "",
-    });
-    const worldId = ((await world.json()) as { world: { id: string } }).world.id;
-    const entry = await json(`/api/worlds/${worldId}/entries`, "POST", {
-      kind: "lore",
-      name: "Drowned bell",
-      description: "Rings beneath the pier at slack tide.",
-    });
-    const entryId = ((await entry.json()) as { entry: { id: string } }).entry.id;
-    const protagonist = await json("/api/characters", "POST", {
-      name: "Sable",
-      description: "Ferrywoman spy.",
-    });
-    const protagonistId = ((await protagonist.json()) as { character: { id: string } }).character.id;
-    const castMember = await json("/api/characters", "POST", {
-      name: "Mira",
-      description: "Harbormaster.",
-    });
-    const castId = ((await castMember.json()) as { character: { id: string } }).character.id;
-    // A library character never captured by this campaign.
-    const outsider = await json("/api/characters", "POST", {
-      name: "Outsider",
-      description: "Never captured.",
-    });
-    const outsiderId = ((await outsider.json()) as { character: { id: string } }).character.id;
-    const created = await json("/api/campaigns", "POST", {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      cast_character_ids: [castId],
-      entry_ids: [entryId],
-      starting_situation: "Ref situation.",
-    });
-    const campaign = ((await created.json()) as { campaign: Campaign }).campaign;
-
-    const label = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
-      category: "internal",
-      subject: "Sable's doubt",
-      content: "She no longer trusts the harbormaster.",
-    });
-    expect(label.status).toBe(201);
-    await label.body?.cancel();
-    const listed = ((await (
-      await json(`/api/campaigns/${campaign.id}/state`, "GET")
-    ).json()) as { items: Array<{ subject_kind: string | null; subject_id: string | null }> }).items;
-    expect(listed[0].subject_kind).toBeNull();
-    expect(listed[0].subject_id).toBeNull();
-
-    const characterRef = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
-      category: "goal",
-      subject: "Mira",
-      content: "Warily cooperative.",
-      subject_kind: "character",
-      subject_id: castId,
-    });
-    expect(characterRef.status).toBe(201);
-    const refItem = (await characterRef.json()) as { subject_kind: string; subject_id: string };
-    expect(refItem.subject_kind).toBe("character");
-    expect(refItem.subject_id).toBe(castId);
-
-    const entryRef = await json(`/api/campaigns/${campaign.id}/state`, "POST", {
-      category: "knowledge",
-      subject: "Drowned bell",
-      content: "Its ring marks the smuggler's tide.",
-      subject_kind: "entry",
-      subject_id: entryId,
-    });
-    expect(entryRef.status).toBe(201);
-
-    for (const body of [
-      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: outsiderId },
-      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: "nope" },
-      { category: "goal", subject: "X", content: "Y", subject_kind: "entry", subject_id: castId },
-      { category: "goal", subject: "X", content: "Y", subject_kind: "character", subject_id: entryId },
-      { category: "goal", subject: "X", content: "Y", subject_kind: "character" },
-      { category: "goal", subject: "X", content: "Y", subject_id: castId },
-      { category: "goal", subject: "X", content: "Y", subject_kind: "deity", subject_id: "z" },
-    ]) {
-      const refused = await json(`/api/campaigns/${campaign.id}/state`, "POST", body);
-      expect(refused.status).toBe(400);
-    }
-
-    // PATCH: half updates on a label refuse; the pair sets and clears together.
-    const items = ((await (
-      await json(`/api/campaigns/${campaign.id}/state`, "GET")
-    ).json()) as { items: Array<{ id: string }> }).items;
-    const labelId = items[0].id;
-    const halfId = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
-      subject_id: castId,
-    });
-    expect(halfId.status).toBe(400);
-    const halfKind = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
-      subject_kind: "entry",
-    });
-    expect(halfKind.status).toBe(400);
-    const setPair = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
-      subject_kind: "character",
-      subject_id: protagonistId,
-    });
-    expect(setPair.status).toBe(200);
-    const setItem = (await setPair.json()) as { subject_kind: string; subject_id: string };
-    expect(setItem.subject_kind).toBe("character");
-    expect(setItem.subject_id).toBe(protagonistId);
-    const clearPair = await json(`/api/campaigns/${campaign.id}/state/${labelId}`, "PATCH", {
-      subject_kind: null,
-      subject_id: null,
-    });
-    expect(clearPair.status).toBe(200);
-    const cleared = (await clearPair.json()) as { subject_kind: string | null; subject_id: string | null };
-    expect(cleared.subject_kind).toBeNull();
-    expect(cleared.subject_id).toBeNull();
-
-    // Refs survive the boundary checkpoint and the fork.
-    await json(`/api/campaigns/${campaign.id}/sessions`, "POST", {
-      title: "Next",
-      handoff: "Handoff with references.",
-    });
-    const forked = await json(`/api/sessions/${campaign.active_session_id}/fork`, "POST", { name: "Ref fork" });
-    const fork = (await forked.json()) as { campaign: Campaign };
-    const forkItems = ((await (
-      await json(`/api/campaigns/${fork.campaign.id}/state`, "GET")
-    ).json()) as { items: Array<{ subject_kind: string | null; subject_id: string | null; subject: string }> }).items;
-    expect(forkItems.map((item) => [item.subject, item.subject_kind, item.subject_id])).toContainEqual([
-      "Mira",
-      "character",
-      castId,
-    ]);
-    expect(forkItems.map((item) => [item.subject, item.subject_kind, item.subject_id])).toContainEqual([
-      "Drowned bell",
-      "entry",
-      entryId,
-    ]);
-  });
-});
-
 describe("restart and persistence", () => {
   test("state, sessions, checkpoints, and fork provenance survive a restart", async () => {
     const seeded = await seedCampaign("Restart", "Restart situation.");
+    await completeTurn(base.url, seeded.session.id, "I scout the pier.", "The fog swallows the pier.");
     await json(`/api/campaigns/${seeded.campaign.id}/state`, "POST", {
       category: "knowledge",
       subject: "Hidden ledger",
@@ -1495,8 +1161,9 @@ describe("restart and persistence", () => {
       title: "After the storm",
       handoff: "The party sheltered in the lighthouse.",
     });
+    const cutAt = (await transcript(base.url, seeded.session.id)).at(-1)!;
     const fork = (await (
-      await json(`/api/sessions/${seeded.session.id}/fork`, "POST", { name: "Restarted fork" })
+      await json(`/api/sessions/${seeded.session.id}/messages/${cutAt.id}/fork`, "POST", { name: "Restarted fork" })
     ).json()) as { campaign: Campaign; session: Session };
 
     const restarted = await startTestServer({ configDirectory, databasePath });
@@ -1529,8 +1196,8 @@ describe("restart and persistence", () => {
   });
 });
 
-test("directional relationship API validates subjects, revisions, and session events", async () => {
-  const { campaign, session } = await seedCampaign("Relationship API", "A meeting at the harbor.");
+test("directional relationship API validates subjects and the last save wins", async () => {
+  const { campaign } = await seedCampaign("Relationship API", "A meeting at the harbor.");
   const subjectsResponse = await json(`/api/campaigns/${campaign.id}/relationships`, "GET");
   expect(subjectsResponse.status).toBe(200);
   const subjects = (await subjectsResponse.json()) as { subjects: Array<{ id: string; kind: string }> };
@@ -1545,7 +1212,7 @@ test("directional relationship API validates subjects, revisions, and session ev
     document,
   });
   expect(created.status).toBe(201);
-  const relationship = ((await created.json()) as { relationship: { id: string; revision: number } }).relationship;
+  const relationship = ((await created.json()) as { relationship: { id: string } }).relationship;
   expect((await json(`/api/campaigns/${campaign.id}/relationships`, "POST", {
     source_id: campaign.protagonist_snapshot.id,
     target_id: target,
@@ -1556,22 +1223,14 @@ test("directional relationship API validates subjects, revisions, and session ev
     target_id: target,
     document: { ...document, hidden: "field" },
   })).status).toBe(400);
-  const updated = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
-    document: { ...document, status: "trusting" },
-    revision: relationship.revision,
-  });
-  expect(updated.status).toBe(200);
-  expect((await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
-    document,
-    revision: relationship.revision,
-  })).status).toBe(409);
-  const eventResponse = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}/events`, "POST", {
-    description: "Aven offered a map.",
-  });
-  expect(eventResponse.status).toBe(201);
-  const event = ((await eventResponse.json()) as { event: { session_id: string; description: string } }).event;
-  expect(event.session_id).toBe(session.id);
-  expect(event.description).toBe("Aven offered a map.");
-  const events = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}/events`, "GET");
-  expect(((await events.json()) as { events: unknown[] }).events).toHaveLength(1);
+  for (const status of ["trusting", "wary"]) {
+    const updated = await json(`/api/campaigns/${campaign.id}/relationships/${relationship.id}`, "PATCH", {
+      document: { ...document, status },
+    });
+    expect(updated.status).toBe(200);
+  }
+  const listed = (await (await json(`/api/campaigns/${campaign.id}/relationships`, "GET")).json()) as {
+    relationships: Array<{ document: { status: string } }>;
+  };
+  expect(listed.relationships[0]!.document.status).toBe("wary");
 });

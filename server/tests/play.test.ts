@@ -1222,35 +1222,35 @@ describe("regeneration, swipes, edits, and deletes", () => {
     }
   });
 
-  test("model history and the history cap count only the selected alternate", async () => {
+  test("model history and the narration budget count only the selected alternate", async () => {
     const { session } = await seedStory(base.url);
-    const big = "A".repeat(99_000);
+    const big = "A".repeat(100_000);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [[big], ["Short."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
       await readSse(await postOpening(server.url, session.id));
       await readSse(await postRegenerate(server.url, session.id));
-      // The 99k swipe is the oldest alternate; unselected after the regenerate.
+      // The 100k swipe is the oldest alternate; unselected after the regenerate.
       const swipeId = (await transcript(server.url, session.id))[0].variant_ids[0];
 
-      // The unselected 99k swipe does not count: a 90k input still fits.
-      const turn = await postMessage(server.url, session.id, { content: "B".repeat(90_000) });
+      // The unselected 100k swipe does not count: a 60k input still fits.
+      const turn = await postMessage(server.url, session.id, { content: "B".repeat(60_000) });
       expect(turn.status).toBe(200);
       const events = await readSse(turn);
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
       const history = calls[2].messages as Array<{ role: string; content: string }>;
       const nonSystem = history.filter((message) => message.role !== "system");
       expect(nonSystem[0]).toEqual({ role: "assistant", content: "Short." });
-      expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(90_000) });
+      expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(60_000) });
       expect(JSON.stringify(history)).not.toContain(big);
 
-      // But the cap still binds: growth past it is refused, standing still is not.
+      // But the budget still binds: growth past it is refused, standing still is not.
       const rows = await transcript(server.url, session.id);
-      const oversized = await patchMessage(server.url, session.id, rows[1].id, { content: "C".repeat(100_000) });
+      const oversized = await patchMessage(server.url, session.id, rows[0].id, { content: "C".repeat(100_000) });
       expect(oversized.status).toBe(413);
       const oversizedBody = (await oversized.json()) as { code: string };
       expect(oversizedBody.code).toBe("context_limit");
-      const kept = await patchMessage(server.url, session.id, rows[1].id, { content: "B".repeat(90_000) });
+      const kept = await patchMessage(server.url, session.id, rows[0].id, { content: "Shout." });
       expect(kept.status).toBe(200);
 
       // An unselected alternate feeds no model history: growing it is uncapped.

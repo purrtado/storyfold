@@ -90,35 +90,20 @@ export interface World {
   updated_at: string;
 }
 
-export const CAMPAIGN_STATE_CATEGORIES = [
-  "goal",
-  "knowledge",
-  "internal",
-  "attribute",
-  "journal",
-] as const;
+export const CAMPAIGN_STATE_CATEGORIES = ["goal", "knowledge", "internal", "journal"] as const;
 
 export type CampaignStateCategory = (typeof CAMPAIGN_STATE_CATEGORIES)[number];
 
-/** What a state item's subject refers to: null on both fields means a free-text label. */
-export type CampaignStateSubjectKind = "character" | "entry";
-
 /**
- * Campaign-owned manual state. `subject` is display text: the name of a
- * captured character/world entry or any campaign-local label. When the subject
- * refers to a captured snapshot, `subject_kind` plus `subject_id` identify it —
- * validated at write time against the campaign's captured snapshots and never
- * re-resolved against the live library. `content` is the tracked value, and
- * journal entries are read chronologically by created_at, which never changes
- * after creation.
+ * Campaign-owned manual note. `subject` is free text and never links to a
+ * character or entry. Journal entries are read chronologically by created_at,
+ * which never changes after creation.
  */
 export interface CampaignStateItem {
   id: string;
   campaign_id: string;
   category: CampaignStateCategory;
   subject: string;
-  subject_kind: CampaignStateSubjectKind | null;
-  subject_id: string | null;
   content: string;
   created_at: string;
   updated_at: string;
@@ -144,18 +129,8 @@ export interface Relationship {
   source_id: string;
   target_id: string;
   document: RelationshipDocument;
-  revision: number;
   created_at: string;
   updated_at: string;
-}
-
-export interface RelationshipEvent {
-  id: string;
-  relationship_id: string;
-  campaign_id: string;
-  session_id: string;
-  description: string;
-  created_at: string;
 }
 
 export interface Campaign {
@@ -169,7 +144,7 @@ export interface Campaign {
   cast: CharacterSnapshot[];
   starting_situation: string;
   active_session_id: string;
-  /** Set when this campaign was forked from a completed session checkpoint. */
+  /** Set when this campaign was forked from a message of another campaign's session. */
   forked_from_campaign_id: string | null;
   forked_from_session_id: string | null;
   created_at: string;

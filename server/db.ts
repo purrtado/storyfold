@@ -90,10 +90,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_
 CREATE TABLE IF NOT EXISTS campaign_state_items (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
+  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'journal')),
   subject TEXT NOT NULL,
-  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
-  subject_id TEXT,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -101,19 +99,12 @@ CREATE TABLE IF NOT EXISTS campaign_state_items (
 
 CREATE INDEX IF NOT EXISTS campaign_state_items_campaign ON campaign_state_items(campaign_id);
 
-CREATE TABLE IF NOT EXISTS session_state_checkpoints (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id),
+CREATE TABLE IF NOT EXISTS session_checkpoints (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id),
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'attribute', 'journal')),
-  subject TEXT NOT NULL,
-  subject_kind TEXT CHECK (subject_kind IN ('character', 'entry')),
-  subject_id TEXT,
-  content TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (json_valid(state)),
   created_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS session_state_checkpoints_session ON session_state_checkpoints(session_id);
 
 CREATE TABLE IF NOT EXISTS relationship_subjects (
   id TEXT PRIMARY KEY,
@@ -129,7 +120,6 @@ CREATE TABLE IF NOT EXISTS relationships (
   source_id TEXT NOT NULL,
   target_id TEXT NOT NULL,
   document TEXT NOT NULL CHECK (json_valid(document)),
-  revision INTEGER NOT NULL CHECK (revision > 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (source_id != target_id),
@@ -138,48 +128,6 @@ CREATE TABLE IF NOT EXISTS relationships (
 );
 
 CREATE INDEX IF NOT EXISTS relationships_campaign ON relationships(campaign_id);
-
-CREATE TABLE IF NOT EXISTS relationship_events (
-  id TEXT PRIMARY KEY,
-  relationship_id TEXT NOT NULL,
-  campaign_id TEXT NOT NULL,
-  session_id TEXT NOT NULL REFERENCES sessions(id),
-  description TEXT NOT NULL,
-  origin_event_id TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (relationship_id, campaign_id) REFERENCES relationships(id, campaign_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS relationship_events_order
-  ON relationship_events(relationship_id, created_at, id);
-
-CREATE TABLE IF NOT EXISTS session_relationship_subject_checkpoints (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id),
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  subject_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE (session_id, subject_id)
-);
-
-CREATE INDEX IF NOT EXISTS relationship_subject_checkpoints_session
-  ON session_relationship_subject_checkpoints(session_id);
-
-CREATE TABLE IF NOT EXISTS session_relationship_checkpoints (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id),
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  source_id TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  document TEXT NOT NULL CHECK (json_valid(document)),
-  revision INTEGER NOT NULL,
-  events TEXT NOT NULL CHECK (json_valid(events)),
-  created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS relationship_checkpoints_session
-  ON session_relationship_checkpoints(session_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -224,13 +172,26 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Opens the workspace database with foreign keys and the M1 schema in place. */
+/** Bumped whenever SCHEMA changes; there are no migrations. */
+const SCHEMA_VERSION = 1;
+
+/**
+ * Opens the workspace database with foreign keys and the schema in place. A
+ * workspace written by another schema version is refused rather than migrated.
+ */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
+  const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+  const populated = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get() !== null;
+  if (populated && version !== SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
+  }
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return db;
 }
 

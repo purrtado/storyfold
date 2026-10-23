@@ -1,20 +1,13 @@
 import type { Database } from "bun:sqlite";
-import type {
-  Campaign,
-  Relationship,
-  RelationshipDocument,
-  RelationshipEvent,
-  RelationshipSubject,
-} from "../shared/domain";
+import type { Campaign, Relationship, RelationshipDocument, RelationshipSubject } from "../shared/domain";
+import type { RelationshipPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
 
-export const RELATIONSHIP_GROUNDING_LIMIT = 16_000;
-const DOCUMENT_LIMIT = 8_000;
 const TEXT_LIMIT = 2_000;
+const RELATIONSHIP_COUNT_LIMIT = 100;
 const FORBIDDEN_KEYS: readonly string[] = ["__proto__", "prototype", "constructor"];
 
 export class RelationshipValidationError extends Error {}
-export class RelationshipConflictError extends Error {}
 
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -65,22 +58,14 @@ export function parseRelationshipDocument(value: unknown): RelationshipDocument 
     }
     throw new RelationshipValidationError("section type and value do not match");
   });
-  const document = {
+  return {
     how_met: text(value.how_met, "how_met"),
     status: text(value.status, "status"),
     stats,
     known_facts,
     sections,
-  } satisfies RelationshipDocument;
-  if (JSON.stringify(document).length > DOCUMENT_LIMIT) {
-    throw new RelationshipValidationError(`document must be at most ${DOCUMENT_LIMIT} characters`);
-  }
-  return document;
+  };
 }
-
-export const emptyRelationshipDocument = (): RelationshipDocument => ({
-  how_met: "", status: "", stats: {}, known_facts: [], sections: [],
-});
 
 function subjects(db: Database, campaign: Campaign): RelationshipSubject[] {
   return [
@@ -120,42 +105,13 @@ function requireSubject(db: Database, campaign: Campaign, id: string): void {
   throw new RelationshipValidationError("source_id and target_id must identify campaign subjects");
 }
 
-function assertGroundingCapacity(db: Database, campaignId: string, nextJson: string, replacingId?: string): void {
-  const totals = db.query<{ total: number; count: number }, [string, string]>(
-    "SELECT COALESCE(SUM(length(document)),0) AS total,COUNT(*) AS count FROM relationships WHERE campaign_id=? AND id != ?",
-  ).get(campaignId, replacingId ?? "")!;
-  if (totals.count >= 100 && replacingId === undefined) {
-    throw new RelationshipValidationError("campaigns support at most 100 directional relationships");
-  }
-  if (totals.total + nextJson.length > RELATIONSHIP_GROUNDING_LIMIT) {
-    throw new RelationshipValidationError(`campaign relationship documents exceed ${RELATIONSHIP_GROUNDING_LIMIT} characters`);
-  }
-}
-
-export interface RelationshipPrompt {
-  source_name: string;
-  target_name: string;
-  document: RelationshipDocument;
-  recent_events: string[];
-}
-
 export function relationshipNarrationContext(db: Database, campaign: Campaign): RelationshipPrompt[] {
   const { subjects: available, relationships } = listRelationships(db, campaign);
   const names = new Map(available.map((subject) => [subject.id, subject.name]));
-  const recent = db.query<{ relationship_id: string; description: string }, [string]>(
-    "SELECT relationship_id,description FROM relationship_events WHERE campaign_id=? ORDER BY rowid DESC LIMIT 5",
-  ).all(campaign.id).reverse();
-  const byRelationship = new Map<string, string[]>();
-  for (const event of recent) {
-    const events = byRelationship.get(event.relationship_id) ?? [];
-    events.push(event.description);
-    byRelationship.set(event.relationship_id, events);
-  }
   return relationships.map((relationship) => ({
     source_name: names.get(relationship.source_id)!,
     target_name: names.get(relationship.target_id)!,
     document: relationship.document,
-    recent_events: byRelationship.get(relationship.id) ?? [],
   }));
 }
 
@@ -167,130 +123,28 @@ export function createRelationship(db: Database, campaign: Campaign, sourceId: s
     .get(campaign.id, sourceId, targetId)) {
     throw new RelationshipValidationError("a relationship already exists for this directional pair");
   }
-  const json = JSON.stringify(document);
-  assertGroundingCapacity(db, campaign.id, json);
+  const count = db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM relationships WHERE campaign_id=?")
+    .get(campaign.id)!.count;
+  if (count >= RELATIONSHIP_COUNT_LIMIT) {
+    throw new RelationshipValidationError(`campaigns support at most ${RELATIONSHIP_COUNT_LIMIT} directional relationships`);
+  }
   const now = nowIso();
   const id = newId();
-  db.query("INSERT INTO relationships (id,campaign_id,source_id,target_id,document,revision,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)")
-    .run(id, campaign.id, sourceId, targetId, json, now, now);
-  return { id, campaign_id: campaign.id, source_id: sourceId, target_id: targetId, document, revision: 1, created_at: now, updated_at: now };
+  db.query("INSERT INTO relationships (id,campaign_id,source_id,target_id,document,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run(id, campaign.id, sourceId, targetId, JSON.stringify(document), now, now);
+  return { id, campaign_id: campaign.id, source_id: sourceId, target_id: targetId, document, created_at: now, updated_at: now };
 }
 
-export function updateRelationship(db: Database, campaign: Campaign, id: string, document: RelationshipDocument, revision: number): Relationship | null {
-  if (!Number.isSafeInteger(revision) || revision < 1) throw new RelationshipValidationError("revision must be a positive integer");
+/** Last save wins. */
+export function updateRelationship(db: Database, campaign: Campaign, id: string, document: RelationshipDocument): Relationship | null {
   const row = db.query<RelationshipRow, [string, string]>("SELECT * FROM relationships WHERE id=? AND campaign_id=?").get(id, campaign.id);
   if (!row) return null;
-  if (row.revision !== revision) throw new RelationshipConflictError("Relationship changed since it was loaded");
   const json = JSON.stringify(document);
-  assertGroundingCapacity(db, campaign.id, json, id);
   const now = nowIso();
-  const changes = db.query("UPDATE relationships SET document=?,revision=revision+1,updated_at=? WHERE id=? AND campaign_id=? AND revision=?")
-    .run(json, now, id, campaign.id, revision).changes;
-  if (changes === 0) throw new RelationshipConflictError("Relationship changed since it was loaded");
-  return relationshipFromRow({ ...row, document: json, revision: revision + 1, updated_at: now });
+  db.query("UPDATE relationships SET document=?,updated_at=? WHERE id=? AND campaign_id=?").run(json, now, id, campaign.id);
+  return relationshipFromRow({ ...row, document: json, updated_at: now });
 }
 
 export function deleteRelationship(db: Database, campaignId: string, id: string): boolean {
   return db.query("DELETE FROM relationships WHERE id=? AND campaign_id=?").run(id, campaignId).changes > 0;
 }
-
-export function listRelationshipEvents(db: Database, campaignId: string, relationshipId: string): RelationshipEvent[] | null {
-  if (!db.query("SELECT 1 FROM relationships WHERE id=? AND campaign_id=?").get(relationshipId, campaignId)) return null;
-  return db.query<RelationshipEvent, [string, string]>(
-    "SELECT id,relationship_id,campaign_id,session_id,description,created_at FROM relationship_events WHERE relationship_id=? AND campaign_id=? ORDER BY rowid",
-  ).all(relationshipId, campaignId);
-}
-
-export function appendRelationshipEvent(db: Database, campaign: Campaign, relationshipId: string, description: string): RelationshipEvent | null {
-  if (typeof description !== "string" || description.trim().length === 0 || description.length > 1_000) {
-    throw new RelationshipValidationError("description must contain 1 to 1000 characters");
-  }
-  if (!db.query("SELECT 1 FROM relationships WHERE id=? AND campaign_id=?").get(relationshipId, campaign.id)) return null;
-  const event: RelationshipEvent = { id: newId(), relationship_id: relationshipId, campaign_id: campaign.id,
-    session_id: campaign.active_session_id, description: description.trim(), created_at: nowIso() };
-  db.query("INSERT INTO relationship_events (id,relationship_id,campaign_id,session_id,description,created_at) VALUES (?,?,?,?,?,?)")
-    .run(event.id, event.relationship_id, event.campaign_id, event.session_id, event.description, event.created_at);
-  return event;
-}
-
-export function checkpointRelationships(db: Database, campaignId: string, sessionId: string): void {
-  const localSubjects = db.query<{ id: string; name: string }, [string]>(
-    "SELECT id,name FROM relationship_subjects WHERE campaign_id=? ORDER BY created_at,id",
-  ).all(campaignId);
-  for (const subject of localSubjects) {
-    db.query("INSERT INTO session_relationship_subject_checkpoints (id,session_id,campaign_id,subject_id,name,created_at) VALUES (?,?,?,?,?,?)")
-      .run(newId(), sessionId, campaignId, subject.id, subject.name, nowIso());
-  }
-  const rows = db.query<RelationshipRow, [string]>("SELECT * FROM relationships WHERE campaign_id=? ORDER BY created_at,id").all(campaignId);
-  for (const row of rows) {
-    const events = db.query<RelationshipEvent, [string]>("SELECT id,relationship_id,campaign_id,session_id,description,created_at FROM relationship_events WHERE relationship_id=? ORDER BY rowid").all(row.id);
-    db.query("INSERT INTO session_relationship_checkpoints (id,session_id,campaign_id,source_id,target_id,document,revision,events,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-      .run(newId(), sessionId, campaignId, row.source_id, row.target_id, row.document, row.revision, JSON.stringify(events), nowIso());
-  }
-}
-
-/** Inserts one copied relationship plus its event history under new ids. */
-function copyRelationship(
-  db: Database,
-  forkCampaignId: string,
-  sourceId: string,
-  targetId: string,
-  document: string,
-  revision: number,
-  createdAt: string,
-  events: RelationshipEvent[],
-): void {
-  const id = newId();
-  db.query("INSERT INTO relationships (id,campaign_id,source_id,target_id,document,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run(id, forkCampaignId, sourceId, targetId, document, revision, createdAt, nowIso());
-  for (const sourceEvent of events) {
-    db.query("INSERT INTO relationship_events (id,relationship_id,campaign_id,session_id,description,origin_event_id,created_at) VALUES (?,?,?,?,?,?,?)")
-      .run(newId(), id, forkCampaignId, sourceEvent.session_id, sourceEvent.description, sourceEvent.id, sourceEvent.created_at);
-  }
-}
-
-function insertLocalSubjects(db: Database, forkCampaignId: string, subjects: Array<{ subject_id: string; name: string; created_at: string }>): Record<string, string> {
-  const subjectIds: Record<string, string> = {};
-  for (const subject of subjects) {
-    const id = newId();
-    subjectIds[subject.subject_id] = id;
-    db.query("INSERT INTO relationship_subjects (id,campaign_id,name,created_at) VALUES (?,?,?,?)")
-      .run(id, forkCampaignId, subject.name, subject.created_at);
-  }
-  return subjectIds;
-}
-
-export function forkRelationships(
-  db: Database,
-  sourceSessionId: string,
-  forkCampaignId: string,
-  subjectIds: Record<string, string>,
-): void {
-  const checkpoints = db.query<{ source_id: string; target_id: string; document: string; revision: number; created_at: string; events: string }, [string]>(
-    "SELECT source_id,target_id,document,revision,created_at,events FROM session_relationship_checkpoints WHERE session_id=? ORDER BY created_at,id",
-  ).all(sourceSessionId);
-  for (const item of checkpoints) {
-    copyRelationship(db, forkCampaignId, subjectIds[item.source_id] ?? item.source_id, subjectIds[item.target_id] ?? item.target_id, item.document, item.revision, item.created_at, JSON.parse(item.events) as RelationshipEvent[]);
-  }
-}
-
-/** Copies the campaign's CURRENT local subjects, relationships, and event history into new ids. */
-export function forkCampaignRelationships(db: Database, sourceCampaignId: string, forkCampaignId: string): void {
-  const subjectIds = insertLocalSubjects(db, forkCampaignId, db.query<{ subject_id: string; name: string; created_at: string }, [string]>(
-    "SELECT id AS subject_id,name,created_at FROM relationship_subjects WHERE campaign_id=? ORDER BY created_at,id",
-  ).all(sourceCampaignId));
-  const rows = db.query<RelationshipRow, [string]>("SELECT * FROM relationships WHERE campaign_id=? ORDER BY created_at,id").all(sourceCampaignId);
-  for (const row of rows) {
-    const events = db.query<RelationshipEvent, [string]>(
-      "SELECT id,relationship_id,campaign_id,session_id,description,created_at FROM relationship_events WHERE relationship_id=? ORDER BY rowid",
-    ).all(row.id);
-    copyRelationship(db, forkCampaignId, subjectIds[row.source_id] ?? row.source_id, subjectIds[row.target_id] ?? row.target_id, row.document, row.revision, row.created_at, events);
-  }
-}
-
-export function createCampaignLocalSubjects(db: Database, sourceSessionId: string, forkCampaignId: string): Record<string, string> {
-  return insertLocalSubjects(db, forkCampaignId, db.query<{ subject_id: string; name: string; created_at: string }, [string]>(
-    "SELECT subject_id,name,created_at FROM session_relationship_subject_checkpoints WHERE session_id=? ORDER BY created_at,id",
-  ).all(sourceSessionId));
-}
-

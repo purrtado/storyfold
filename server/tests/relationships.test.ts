@@ -11,20 +11,15 @@ import {
   createWorld,
   createWorldEntry,
   forkCampaignFromMessage,
-  forkCampaignFromSession,
   getCampaign,
   parseCampaignInput,
 } from "../library";
 import { PlayService } from "../play";
 import {
-  appendRelationshipEvent,
   createRelationship,
   createRelationshipSubject,
-  emptyRelationshipDocument,
-  listRelationshipEvents,
   listRelationships,
   parseRelationshipDocument,
-  relationshipNarrationContext,
   updateRelationship,
 } from "../relationships";
 
@@ -48,16 +43,23 @@ function setup() {
     world_id: world.id,
     protagonist_id: protagonist.id,
     cast_character_ids: [cast.id],
-    entry_ids: [npc.id, location.id],
     starting_situation: "A storm approaches.",
   })).campaign;
   return { db, path, campaign, protagonist, cast, stranger, npc, location };
 }
 
-const document = (how_met: string) => ({ ...emptyRelationshipDocument(), how_met, status: "wary" });
+const document = (how_met: string) => ({ how_met, status: "wary", stats: {}, known_facts: [], sections: [] });
 
-test("relationships are directional, campaign-scoped, validated, and revision checked", () => {
-  const { db, campaign, protagonist, cast, stranger, location } = setup();
+function addMessage(db: Database, sessionId: string, position: number, role: "user" | "assistant", content: string): string {
+  const id = newId();
+  db.query(
+    "INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'complete', 1, ?, ?)",
+  ).run(id, sessionId, position, role, role === "user" ? "Mira" : "Narrator", content, nowIso(), nowIso());
+  return id;
+}
+
+test("relationships are directional, campaign-scoped, validated, and last save wins", () => {
+  const { db, path, campaign, protagonist, cast, stranger, location } = setup();
   const forward = createRelationship(db, campaign, protagonist.id, cast.id, parseRelationshipDocument(document("At sea.")));
   const reverse = createRelationship(db, campaign, cast.id, protagonist.id, parseRelationshipDocument(document("At port.")));
   expect(forward.source_id).toBe(protagonist.id);
@@ -73,107 +75,64 @@ test("relationships are directional, campaign-scoped, validated, and revision ch
     { id: "secret", label: "One", type: "text", value: "A" },
     { id: "secret", label: "Two", type: "text", value: "B" },
   ] })).toThrow();
-  expect(() => parseRelationshipDocument({ ...document("x".repeat(9_000)) })).toThrow();
-  const changed = updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("Changed.")), forward.revision)!;
-  expect(changed.revision).toBe(2);
-  expect(() => updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("Stale.")), forward.revision)).toThrow();
+  updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("First save.")));
+  updateRelationship(db, campaign, forward.id, parseRelationshipDocument(document("Second save.")));
   db.close();
-  const reopened = openDatabase(join(directories[0]!, "storyfold.db"));
-  expect(listRelationships(reopened, campaign).relationships.map((item) => item.id)).toEqual([forward.id, reverse.id]);
+  const reopened = openDatabase(path);
+  const stored = listRelationships(reopened, campaign).relationships;
+  expect(stored.map((item) => item.id)).toEqual([forward.id, reverse.id]);
+  expect(stored[0]!.document.how_met).toBe("Second save.");
   reopened.close();
 });
 
-test("subjects, prompt grounding, session boundary, and fork copies remain isolated", () => {
-  const { db, path, campaign, protagonist, npc } = setup();
+test("a closed-session fork restores that session's checkpoint, not later edits", () => {
+  const { db, campaign, protagonist, npc } = setup();
   const local = createRelationshipSubject(db, campaign.id, "Ilyra");
   expect(listRelationships(db, campaign).subjects.some((subject) => subject.id === npc.id && subject.kind === "entry")).toBe(true);
   const relationship = createRelationship(db, campaign, protagonist.id, local.id, parseRelationshipDocument({
     ...document("Met during the eclipse."),
-    stats: { trust: { value: 2, min: 0, max: 5 } },
     known_facts: ["She keeps a brass compass."],
-    sections: [{ id: "promise", label: "Promise", type: "text", value: "Return the map." }],
   }));
-  const originalEvent = appendRelationshipEvent(db, campaign, relationship.id, "Ilyra shared the map.")!;
-  const context = relationshipNarrationContext(db, campaign);
-  const prompt = new PlayService(db).narratorSystemPrompt(campaign, [], null, false, context);
+  const prompt = new PlayService(db).systemPrompt(campaign.active_session_id);
   expect(prompt).toContain("Mira → Ilyra");
-  expect(prompt).toContain("Met during the eclipse.");
-  expect(prompt).toContain("Ilyra shared the map.");
+  expect(prompt).toContain("She keeps a brass compass.");
 
+  const closedId = campaign.active_session_id;
+  const cutId = addMessage(db, closedId, 1, "assistant", "The eclipse ends.");
   beginNextSession(db, campaign.id, { title: "After the storm", handoff: "The crew reached the lighthouse." });
-  const closed = db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE campaign_id=? AND closed_at IS NOT NULL").get(campaign.id)!;
   const afterBoundary = getCampaign(db, campaign.id)!;
-  const updated = updateRelationship(db, afterBoundary, relationship.id, parseRelationshipDocument(document("After checkpoint.")), relationship.revision)!;
-  appendRelationshipEvent(db, afterBoundary, relationship.id, "A later session event.");
-  const laterSubject = createRelationshipSubject(db, campaign.id, "Later subject");
-  expect(laterSubject.id).not.toBe(local.id);
-  expect(relationshipNarrationContext(db, afterBoundary)[0]!.recent_events).toEqual([
-    "Ilyra shared the map.",
-    "A later session event.",
-  ]);
-  const fork = forkAtCheckpoint(db, closed.id);
-  const forkRelationship = listRelationships(db, fork.campaign).relationships[0]!;
-  expect(forkRelationship.id).not.toBe(relationship.id);
-  expect(forkRelationship.target_id).not.toBe(local.id);
-  expect(listRelationships(db, fork.campaign).subjects.some((subject) => subject.id === forkRelationship.target_id && subject.name === "Ilyra")).toBe(true);
-  expect(listRelationships(db, fork.campaign).subjects.some((subject) => subject.name === "Later subject")).toBe(false);
-  const forkEvents = listRelationshipEvents(db, fork.campaign.id, forkRelationship.id)!;
-  expect(forkEvents.map((event) => event.description)).toEqual(["Ilyra shared the map."]);
-  expect(forkEvents[0]!.id).not.toBe(originalEvent.id);
-  expect(forkEvents[0]!.session_id).toBe(closed.id);
-  expect(listRelationshipEvents(db, campaign.id, relationship.id)!.map((event) => event.description)).toHaveLength(2);
-  expect(updated.document.how_met).toBe("After checkpoint.");
-  db.close();
-  const reopened = openDatabase(path);
-  expect(listRelationshipEvents(reopened, fork.campaign.id, forkRelationship.id)!.length).toBe(1);
-  reopened.close();
-});
+  updateRelationship(db, afterBoundary, relationship.id, parseRelationshipDocument(document("After checkpoint.")));
+  createRelationshipSubject(db, campaign.id, "Later subject");
 
-function forkAtCheckpoint(db: Database, sourceSessionId: string) {
-  const fork = forkCampaignFromSession(db, sourceSessionId, { name: "Fork" });
-  if (!fork) throw new Error("Expected fork");
-  return fork;
-}
-
-test("a message fork copies current relationships and stays independent", () => {
-  const { db, campaign, protagonist } = setup();
-  const local = createRelationshipSubject(db, campaign.id, "Ilyra");
-  const relationship = createRelationship(db, campaign, protagonist.id, local.id, parseRelationshipDocument(document("Met during the eclipse.")));
-  const event = appendRelationshipEvent(db, campaign, relationship.id, "Ilyra shared the map.")!;
-
-  const sessionId = campaign.active_session_id;
-  const insertMessage = db.query(
-    "INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'complete', 1, ?, ?)",
-  );
-  insertMessage.run(newId(), sessionId, 1, "user", "Mira", "I approach the lighthouse.", nowIso(), nowIso());
-  const cutId = newId();
-  insertMessage.run(cutId, sessionId, 2, "assistant", "Narrator", "Tamsin waves from the gallery.", nowIso(), nowIso());
-
-  const forked = forkCampaignFromMessage(db, sessionId, cutId, { name: "Fork" });
-  if (!forked) throw new Error("Expected fork");
-  expect(forked.campaign.forked_from_campaign_id).toBe(campaign.id);
-  expect(forked.campaign.forked_from_session_id).toBe(sessionId);
-
-  const forkRelationship = listRelationships(db, forked.campaign).relationships[0]!;
+  const fork = forkCampaignFromMessage(db, closedId, cutId, { name: "Fork" })!;
+  const forked = listRelationships(db, fork.campaign);
+  const forkRelationship = forked.relationships[0]!;
   expect(forkRelationship.id).not.toBe(relationship.id);
   expect(forkRelationship.document.how_met).toBe("Met during the eclipse.");
   expect(forkRelationship.target_id).not.toBe(local.id);
-  expect(listRelationships(db, forked.campaign).subjects.some((subject) => subject.id === forkRelationship.target_id && subject.name === "Ilyra")).toBe(true);
-  const forkEvents = listRelationshipEvents(db, forked.campaign.id, forkRelationship.id)!;
-  expect(forkEvents.map((item) => item.description)).toEqual(["Ilyra shared the map."]);
-  expect(forkEvents[0]!.id).not.toBe(event.id);
-  const forkEventOrigin = db
-    .query<{ origin_event_id: string }, [string]>("SELECT origin_event_id FROM relationship_events WHERE id = ?")
-    .get(forkEvents[0]!.id)!;
-  expect(forkEventOrigin.origin_event_id).toBe(event.id);
+  expect(forked.subjects.some((subject) => subject.id === forkRelationship.target_id && subject.name === "Ilyra")).toBe(true);
+  expect(forked.subjects.some((subject) => subject.name === "Later subject")).toBe(false);
+  db.close();
+});
 
-  // Either campaign moves on without touching the other.
-  updateRelationship(db, forked.campaign, forkRelationship.id, parseRelationshipDocument(document("Changed in the fork.")), forkRelationship.revision)!;
-  appendRelationshipEvent(db, campaign, relationship.id, "Later, in the origin.");
-  updateRelationship(db, campaign, relationship.id, parseRelationshipDocument(document("Changed in the origin.")), relationship.revision)!;
+test("an open-session fork copies current relationships and stays independent", () => {
+  const { db, campaign, protagonist } = setup();
+  const local = createRelationshipSubject(db, campaign.id, "Ilyra");
+  const relationship = createRelationship(db, campaign, protagonist.id, local.id, parseRelationshipDocument(document("Met during the eclipse.")));
+  const sessionId = campaign.active_session_id;
+  addMessage(db, sessionId, 1, "user", "I approach the lighthouse.");
+  const cutId = addMessage(db, sessionId, 2, "assistant", "Tamsin waves from the gallery.");
+
+  const forked = forkCampaignFromMessage(db, sessionId, cutId, { name: "Fork" })!;
+  expect(forked.campaign.forked_from_campaign_id).toBe(campaign.id);
+  expect(forked.campaign.forked_from_session_id).toBe(sessionId);
+  const forkRelationship = listRelationships(db, forked.campaign).relationships[0]!;
+  expect(forkRelationship.id).not.toBe(relationship.id);
+  expect(forkRelationship.target_id).not.toBe(local.id);
+
+  updateRelationship(db, forked.campaign, forkRelationship.id, parseRelationshipDocument(document("Changed in the fork.")));
+  updateRelationship(db, campaign, relationship.id, parseRelationshipDocument(document("Changed in the origin.")));
   expect(listRelationships(db, forked.campaign).relationships[0]!.document.how_met).toBe("Changed in the fork.");
-  expect(listRelationshipEvents(db, forked.campaign.id, forkRelationship.id)!.map((item) => item.description)).toEqual(["Ilyra shared the map."]);
   expect(listRelationships(db, campaign).relationships[0]!.document.how_met).toBe("Changed in the origin.");
-  expect(listRelationshipEvents(db, campaign.id, relationship.id)!.map((item) => item.description)).toEqual(["Ilyra shared the map.", "Later, in the origin."]);
   db.close();
 });

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createCampaign, createCharacter, createWorld } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
 
@@ -44,6 +47,25 @@ function insertMessage(
 function campaignRows(): Array<Record<string, unknown>> {
   return db.query<Record<string, unknown>, []>("SELECT * FROM campaigns").all();
 }
+
+describe("schema version", () => {
+  test("a workspace from another schema is refused; one this build wrote reopens", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    try {
+      const stalePath = join(directory, "stale.db");
+      const stale = new Database(stalePath, { create: true });
+      stale.exec("CREATE TABLE worlds (id TEXT PRIMARY KEY)");
+      stale.close();
+      expect(() => openDatabase(stalePath)).toThrow("delete it to start fresh");
+
+      const currentPath = join(directory, "current.db");
+      openDatabase(currentPath).close();
+      openDatabase(currentPath).close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("schema invariants", () => {
   test("active session must belong to its own campaign at commit", () => {

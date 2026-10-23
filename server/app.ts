@@ -23,7 +23,6 @@ import {
 } from "./play";
 import {
   SessionClosedError,
-  SessionNotClosedError,
   UnknownEntityError,
   ValidationError,
   associateWorldCharacter,
@@ -38,7 +37,6 @@ import {
   deleteCampaignStateItem,
   deleteWorldEntry,
   forkCampaignFromMessage,
-  forkCampaignFromSession,
   getCampaign,
   getCharacter,
   getImage,
@@ -73,13 +71,10 @@ import {
   updateWorldEntry,
 } from "./library";
 import {
-  RelationshipConflictError,
   RelationshipValidationError,
-  appendRelationshipEvent,
   createRelationship,
   createRelationshipSubject,
   deleteRelationship,
-  listRelationshipEvents,
   listRelationships,
   parseRelationshipDocument,
   updateRelationship,
@@ -207,14 +202,8 @@ function domainErrorResponse(error: unknown): Response | null {
   if (error instanceof SessionClosedError) {
     return jsonError(409, error.message, undefined, { code: "session_closed", accepted: false });
   }
-  if (error instanceof SessionNotClosedError) {
-    return jsonError(409, error.message, undefined, { code: "session_not_closed", accepted: false });
-  }
   if (error instanceof RelationshipValidationError) {
     return jsonError(400, error.message, undefined, { code: "invalid_input", accepted: false });
-  }
-  if (error instanceof RelationshipConflictError) {
-    return jsonError(409, error.message, undefined, { code: "conflict" });
   }
   return null;
 }
@@ -542,26 +531,6 @@ async function handleCampaignRelationships(
   if (campaignId === undefined) return notFound("Unknown campaign");
   const campaign = getCampaign(ctx.db, campaignId);
   if (!campaign) return notFound("Unknown campaign");
-  if (action === "events" && relationshipId !== undefined) {
-    if (request.method === "GET") {
-      const events = listRelationshipEvents(ctx.db, campaignId, relationshipId);
-      return events ? jsonResponse({ events }) : notFound("Unknown relationship");
-    }
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        const activeCampaign = getCampaign(ctx.db, campaignId);
-        if (!activeCampaign) return notFound("Unknown campaign");
-        if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-        const event = appendRelationshipEvent(ctx.db, activeCampaign, relationshipId, body.description as string);
-        return event ? jsonResponse({ event }, 201) : notFound("Unknown relationship");
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
-  }
   if (relationshipId === undefined && action === "relationship-subjects" && request.method === "POST") {
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
@@ -598,7 +567,7 @@ async function handleCampaignRelationships(
       const activeCampaign = getCampaign(ctx.db, campaignId);
       if (!activeCampaign) return notFound("Unknown campaign");
       if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipDocument(body.document), body.revision as number);
+      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipDocument(body.document));
       return relationship ? jsonResponse({ relationship }) : notFound("Unknown relationship");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -730,7 +699,6 @@ async function handlePlayPost(
       sessionId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
-      campaign,
       settings: { model: model ?? settings.model, apiKey: settings.api_key },
       disconnectSignal: request.signal,
       upstreamFetch: ctx.upstreamFetch,
@@ -790,23 +758,6 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   if (resource === "sessions" && typeof segments[2] === "string") {
     const sessionId = segments[2];
     const action = segments[3];
-    if (action === "fork" && request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        const source = getSession(ctx.db, sessionId);
-        if (!source) return notFound("Unknown session");
-        const sourceCampaign = getCampaign(ctx.db, source.campaign_id);
-        if (!sourceCampaign) return jsonError(500, "Internal server error");
-        if (ctx.play.hasPending(sourceCampaign.active_session_id)) {
-          throw new BusyError("A reply is already being generated for this session");
-        }
-        const forked = forkCampaignFromSession(ctx.db, sessionId, parseForkInput(body));
-        return forked ? jsonResponse(forked, 201) : notFound("Unknown session");
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
     if (action === undefined) {
       if (request.method === "GET") {
         const session = getSession(ctx.db, sessionId);

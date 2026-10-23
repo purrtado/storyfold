@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import type { Campaign, Character, Session, World, WorldCharacter } from "../../shared/domain";
-import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../../shared/grounding";
 import {
   headersWith,
   makeConfigDirectory,
@@ -211,74 +210,6 @@ describe("campaign cast capture", () => {
       expect(result.code).toBe("not_found");
     }
   });
-
-  test("counts every authored character field exactly once at the shared boundary", async () => {
-    const world = await createWorld({ name: "Boundary", setting_brief: "b".repeat(30_000), suggested_starting_situation: "" });
-    const protagonist = await createCharacter({
-      name: "P",
-      description: "d".repeat(500),
-      appearance: "a".repeat(200),
-      personality: "q".repeat(150),
-      background: "g".repeat(200),
-      baseline_motivations: "m".repeat(100),
-      speaking_style: "s".repeat(100),
-    });
-    expect((await associate(world.id, { character_id: protagonist.id, context: "w".repeat(242) })).status).toBe(201);
-
-    // 8 + 30000 + 1 + 500 + 200 + 150 + 200 + 100 + 100 + 242 = 31501, plus
-    // cast member Vex 3 + 495 + world context "" = 498, plus situation "s":
-    // exactly 32000 across every authored field, each counted once.
-    const vex = await createCharacter({ name: "Vex", description: "v".repeat(495) });
-    const situation = "s";
-    const expected = groundingCharacterCount({
-      world_name: world.name,
-      world_setting_brief: world.setting_brief,
-      starting_situation: situation,
-      protagonist: {
-        name: protagonist.name,
-        description: protagonist.description,
-        appearance: protagonist.appearance,
-        personality: protagonist.personality,
-        background: protagonist.background,
-        baseline_motivations: protagonist.baseline_motivations,
-        speaking_style: protagonist.speaking_style,
-        world_context: "w".repeat(242),
-      },
-      cast: [
-        {
-          name: vex.name,
-          description: vex.description,
-          appearance: vex.appearance,
-          personality: vex.personality,
-          background: vex.background,
-          baseline_motivations: vex.baseline_motivations,
-          speaking_style: vex.speaking_style,
-          world_context: "",
-        },
-      ],
-      entries: [],
-    });
-    expect(expected).toBe(GROUNDING_CHARACTER_LIMIT);
-
-    const exact = await createCampaign({
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      cast_character_ids: [vex.id],
-      starting_situation: situation,
-    });
-    expect(exact.status).toBe(201);
-    expect(exact.campaign?.cast).toHaveLength(1);
-
-    const over = await createCampaign({
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      cast_character_ids: [vex.id],
-      starting_situation: "ss",
-    });
-    expect(over.status).toBe(400);
-    expect(over.code).toBe("invalid_input");
-    expect(over.error).toContain("32000");
-  });
 });
 
 describe("captured cast is immutable and drives narration", () => {
@@ -387,16 +318,15 @@ describe("captured cast is immutable and drives narration", () => {
       const payload = (await response.json()) as { entry: { id: string } };
       return payload.entry.id;
     }
-    const npc = await createEntry({ kind: "local_npc", name: "Pier Warden", description: "Counts every hull by lantern." });
-    const location = await createEntry({ kind: "location", name: "Drowned Pier", description: "Boards hum at low tide." });
-    const lore = await createEntry({ kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." });
-    await createEntry({ kind: "lore", name: "Sealed Pact", description: "Never spoken aloud." });
+    await createEntry({ kind: "local_npc", name: "Pier Warden", description: "Counts every hull by lantern." });
+    await createEntry({ kind: "location", name: "Drowned Pier", description: "Boards hum at low tide." });
+    await createEntry({ kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." });
+    await createEntry({ kind: "scene", name: "Sealed Pact", description: "Never spoken aloud." });
 
     const created = await createCampaign({
       world_id: world.id,
       protagonist_id: protagonist.id,
       cast_character_ids: [castMember.id, namesake.id],
-      entry_ids: [location, npc, lore],
       starting_situation: "Sable docks at dawn.",
     });
     expect(created.status).toBe(201);

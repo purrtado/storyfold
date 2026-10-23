@@ -4,9 +4,9 @@ import type {
   Campaign,
   CampaignStateCategory,
   CampaignStateItem,
-  CampaignStateSubjectKind,
   Character,
   CharacterSnapshot,
+  RelationshipDocument,
   Session,
   World,
   WorldCharacter,
@@ -15,9 +15,8 @@ import type {
   WorldEntrySnapshot,
 } from "../shared/domain";
 import { CAMPAIGN_STATE_CATEGORIES, WORLD_ENTRY_KINDS } from "../shared/domain";
-import { GROUNDING_CHARACTER_LIMIT, groundingCharacterCount } from "../shared/grounding";
+import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
 import { campaignFromRow, newId, nowIso, type CampaignRecord } from "./db";
-import { checkpointRelationships, createCampaignLocalSubjects, forkCampaignRelationships, forkRelationships } from "./relationships";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -560,7 +559,6 @@ export interface CampaignInput {
   protagonist_id: string;
   starting_situation: string;
   cast_character_ids?: string[];
-  entry_ids?: string[];
   name?: string;
 }
 
@@ -593,25 +591,11 @@ export function parseCampaignInput(body: Record<string, unknown>): CampaignInput
       );
     }
   }
-  let entry_ids: string[] | undefined;
-  if (body.entry_ids !== undefined) {
-    if (
-      !Array.isArray(body.entry_ids) ||
-      body.entry_ids.some((id) => typeof id !== "string" || id.length === 0)
-    ) {
-      throw new ValidationError("entry_ids must be an array of non-empty strings");
-    }
-    entry_ids = body.entry_ids;
-    if (new Set(entry_ids).size !== entry_ids.length) {
-      throw new ValidationError("entry_ids must not contain duplicates");
-    }
-  }
   return {
     world_id,
     protagonist_id,
     starting_situation: optionalText(body.starting_situation, "starting_situation"),
     ...(cast_character_ids !== undefined ? { cast_character_ids } : {}),
-    ...(entry_ids !== undefined ? { entry_ids } : {}),
     ...(body.name !== undefined ? { name: body.name.trim() } : {}),
   };
 }
@@ -648,16 +632,15 @@ function worldContextFor(db: Database, worldId: string, characterId: string): st
 }
 
 /**
- * Creates the campaign, its captured snapshots — world compendium, protagonist
- * (once), and the narrator-controlled cast — and the opening session in one
- * transaction: the deferred (active_session_id, id) foreign key only needs to
- * hold at commit, so the campaign row may reference the preallocated session
- * id before the session row exists. COMMIT happens before any model call — a
- * crash mid-creation leaves no half-created campaign. Captured characters and
- * entries are copied by value; later library edits and deletes never rewrite a
- * campaign snapshot, and narration never resolves captured ids against the
- * live library. Cast picks may sit outside the world's cast; they then carry
- * no world context.
+ * Creates the campaign, its captured snapshots — every non-scene world entry,
+ * the protagonist (once), and the narrator-controlled cast — and the opening
+ * session in one transaction: the deferred (active_session_id, id) foreign
+ * key only needs to hold at commit, so the campaign row may reference the
+ * preallocated session id before the session row exists. COMMIT happens
+ * before any model call. Captured characters and entries are copied by value;
+ * later library edits and deletes never rewrite a campaign snapshot. Cast
+ * picks may sit outside the world's cast; they then carry no world context.
+ * Refused when the opening prompt alone exceeds the narration budget.
  */
 export function createCampaign(db: Database, input: CampaignInput): CreatedCampaign {
   const create = db.transaction(() => {
@@ -688,49 +671,27 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
       }
     }
 
-    const captured: WorldEntrySnapshot[] = [];
-    if ((input.entry_ids ?? []).length > 0) {
-      const placeholders = input.entry_ids!.map(() => "?").join(", ");
-      const byId = new Map<string, WorldEntry>();
-      for (const row of db
-        .query<WorldEntry, string[]>(`SELECT * FROM world_entries WHERE id IN (${placeholders})`)
-        .all(...input.entry_ids!)) {
-        byId.set(row.id, row);
-      }
-      for (const id of input.entry_ids!) {
-        const entry = byId.get(id);
-        if (!entry) throw new UnknownEntityError("entry_id does not match an existing entry");
-        if (entry.world_id !== world.id) {
-          throw new UnknownEntityError("entry_id belongs to a different world");
-        }
-        if (entry.kind === "scene") {
-          throw new ValidationError(
-            "scene entries cannot ground a campaign; a scene only supplies starting text",
-          );
-        }
-        captured.push({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description });
-      }
-    }
-
+    const captured: WorldEntrySnapshot[] = listWorldEntries(db, world.id)
+      .filter((entry) => entry.kind !== "scene")
+      .map((entry) => ({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description }));
     const protagonistSnapshot = characterSnapshot(protagonist, worldContextFor(db, world.id, protagonist.id));
     const cast = castIds.map((id) =>
       characterSnapshot(castCharacters.get(id)!, worldContextFor(db, world.id, id)),
     );
 
-    // The limit binds every campaign: world, protagonist and situation alone
-    // can exceed it even when no cast or entries are selected. Each character
-    // contributes its authored fields exactly once.
-    const total = groundingCharacterCount({
-      world_name: world.name,
-      world_setting_brief: world.setting_brief,
+    const opening = narratorSystemPrompt({
+      world: { name: world.name, setting_brief: world.setting_brief, entries: captured },
       starting_situation: input.starting_situation,
       protagonist: protagonistSnapshot,
       cast,
-      entries: captured,
+      notes: [],
+      relationships: [],
+      handoff: null,
+      has_history: false,
     });
-    if (total > GROUNDING_CHARACTER_LIMIT) {
+    if (opening.length > NARRATION_CHARACTER_BUDGET) {
       throw new ValidationError(
-        `combined grounding is ${total} characters; the limit is ${GROUNDING_CHARACTER_LIMIT}`,
+        `the opening prompt is ${opening.length} characters; the budget is ${NARRATION_CHARACTER_BUDGET}`,
       );
     }
 
@@ -845,8 +806,6 @@ export function sessionGroundingHandoff(db: Database, campaignId: string, sessio
 
 export class SessionClosedError extends Error {}
 
-export class SessionNotClosedError extends Error {}
-
 export interface SessionCreateInput {
   title: string;
   handoff: string;
@@ -865,11 +824,79 @@ export interface BeginNextSessionResult {
 }
 
 /**
- * Closes the campaign's open session with the reviewed handoff, checkpoints
- * the campaign's current state at that boundary, and opens the next session —
- * one transaction, so active_session_id moves atomically and a closed session
- * is immutable thereafter. Refuses nothing here about pending runs: the route
- * guards that synchronously before calling, and this transaction never awaits.
+ * A campaign's changeable state as one JSON value: what a session checkpoint
+ * stores and what a fork restores. Captured snapshots are not part of it —
+ * they never change after creation.
+ */
+interface CampaignStateSnapshot {
+  notes: Array<Pick<CampaignStateItem, "category" | "subject" | "content" | "created_at">>;
+  relationship_subjects: Array<{ id: string; name: string; created_at: string }>;
+  relationships: Array<{ source_id: string; target_id: string; document: RelationshipDocument; created_at: string }>;
+}
+
+function serializeCampaignState(db: Database, campaignId: string): CampaignStateSnapshot {
+  return {
+    notes: db
+      .query<CampaignStateSnapshot["notes"][number], [string]>(
+        "SELECT category, subject, content, created_at FROM campaign_state_items WHERE campaign_id = ? ORDER BY created_at, id",
+      )
+      .all(campaignId),
+    relationship_subjects: db
+      .query<CampaignStateSnapshot["relationship_subjects"][number], [string]>(
+        "SELECT id, name, created_at FROM relationship_subjects WHERE campaign_id = ? ORDER BY created_at, id",
+      )
+      .all(campaignId),
+    relationships: db
+      .query<{ source_id: string; target_id: string; document: string; created_at: string }, [string]>(
+        "SELECT source_id, target_id, document, created_at FROM relationships WHERE campaign_id = ? ORDER BY created_at, id",
+      )
+      .all(campaignId)
+      .map((row) => ({ ...row, document: JSON.parse(row.document) as RelationshipDocument })),
+  };
+}
+
+/** Writes a snapshot into another campaign under new ids; `now` stamps the copies. */
+function restoreCampaignState(db: Database, campaignId: string, state: CampaignStateSnapshot, now: string): void {
+  for (const note of state.notes) {
+    db.query(
+      `INSERT INTO campaign_state_items (id, campaign_id, category, subject, content, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(newId(), campaignId, note.category, note.subject, note.content, note.created_at, now);
+  }
+  const subjectIds = new Map<string, string>();
+  for (const subject of state.relationship_subjects) {
+    const id = newId();
+    subjectIds.set(subject.id, id);
+    db.query("INSERT INTO relationship_subjects (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)").run(
+      id,
+      campaignId,
+      subject.name,
+      subject.created_at,
+    );
+  }
+  for (const relationship of state.relationships) {
+    db.query(
+      `INSERT INTO relationships (id, campaign_id, source_id, target_id, document, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      newId(),
+      campaignId,
+      subjectIds.get(relationship.source_id) ?? relationship.source_id,
+      subjectIds.get(relationship.target_id) ?? relationship.target_id,
+      JSON.stringify(relationship.document),
+      relationship.created_at,
+      now,
+    );
+  }
+}
+
+/**
+ * Closes the campaign's open session with the reviewed handoff, stores one
+ * JSON checkpoint of the campaign's state at that boundary, and opens the next
+ * session — one transaction, so active_session_id moves atomically and a
+ * closed session is immutable thereafter. Refuses nothing here about pending
+ * runs: the route guards that synchronously before calling, and this
+ * transaction never awaits.
  */
 export function beginNextSession(
   db: Database,
@@ -893,28 +920,12 @@ export function beginNextSession(
         now,
         active.id,
       );
-
-      // Checkpoint copies the campaign state by value at this boundary, keyed
-      // to the closed session; later campaign edits never rewrite it.
-      const checkpointItems = listCampaignState(db, id);
-      for (const item of checkpointItems) {
-        db.query(
-          `INSERT INTO session_state_checkpoints
-             (id, session_id, campaign_id, category, subject, subject_kind, subject_id, content, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          newId(),
-          active.id,
-          id,
-          item.category,
-          item.subject,
-          item.subject_kind,
-          item.subject_id,
-          item.content,
-          item.created_at,
-        );
-      }
-      checkpointRelationships(db, id, active.id);
+      db.query("INSERT INTO session_checkpoints (session_id, campaign_id, state, created_at) VALUES (?, ?, ?, ?)").run(
+        active.id,
+        id,
+        JSON.stringify(serializeCampaignState(db, id)),
+        now,
+      );
 
       const sessionId = newId();
       db.query(
@@ -1004,99 +1015,16 @@ function insertForkSession(
   ).run(sessionId, campaignId, source.title, handoff, now, now);
 }
 
-/** Copies state rows by value under new ids; `now` stamps the copies. */
-function copyStateItems(
-  db: Database,
-  campaignId: string,
-  items: Array<{
-    category: string;
-    subject: string;
-    subject_kind: string | null;
-    subject_id: string | null;
-    content: string;
-    created_at: string;
-  }>,
-  now: string,
-): void {
-  for (const item of items) {
-    db.query(
-      `INSERT INTO campaign_state_items
-         (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      newId(),
-      campaignId,
-      item.category,
-      item.subject,
-      item.subject_kind,
-      item.subject_id,
-      item.content,
-      item.created_at,
-      now,
-    );
-  }
-}
-
 /**
- * Forks a completed session's boundary into a new independent campaign: the
- * captured world/protagonist/cast snapshots and starting situation are copied
- * by value, the closed session's state checkpoint becomes the new campaign's
- * state, and its handoff grounds the new opening session.
- */
-export function forkCampaignFromSession(
-  db: Database,
-  sessionId: string,
-  input: ForkInput,
-): CreatedFork | null {
-  const fork = db.transaction((id: string, name: string): CreatedFork | null => {
-    const source = getSessionRecord(db, id);
-    if (!source) return null;
-    if (source.closed_at === null) throw new SessionNotClosedError("only completed sessions can fork");
-    const origin = getCampaign(db, source.campaign_id);
-    if (!origin) return null;
-
-    const now = nowIso();
-    const forkSessionId = newId();
-    const campaignId = insertForkCampaign(db, origin, name, source.id, forkSessionId, now);
-    insertForkSession(db, campaignId, forkSessionId, source, source.handoff ?? "", now);
-
-    const copiedSubjectIds = createCampaignLocalSubjects(db, source.id, campaignId);
-    forkRelationships(db, source.id, campaignId, copiedSubjectIds);
-    const checkpoint = db
-      .query<
-        {
-          category: string;
-          subject: string;
-          subject_kind: string | null;
-          subject_id: string | null;
-          content: string;
-          created_at: string;
-        },
-        [string]
-      >(
-        "SELECT category, subject, subject_kind, subject_id, content, created_at FROM session_state_checkpoints WHERE session_id = ? ORDER BY created_at, id",
-      )
-      .all(source.id);
-    copyStateItems(db, campaignId, checkpoint, now);
-
-    return {
-      campaign: getCampaign(db, campaignId)!,
-      session: sessionFromRow(getSessionRecord(db, forkSessionId)!),
-    };
-  });
-  return fork.immediate(sessionId, input.name);
-}
-
-/**
- * Forks from a message in the open or a completed session into a new
- * independent campaign: the captured snapshots and starting situation are
- * copied by value exactly like a boundary fork, the campaign's CURRENT state
- * notes, relationships, and event history become the fork's own under new ids,
- * the handoff that grounded the source session grounds the fork's first
- * session, and the transcript is the selected rows up to and including the
- * chosen message — drafts and unselected alternates excluded — renumbered
- * from 1 with their timestamps kept. Null when the session or the message does
- * not exist (message ids are session-scoped).
+ * "Fork from here": forks from a message in the open or a closed session into
+ * a new independent campaign. Captured snapshots and the starting situation
+ * are copied by value; the campaign state comes from the closed session's
+ * checkpoint, or from the campaign's current state for the open session, and
+ * is restored under new ids. The handoff that grounded the source session
+ * grounds the fork's first session, and the transcript is the selected rows
+ * up to and including the chosen message — drafts and unselected alternates
+ * excluded — renumbered from 1 with their timestamps kept. Null when the
+ * session or the message does not exist (message ids are session-scoped).
  */
 export function forkCampaignFromMessage(
   db: Database,
@@ -1131,9 +1059,15 @@ export function forkCampaignFromMessage(
           : sessionIncomingHandoff(db, source),
         now,
       );
-
-      copyStateItems(db, campaignId, listCampaignState(db, source.campaign_id), now);
-      forkCampaignRelationships(db, source.campaign_id, campaignId);
+      const state =
+        source.closed_at === null
+          ? serializeCampaignState(db, source.campaign_id)
+          : (JSON.parse(
+              db
+                .query<{ state: string }, [string]>("SELECT state FROM session_checkpoints WHERE session_id = ?")
+                .get(source.id)!.state,
+            ) as CampaignStateSnapshot);
+      restoreCampaignState(db, campaignId, state, now);
 
       const history = db
         .query<
@@ -1191,8 +1125,6 @@ export function listCampaignState(db: Database, campaignId: string): CampaignSta
 export interface CampaignStateInput {
   category: CampaignStateCategory;
   subject: string;
-  subject_kind: CampaignStateSubjectKind | null;
-  subject_id: string | null;
   content: string;
 }
 
@@ -1203,87 +1135,10 @@ function parseStateCategory(value: unknown): CampaignStateCategory {
   return value as CampaignStateCategory;
 }
 
-function parseSubjectKind(value: unknown): CampaignStateSubjectKind | null {
-  if (value === undefined || value === null) return null;
-  if (value === "character" || value === "entry") return value;
-  throw new ValidationError("subject_kind must be 'character' or 'entry' or null");
-}
-
-function parseSubjectId(value: unknown): string | null {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ValidationError("subject_id must be a non-empty string when provided");
-  }
-  return value;
-}
-
-/**
- * A subject may be a free-text label (both fields null) or refer to a captured
- * snapshot of this campaign: kind 'character' resolves against the captured
- * protagonist and cast ids, 'entry' against the captured compendium entries.
- * The live library is never consulted, so the reference survives library edits
- * and deletes exactly like every other captured grounding.
- */
-function validateSubjectRef(
-  campaign: Campaign,
-  subject: { subject_kind: CampaignStateSubjectKind | null; subject_id: string | null },
-): void {
-  if (subject.subject_kind === null || subject.subject_id === null) {
-    if (subject.subject_kind !== null || subject.subject_id !== null) {
-      throw new ValidationError("subject_kind and subject_id must be set together");
-    }
-    return;
-  }
-  const captured =
-    subject.subject_kind === "character"
-      ? [campaign.protagonist_snapshot.id, ...campaign.cast.map((member) => member.id)]
-      : campaign.world_snapshot.entries.map((entry) => entry.id);
-  if (!captured.includes(subject.subject_id)) {
-    throw new ValidationError(
-      `subject_id does not match a captured ${subject.subject_kind} of this campaign`,
-    );
-  }
-}
-
-/**
- * Aggregate cap on the campaign state injected into the narrator prompt,
- * mirroring RELATIONSHIP_GROUNDING_LIMIT: characters, not tokens — this bounds
- * authored input size and is not a model context-window guarantee. Counted as
- * summed subject + content length across the campaign's items; those are the
- * two fields the prompt renders verbatim per item
- * (`- category — subject: content`), while the category and per-item
- * separators are fixed and add nothing the cap needs to bound.
- */
-export const CAMPAIGN_STATE_GROUNDING_LIMIT = 16_000;
-
-function assertCampaignStateCapacity(
-  db: Database,
-  campaignId: string,
-  next: { subject: string; content: string },
-  replacingSize = 0,
-): void {
-  const totals = db
-    .query<{ total: number }, [string]>(
-      "SELECT COALESCE(SUM(length(subject) + length(content)), 0) AS total FROM campaign_state_items WHERE campaign_id = ?",
-    )
-    .get(campaignId)!;
-  const nextLength = next.subject.length + next.content.length;
-  // Only writes that grow the total are capped: a campaign seeded before the
-  // cap existed can sit above it, and shrinking (or total-neutral) edits must
-  // stay possible so it can be worked back under.
-  if (nextLength > replacingSize && totals.total - replacingSize + nextLength > CAMPAIGN_STATE_GROUNDING_LIMIT) {
-    throw new ValidationError(
-      `campaign state exceeds ${CAMPAIGN_STATE_GROUNDING_LIMIT} characters of subject+content; shorten or delete existing items first`,
-    );
-  }
-}
-
 export function parseCampaignStateInput(body: Record<string, unknown>): CampaignStateInput {
   return {
     category: parseStateCategory(body.category),
     subject: requiredText(body.subject, "subject"),
-    subject_kind: parseSubjectKind(body.subject_kind),
-    subject_id: parseSubjectId(body.subject_id),
     content: requiredText(body.content, "content"),
   };
 }
@@ -1293,11 +1148,9 @@ export function parseCampaignStatePatch(body: Record<string, unknown>): Partial<
   const patch: Partial<CampaignStateInput> = {};
   if (body.category !== undefined) patch.category = parseStateCategory(body.category);
   if (body.subject !== undefined) patch.subject = requiredText(body.subject, "subject");
-  if (body.subject_kind !== undefined) patch.subject_kind = parseSubjectKind(body.subject_kind);
-  if (body.subject_id !== undefined) patch.subject_id = parseSubjectId(body.subject_id);
   if (body.content !== undefined) patch.content = requiredText(body.content, "content");
   if (Object.keys(patch).length === 0) {
-    throw new ValidationError("at least one of category, subject, subject_kind, subject_id, content is required");
+    throw new ValidationError("at least one of category, subject, content is required");
   }
   return patch;
 }
@@ -1307,10 +1160,7 @@ export function createCampaignStateItem(
   campaignId: string,
   input: CampaignStateInput,
 ): CampaignStateItem | null {
-  const campaign = getCampaign(db, campaignId);
-  if (!campaign) return null;
-  validateSubjectRef(campaign, input);
-  assertCampaignStateCapacity(db, campaignId, input);
+  if (!getCampaign(db, campaignId)) return null;
   const now = nowIso();
   const item: CampaignStateItem = {
     id: newId(),
@@ -1320,20 +1170,9 @@ export function createCampaignStateItem(
     updated_at: now,
   };
   db.query(
-    `INSERT INTO campaign_state_items
-       (id, campaign_id, category, subject, subject_kind, subject_id, content, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    item.id,
-    campaignId,
-    item.category,
-    item.subject,
-    item.subject_kind,
-    item.subject_id,
-    item.content,
-    item.created_at,
-    item.updated_at,
-  );
+    `INSERT INTO campaign_state_items (id, campaign_id, category, subject, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(item.id, campaignId, item.category, item.subject, item.content, item.created_at, item.updated_at);
   return item;
 }
 
@@ -1343,8 +1182,6 @@ export function updateCampaignStateItem(
   itemId: string,
   patch: Partial<CampaignStateInput>,
 ): CampaignStateItem | null {
-  const campaign = getCampaign(db, campaignId);
-  if (!campaign) return null;
   // Null covers both an unknown campaign and an item from another campaign.
   const existing =
     db
@@ -1354,19 +1191,9 @@ export function updateCampaignStateItem(
       .get(itemId, campaignId) ?? null;
   if (!existing) return null;
   const next: CampaignStateItem = { ...existing, ...patch, updated_at: nowIso() };
-  validateSubjectRef(campaign, next);
-  assertCampaignStateCapacity(db, campaignId, next, existing.subject.length + existing.content.length);
   db.query(
-    "UPDATE campaign_state_items SET category = ?, subject = ?, subject_kind = ?, subject_id = ?, content = ?, updated_at = ? WHERE id = ?",
-  ).run(
-    next.category,
-    next.subject,
-    next.subject_kind,
-    next.subject_id,
-    next.content,
-    next.updated_at,
-    itemId,
-  );
+    "UPDATE campaign_state_items SET category = ?, subject = ?, content = ?, updated_at = ? WHERE id = ?",
+  ).run(next.category, next.subject, next.content, next.updated_at, itemId);
   return next;
 }
 
