@@ -102,7 +102,7 @@ export function NewCampaignPage(props: {
         ? props.selectedCharacterId!
         : pickable(current.protagonistId)
           ? current.protagonistId
-          : characters[0]?.id ?? "";
+          : characters[0]?.id ?? (worldChanged ? undefined : worldCharactersState.items?.[0]?.id) ?? "";
       const situationChanged = worldChanged && !current.situationEdited;
       return {
         ...current,
@@ -294,13 +294,13 @@ export function NewCampaignPage(props: {
                   >Retry</button>
                 </p>
               )}
-              {worlds.length === 0 || characters.length === 0 ? (
+              {worlds.length === 0 || characters.length + worldCharacters.length === 0 ? (
                 <section className="grid justify-items-start gap-4 rounded-xl border border-dashed border-border p-6">
                   <h2 className="text-lg font-semibold">Your story needs a world and a character</h2>
                   <p className="text-sm text-muted">Create both definitions before starting a campaign.</p>
                   <div className="flex flex-wrap gap-2">
                     {worlds.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/worlds">Create a world</Link>}
-                    {characters.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/characters">Create a character</Link>}
+                    {characters.length + worldCharacters.length === 0 && <Link className="pressable inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" to="/characters">Create a character</Link>}
                   </div>
                 </section>
               ) : (
