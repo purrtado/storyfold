@@ -214,6 +214,8 @@ export interface Message {
   speaker_name: string;
   content: string;
   status: MessageStatus;
+  /** The out-of-character note that shaped this narration; never part of model history. */
+  direction: string | null;
   created_at: string;
   updated_at: string;
 }

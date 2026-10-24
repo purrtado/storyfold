@@ -150,10 +150,17 @@ export function narratorSystemPrompt(context: NarrationContext): string {
     "Use names exactly as listed; give unnamed characters a short label and reuse it, such as [Dockhand].",
     `Start a new paragraph whenever the focus moves to another character. Leave scene description untagged, and never tag ${protagonist.name}.`,
     "",
+    "The player may end their latest message with an out-of-character note, (OOC: …). Follow it for this reply only, and never answer or mention it in the narration.",
+    "",
     context.has_history
       ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
       : handoff !== null
         ? "There is no prior narration in this session: continue the story from the handoff."
         : "There is no prior narration: begin the story now with an opening scene.",
   ].join("\n");
+}
+
+/** The out-of-character note appended to the latest player input for one reply. */
+export function directionNote(direction: string): string {
+  return `\n\n(OOC: ${direction})`;
 }

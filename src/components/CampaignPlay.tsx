@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
 import {
@@ -98,7 +98,7 @@ function MessageRow(props: {
   activeSession: boolean;
   campaignName: string;
   deleteCount: number;
-  onRegenerate: () => void;
+  onRegenerate: (direction?: string) => void;
   onSelectVariant: (messageId: string) => void;
   onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
@@ -120,6 +120,8 @@ function MessageRow(props: {
   const [confirmFork, setConfirmFork] = useState(false);
   const [forkName, setForkName] = useState("");
   const [forking, setForking] = useState(false);
+  const [directing, setDirecting] = useState(false);
+  const [directionValue, setDirectionValue] = useState("");
 
   const variantIds = message.variant_ids ?? [];
   const variantIndex = message.variant_index ?? 0;
@@ -131,14 +133,16 @@ function MessageRow(props: {
   const canDeleteSwipe = canAct && trailingNarration && !isDraft && variantIds.length > 1;
   const canRegenerate = props.canGenerate && trailingNarration && !isDraft;
   const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
+  const canDirect = props.canGenerate && props.trailing;
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
-  const reveal = canAct && !editing && !confirmDelete && !confirmFork ? ` ${REVEAL_CLASSES}` : "";
+  const reveal = canAct && !editing && !confirmDelete && !confirmFork && !directing ? ` ${REVEAL_CLASSES}` : "";
 
   // Radix returns focus to the ⋯ trigger on close; skip that when an item opens
   // an inline form, so it keeps focus and scrolls into view.
   const keepMenuFocus = useRef(false);
   const deleteConfirmRef = useRef<HTMLDivElement>(null);
   const forkConfirmRef = useRef<HTMLFormElement>(null);
+  const directFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
     if (confirmDelete) deleteConfirmRef.current?.scrollIntoView({ block: "nearest" });
   }, [confirmDelete]);
@@ -148,6 +152,9 @@ function MessageRow(props: {
     const frame = requestAnimationFrame(() => forkConfirmRef.current?.querySelector("input")?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
   }, [confirmFork]);
+  useEffect(() => {
+    if (directing) directFormRef.current?.scrollIntoView({ block: "nearest" });
+  }, [directing]);
   const startEdit = () => {
     keepMenuFocus.current = true;
     setEditValue(message.content);
@@ -181,6 +188,11 @@ function MessageRow(props: {
       () => setConfirmFork(false),
       () => setForking(false), // the parent surfaces the error banner
     );
+  };
+  const startDirect = () => {
+    keepMenuFocus.current = true;
+    setDirectionValue(message.role === "assistant" ? message.direction ?? "" : "");
+    setDirecting(true);
   };
 
   const editForm = (
@@ -304,6 +316,54 @@ function MessageRow(props: {
     </form>
   );
 
+  const directForm = directing && (
+    <form
+      ref={directFormRef}
+      className="mbs-2 grid w-full gap-2 rounded-lg border border-border bg-surface p-3"
+      aria-label="Regenerate with an out-of-character direction"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setDirecting(false);
+        props.onRegenerate(directionValue);
+      }}
+    >
+      <label className="grid gap-1 text-sm">
+        Direction for the narrator
+        <textarea
+          className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-[15px] leading-6 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+          value={directionValue}
+          onChange={(event) => setDirectionValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }}
+          rows={2}
+          placeholder="Make Vex angrier; don't resolve the fight yet"
+          required
+          autoFocus
+        />
+      </label>
+      <p className="text-sm text-muted">Sent as an OOC note for this reply only.</p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+          disabled={!directionValue.trim() || !props.canGenerate}
+        >
+          Regenerate
+        </button>
+        <button
+          type="button"
+          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
+          onClick={() => setDirecting(false)}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+
   const menu = (canAct || canFork) && (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -323,6 +383,11 @@ function MessageRow(props: {
             event.preventDefault();
           }}
         >
+          {canDirect && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={startDirect}>
+              Regenerate with direction…
+            </DropdownMenu.Item>
+          )}
           {canEdit && (
             <DropdownMenu.Item className="message-menu-item" onSelect={startEdit}>Edit</DropdownMenu.Item>
           )}
@@ -370,7 +435,7 @@ function MessageRow(props: {
           <button
             type="button"
             className={`pressable inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground${reveal}`}
-            onClick={props.onRegenerate}
+            onClick={() => props.onRegenerate()}
           >
             <RefreshCw className="size-3.5" aria-hidden="true" />
             Regenerate
@@ -378,6 +443,7 @@ function MessageRow(props: {
         )}
         {deleteConfirm}
         {forkConfirm}
+        {directForm}
       </article>
     );
   }
@@ -393,6 +459,7 @@ function MessageRow(props: {
         </div>
       </div>
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
+      {message.direction && <DirectionNote direction={message.direction} />}
       {editing ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
@@ -429,7 +496,7 @@ function MessageRow(props: {
             <button
               type="button"
               className={messageControlClasses}
-              onClick={props.onRegenerate}
+              onClick={() => props.onRegenerate()}
               aria-label="Regenerate reply"
               title="Regenerate"
             >
@@ -440,7 +507,7 @@ function MessageRow(props: {
             <button
               type="button"
               className="pressable inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-              onClick={props.onRegenerate}
+              onClick={() => props.onRegenerate()}
             >
               <RefreshCw className="size-3.5" aria-hidden="true" />
               Retry
@@ -450,10 +517,19 @@ function MessageRow(props: {
       )}
       {deleteConfirm}
       {forkConfirm}
+      {directForm}
     </article>
   );
 }
 
+function DirectionNote(props: { direction: string }) {
+  return (
+    <p className="mbs-0 mbe-2 flex items-start gap-1.5 text-xs leading-5 text-muted">
+      <Clapperboard className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
+      <span className="min-w-0 break-words">Directed: {props.direction}</span>
+    </p>
+  );
+}
 
 export function CampaignPlay(props: {
   sessionId: string;
@@ -470,9 +546,9 @@ export function CampaignPlay(props: {
   onOpenSidebar: () => void;
   onDraftChange: (sessionId: string, value: string) => void;
   onModelChange: (sessionId: string, model: string) => void;
-  onSend: (sessionId: string, value: string, model?: string) => void;
-  onOpen: (sessionId: string, model?: string) => boolean;
-  onRegenerate: (sessionId: string, model?: string) => boolean;
+  onSend: (sessionId: string, value: string, direction?: string, model?: string) => void;
+  onOpen: (sessionId: string, direction?: string, model?: string) => boolean;
+  onRegenerate: (sessionId: string, direction?: string, model?: string) => boolean;
   onSelectVariant: (sessionId: string, messageId: string) => Promise<void>;
   onEditMessage: (sessionId: string, messageId: string, content: string) => Promise<void>;
   onDeleteMessage: (sessionId: string, messageId: string, scope?: "variant" | "after") => Promise<void>;
@@ -490,6 +566,9 @@ export function CampaignPlay(props: {
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const [following, setFollowing] = useState(true);
   const [actionError, setActionError] = useState("");
+  // null: the composer's direction field is closed.
+  const [direction, setDirection] = useState<string | null>(null);
+  const [openingDirection, setOpeningDirection] = useState("");
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [modelCatalogState, setModelCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const messages = props.messages ?? [];
@@ -563,6 +642,8 @@ export function CampaignPlay(props: {
 
   useEffect(() => {
     setActionError("");
+    setDirection(null);
+    setOpeningDirection("");
   }, [props.sessionId]);
 
   useEffect(() => {
@@ -574,16 +655,21 @@ export function CampaignPlay(props: {
 
   const handleSend = (value: string) => {
     setFollowing(true);
-    props.onSend(props.sessionId, value, selectedModel || undefined);
+    props.onSend(props.sessionId, value, direction ?? undefined, selectedModel || undefined);
   };
+  // The direction belongs to the accepted turn; a refused send keeps it for the retry.
+  const acceptedTurnId = live?.kind === "message" ? live.pendingMessageId : undefined;
+  useEffect(() => {
+    if (acceptedTurnId) setDirection(null);
+  }, [acceptedTurnId]);
   const regenerateModel = selectedModel || undefined;
   const surfaceActionError = (error: unknown) => {
     setActionError(error instanceof Error && error.message.trim() ? error.message : "That action failed. Try again.");
   };
-  const handleRegenerate = () => {
+  const handleRegenerate = (direction?: string) => {
     setActionError("");
     setFollowing(true);
-    props.onRegenerate(props.sessionId, regenerateModel);
+    props.onRegenerate(props.sessionId, direction, regenerateModel);
   };
   const handleSelectVariant = (messageId: string) => {
     setActionError("");
@@ -594,7 +680,7 @@ export function CampaignPlay(props: {
     const saved = props.onEditMessage(props.sessionId, messageId, content);
     saved.catch(surfaceActionError);
     if (!andRegenerate) return saved;
-    return saved.then(() => { props.onRegenerate(props.sessionId, regenerateModel); });
+    return saved.then(() => { props.onRegenerate(props.sessionId, undefined, regenerateModel); });
   };
   const handleDeleteMessage = (messageId: string, scope?: "variant" | "after") => {
     setActionError("");
@@ -629,7 +715,7 @@ export function CampaignPlay(props: {
     const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
     return [
       ...messages.slice(0, -1),
-      { ...trailingMessage, status: "pending" as const, content: "", variant_ids: [...kept, ""], variant_index: kept.length },
+      { ...trailingMessage, status: "pending" as const, content: "", direction: live?.direction ?? null, variant_ids: [...kept, ""], variant_index: kept.length },
     ];
   })() : messages;
 
@@ -741,7 +827,26 @@ export function CampaignPlay(props: {
                   <Sparkles className="size-6 text-accent" aria-hidden="true" />
                   <h2 className="text-lg font-semibold">{isActiveSession ? "Your session is ready" : "No transcript for this session"}</h2>
                   <p className="max-w-md text-sm text-muted">{isActiveSession ? "Set up characters, notes, and relationships in the campaign panel, then begin the opening." : "This session is read-only and will not open or accept new actions."}</p>
-                  {showEmptyOpening && <button type="button" className="pressable min-h-11 rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onOpen(props.sessionId, selectedModel || undefined)}>{live?.error ? "Retry opening" : "Begin opening"}</button>}
+                  {showEmptyOpening && (
+                    <form
+                      className="grid w-full max-w-md gap-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        props.onOpen(props.sessionId, openingDirection, selectedModel || undefined);
+                      }}
+                    >
+                      <label className="grid gap-1 text-start text-sm">
+                        <span>Direction for the opening <span className="text-muted">(optional)</span></span>
+                        <input
+                          className="min-h-11 rounded-lg border border-border bg-background px-3 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                          value={openingDirection}
+                          onChange={(event) => setOpeningDirection(event.target.value)}
+                          placeholder="Open mid-chase through the night market"
+                        />
+                      </label>
+                      <button type="submit" className="pressable min-h-11 justify-self-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90">{live?.error ? "Retry opening" : "Begin opening"}</button>
+                    </form>
+                  )}
                 </div>
               ) : displayedMessages.map((message, index) => {
                 const isLive = regenerateInPlace ? index === displayedMessages.length - 1 : message.id === live?.pendingMessageId && message.status === "pending";
@@ -782,6 +887,7 @@ export function CampaignPlay(props: {
                     speaker_name: protagonistOf(props.campaign).name,
                     content: sending.playerText ?? "",
                     status: "complete",
+                    direction: null,
                     created_at: "",
                     updated_at: "",
                   }}
@@ -806,6 +912,7 @@ export function CampaignPlay(props: {
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
                   {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} answering={Boolean(live.text)} />}
+                  {live.direction && <DirectionNote direction={live.direction} />}
                   {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots /> : null}
                 </article>
               )}
@@ -847,6 +954,8 @@ export function CampaignPlay(props: {
               value={props.draft}
               onValueChange={(value) => props.onDraftChange(props.sessionId, value)}
               onSubmit={handleSend}
+              direction={direction}
+              onDirectionChange={setDirection}
               selectedModel={selectedModel}
               onModelChange={(model) => props.onModelChange(props.sessionId, model)}
               defaultModel={provider?.model ?? null}
