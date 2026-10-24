@@ -33,7 +33,7 @@ export function resolveSpeaker(label: string, characters: CampaignCharacter[]): 
  * still an unfinished tag is held back.
  */
 export function narrationSegments(content: string, characters: CampaignCharacter[], streaming = false): NarrationSegment[] {
-  const paragraphs = content.split(/\n[ \t]*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const paragraphs = content.split(/\r?\n[ \t]*\r?\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
   if (streaming && PARTIAL_TAG.test(paragraphs.at(-1) ?? "")) paragraphs.pop();
 
   const segments: NarrationSegment[] = [];

@@ -527,7 +527,7 @@ export function CampaignPlay(props: {
   const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
   const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
-  const addToCast = isActiveSession ? setWalkOnName : undefined;
+  const addToCast = isActiveSession && !sessionBusy ? setWalkOnName : undefined;
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
