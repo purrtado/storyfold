@@ -1373,12 +1373,13 @@ export function forkCampaignFromMessage(
             speaker_name: string;
             content: string;
             status: string;
+            direction: string | null;
             created_at: string;
             updated_at: string;
           },
           [string, number]
         >(
-          `SELECT role, speaker_name, content, status, created_at, updated_at FROM messages
+          `SELECT role, speaker_name, content, status, direction, created_at, updated_at FROM messages
            WHERE session_id = ? AND selected = 1 AND position <= ?
              AND (role = 'user' OR status = 'complete')
            ORDER BY position`,
@@ -1387,8 +1388,8 @@ export function forkCampaignFromMessage(
       history.forEach((row, index) => {
         db.query(
           `INSERT INTO messages
-             (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             (id, session_id, position, role, speaker_name, content, status, direction, selected, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         ).run(
           newId(),
           forkSessionId,
@@ -1397,6 +1398,7 @@ export function forkCampaignFromMessage(
           row.speaker_name,
           row.content,
           row.status,
+          row.direction,
           row.created_at,
           row.updated_at,
         );

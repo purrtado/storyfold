@@ -1264,6 +1264,40 @@ describe("regeneration, swipes, edits, and deletes", () => {
     }
   });
 
+  test("a direction steers only its own reply and stays on that alternate", async () => {
+    const { session } = await seedStory(base.url);
+    const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [["Night."], ["Vex snarls."], ["Vex shrugs."], ["Dawn."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    const lastUser = (index: number) =>
+      (calls[index].messages as Array<{ role: string; content: string }>).at(-1);
+    try {
+      await readSse(await postOpening(server.url, session.id, { direction: "  Open at night.  " }));
+      expect(lastUser(0)).toEqual({ role: "user", content: "Begin the opening scene.\n\n(OOC: Open at night.)" });
+
+      await readSse(await postMessage(server.url, session.id, { content: "I greet Vex.", direction: "Make Vex angry." }));
+      expect(lastUser(1)).toEqual({ role: "user", content: "I greet Vex.\n\n(OOC: Make Vex angry.)" });
+      const directed = (await transcript(server.url, session.id)).at(-1)!;
+      expect(directed.direction).toBe("Make Vex angry.");
+
+      // Plain regenerate carries no direction; the directed swipe keeps its own.
+      await readSse(await postRegenerate(server.url, session.id, { direction: "   " }));
+      expect(lastUser(2)).toEqual({ role: "user", content: "I greet Vex." });
+      expect((await transcript(server.url, session.id)).at(-1)!.direction).toBeNull();
+      expect((await selectVariant(server.url, session.id, directed.id)).status).toBe(200);
+      expect((await transcript(server.url, session.id)).at(-1)!.direction).toBe("Make Vex angry.");
+
+      // Later turns never see earlier directions.
+      await readSse(await postMessage(server.url, session.id, { content: "I leave." }));
+      const laterHistory = (calls[3].messages as Array<{ role: string; content: string }>).filter((message) => message.role !== "system");
+      expect(JSON.stringify(laterHistory)).not.toContain("(OOC:");
+
+      const invalid = await postRegenerate(server.url, session.id, { direction: 7 });
+      expect(invalid.status).toBe(400);
+    } finally {
+      await server.stop();
+    }
+  });
+
   test("every message operation is refused busy while a reply is pending", async () => {
     const { session } = await seedStory(base.url);
     const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Slow "]]);

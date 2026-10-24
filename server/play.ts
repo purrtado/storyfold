@@ -3,7 +3,7 @@ import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Message } from "../shared/domain";
 import { protagonistOf } from "../shared/domain";
-import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
+import { NARRATION_CHARACTER_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
 import {
   SessionClosedError,
@@ -61,7 +61,7 @@ interface MessageRow extends Message {
 }
 
 const MESSAGE_COLUMNS =
-  "id, session_id, position, role, speaker_name, content, status, created_at, updated_at";
+  "id, session_id, position, role, speaker_name, content, status, direction, created_at, updated_at";
 
 export interface PlaySettings {
   model: string;
@@ -131,18 +131,18 @@ export class PlayService {
   }
 
   /** Accepted player input plus the reserved pending narration, one transaction. */
-  reservePlayerTurn(sessionId: string, content: string, speakerName: string): ReservedTurn {
+  reservePlayerTurn(sessionId: string, content: string, speakerName: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction(
       (id: string, text: string, speaker: string): ReservedTurn => {
         this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
-        this.assertWithinBudget(id, text.length);
+        this.assertWithinBudget(id, text.length + directionLength(direction));
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
         const now = nowIso();
-        this.insertMessage(id, position, "user", speaker, text, "complete", now, playerId);
-        this.insertMessage(id, position + 1, "assistant", NARRATOR_NAME, "", "pending", now, pendingId);
+        this.insertMessage(id, position, "user", speaker, text, "complete", now, playerId, null);
+        this.insertMessage(id, position + 1, "assistant", NARRATOR_NAME, "", "pending", now, pendingId, direction);
         return { playerId, pendingId };
       },
     );
@@ -157,14 +157,14 @@ export class PlayService {
    * transaction: a second /opening that raced the first can never reserve
    * after the first settled complete.
    */
-  reserveOpening(sessionId: string): ReservedTurn {
+  reserveOpening(sessionId: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
       this.requireOpenSession(id);
       const existing = this.db
         .query<unknown, [string]>("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1")
         .get(id);
       if (existing) throw new AlreadyOpenedError("This session has already opened");
-      this.assertWithinBudget(id, 0);
+      this.assertWithinBudget(id, directionLength(direction));
       const pendingId = newId();
       this.insertMessage(
         id,
@@ -175,6 +175,7 @@ export class PlayService {
         "pending",
         nowIso(),
         pendingId,
+        direction,
       );
       return { playerId: null, pendingId };
     });
@@ -187,7 +188,7 @@ export class PlayService {
    * are discarded. A session ending on a player turn reserves a fresh reply;
    * an empty session has nothing to regenerate.
    */
-  reserveRegeneration(sessionId: string): ReservedTurn {
+  reserveRegeneration(sessionId: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
       this.requireOpenSession(id);
       if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
@@ -215,9 +216,9 @@ export class PlayService {
       this.db
         .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
         .run(id, position);
-      this.assertWithinBudget(id, 0);
+      this.assertWithinBudget(id, directionLength(direction));
       const pendingId = newId();
-      this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId);
+      this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId, direction);
       return { playerId: lastUser?.id ?? null, pendingId };
     });
     return reserve.immediate(sessionId);
@@ -406,13 +407,14 @@ export class PlayService {
     status: string,
     now: string,
     id: string,
+    direction: string | null,
   ): void {
     this.db
       .query(
-        `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, direction, selected, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
-      .run(id, sessionId, position, role, speakerName, content, status, now, now);
+      .run(id, sessionId, position, role, speakerName, content, status, direction, now, now);
   }
 
   /**
@@ -497,15 +499,19 @@ export class PlayService {
     // An opening request carries no player row; whether the story starts
     // fresh depends on the history, not on the protocol kind.
     const history = this.modelHistory(sessionId);
+    if (history.length === 0) history.push({ role: "user", content: "Begin the opening scene." });
+    const direction = this.getMessage(options.pendingId)?.direction ?? null;
+    if (direction !== null) {
+      const last = history.at(-1)!;
+      if (last.role === "user") last.content += directionNote(direction);
+      else history.push({ role: "user", content: directionNote(direction).trimStart() });
+    }
 
     const { stream: upstream } = startZaiRun({
       model: options.settings.model,
       apiKey: options.settings.apiKey,
       systemPrompt: this.systemPrompt(sessionId),
-      messages:
-        history.length > 0
-          ? history
-          : [{ role: "user", content: "Begin the opening scene." }],
+      messages: history,
       abortController: run.controller,
       upstreamFetch: options.upstreamFetch,
     });
@@ -618,4 +624,20 @@ export function parsePlayerContent(body: Record<string, unknown>): string {
     throw new ValidationError(`content must be at most ${MAX_MESSAGE_CHARS} characters`);
   }
   return content;
+}
+
+/** Optional one-reply direction: absent or blank means none. */
+export function parseDirection(body: Record<string, unknown>): string | null {
+  const direction = body.direction;
+  if (direction === undefined || direction === null) return null;
+  if (typeof direction !== "string") throw new ValidationError("direction must be a string");
+  const trimmed = direction.trim();
+  if (trimmed.length > MAX_MESSAGE_CHARS) {
+    throw new ValidationError(`direction must be at most ${MAX_MESSAGE_CHARS} characters`);
+  }
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function directionLength(direction: string | null): number {
+  return direction === null ? 0 : directionNote(direction).length;
 }

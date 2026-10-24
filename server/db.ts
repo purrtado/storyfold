@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS messages (
   selected INTEGER NOT NULL CHECK (selected IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  direction TEXT,
   CHECK (role != 'user' OR status = 'complete'),
   CHECK (role = 'assistant' OR selected = 1)
 );
@@ -221,8 +222,8 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; there are no migrations. */
-const SCHEMA_VERSION = 3;
+/** Bumped whenever SCHEMA changes; only version 3 upgrades in place. */
+const SCHEMA_VERSION = 4;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -238,15 +239,20 @@ const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
 
 /**
  * Opens the workspace database with foreign keys and the schema in place. A
- * workspace written by another schema version is refused rather than
- * migrated; a fresh one gets the stat bank seed.
+ * version 3 workspace gains the narration direction column; any other
+ * version is refused rather than migrated; a fresh one gets the stat bank seed.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const populated = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get() !== null;
-  if (populated && version !== SCHEMA_VERSION) {
+  if (populated && version === 3) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
+      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    })();
+  } else if (populated && version !== SCHEMA_VERSION) {
     db.close();
     throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
   }

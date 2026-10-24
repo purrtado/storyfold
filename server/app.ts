@@ -19,6 +19,7 @@ import {
   NotTrailingError,
   PlayService,
   SoleVariantError,
+  parseDirection,
   parsePlayerContent,
   type ReservedTurn,
 } from "./play";
@@ -825,12 +826,12 @@ async function handlePlayPost(
   if (body instanceof Response) return body;
 
   let content = "";
-  if (kind === "messages") {
-    try {
-      content = parsePlayerContent(body);
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
+  let direction: string | null;
+  try {
+    if (kind === "messages") content = parsePlayerContent(body);
+    direction = parseDirection(body);
+  } catch (error) {
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
   }
   let model: string | undefined;
   if (body.model !== undefined) {
@@ -861,12 +862,12 @@ async function handlePlayPost(
   const settings = await ctx.store.load();
   const reserveTurn = (): ReservedTurn => {
     if (kind === "messages") {
-      return ctx.play.reservePlayerTurn(sessionId, content, protagonistOf(campaign).name);
+      return ctx.play.reservePlayerTurn(sessionId, content, protagonistOf(campaign).name, direction);
     }
     if (kind === "opening") {
-      return ctx.play.reserveOpening(sessionId);
+      return ctx.play.reserveOpening(sessionId, direction);
     }
-    return ctx.play.reserveRegeneration(sessionId);
+    return ctx.play.reserveRegeneration(sessionId, direction);
   };
   try {
     const reserved = reserveTurn();

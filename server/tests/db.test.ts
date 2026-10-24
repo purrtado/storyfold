@@ -65,6 +65,32 @@ describe("schema version", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test("a version 3 workspace keeps its transcript and gains narration directions", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    try {
+      const path = join(directory, "v3.db");
+      db.close();
+      db = openDatabase(path);
+      const { worldId, protagonistId } = seedLibrary();
+      const { session } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
+      const messageId = insertMessage(session.id, 1, "assistant", "complete", "Kept narration.");
+      db.exec("ALTER TABLE messages DROP COLUMN direction");
+      db.exec("PRAGMA user_version = 3");
+      db.close();
+
+      db = openDatabase(path);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(4);
+      expect(db.query("SELECT content, direction FROM messages WHERE id = ?").get(messageId)).toEqual({
+        content: "Kept narration.",
+        direction: null,
+      });
+    } finally {
+      db.close();
+      db = openDatabase(":memory:");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("schema invariants", () => {
