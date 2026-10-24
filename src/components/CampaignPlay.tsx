@@ -2,11 +2,19 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
-import { protagonistOf, type Campaign, type Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
 import { fetchProvider, type ProviderConfig } from "../lib/provider";
-import { forkFromMessage, type TranscriptMessage } from "../lib/storyApi";
+import {
+  createCampaignCharacter,
+  deleteCampaignCharacterAvatar,
+  forkFromMessage,
+  updateCampaignCharacter,
+  uploadCampaignCharacterAvatar,
+  type TranscriptMessage,
+} from "../lib/storyApi";
 import type { Generation } from "../lib/useChatGeneration";
-import { Markdown } from "./Markdown";
+import { CharacterProfileDialog } from "./CharacterProfileDialog";
+import { Narration } from "./Narration";
 import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
@@ -74,6 +82,10 @@ function MessageRow(props: {
   message: TranscriptMessage;
   liveText?: string;
   reasoning?: string;
+  characters: CampaignCharacter[];
+  /** Offered on walk-on speakers; absent where the cast cannot change from here. */
+  onAddToCast?: (name: string) => void;
+  onShowCharacter: (characterId: string) => void;
   streaming?: boolean;
   trailing: boolean;
   lastUser: boolean;
@@ -383,7 +395,7 @@ function MessageRow(props: {
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {editing ? editForm : (
         content
-          ? <Markdown content={content} streaming={props.streaming} />
+          ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
           : message.status === "pending" ? <PendingDots /> : null
       )}
       {(showSwipes || canRegenerate || canRetry) && (
@@ -472,6 +484,8 @@ export function CampaignPlay(props: {
 }) {
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [walkOnName, setWalkOnName] = useState<string | null>(null);
+  const [revealedCharacter, setRevealedCharacter] = useState<{ id: string; key: number } | null>(null);
   const docked = useSyncExternalStore(subscribeDocked, () => window.matchMedia(DOCKED_QUERY).matches);
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const [following, setFollowing] = useState(true);
@@ -479,6 +493,7 @@ export function CampaignPlay(props: {
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [modelCatalogState, setModelCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const messages = props.messages ?? [];
+  const characters = props.campaign?.characters ?? [];
   const live = props.generation?.sessionId === props.sessionId ? props.generation : null;
   const otherGeneration = props.generation && props.generation.sessionId !== props.sessionId && props.generation.phase !== "error"
     ? props.generation
@@ -514,6 +529,11 @@ export function CampaignPlay(props: {
   const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
   const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
+  const addToCast = isActiveSession && !sessionBusy ? setWalkOnName : undefined;
+  const showCharacter = (id: string) => {
+    setRevealedCharacter((current) => ({ id, key: (current?.key ?? 0) + 1 }));
+    if (!docked) setDetailsOpen(true);
+  };
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
@@ -676,6 +696,7 @@ export function CampaignPlay(props: {
     active: isActiveSession,
     canEndSession: isActiveSession && !busy,
     onSyncSession: props.onSyncSession,
+    revealCharacter: revealedCharacter,
   } : null;
 
   return (
@@ -731,6 +752,9 @@ export function CampaignPlay(props: {
                   liveText={isLive && live?.text ? live.text : undefined}
                   reasoning={isLive ? live?.reasoning : undefined}
                   streaming={isLive && live?.phase === "streaming"}
+                  characters={characters}
+                  onAddToCast={addToCast}
+                  onShowCharacter={showCharacter}
                   trailing={index === messages.length - 1}
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
@@ -765,6 +789,7 @@ export function CampaignPlay(props: {
                   lastUser={false}
                   actionsAllowed={false}
                   canGenerate={false}
+                  characters={characters}
                   canFork={false}
                   activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
@@ -774,13 +799,14 @@ export function CampaignPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  onShowCharacter={showCharacter}
                 />
               )}
               {unmatchedLive && live && (
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
                   {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} answering={Boolean(live.text)} />}
-                  {live.text ? <Markdown content={live.text} streaming={live.phase === "streaming"} /> : live.phase === "streaming" ? <PendingDots /> : null}
+                  {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots /> : null}
                 </article>
               )}
             </MessageScroller>
@@ -858,6 +884,20 @@ export function CampaignPlay(props: {
           <CampaignPanel key={panelProps.campaign.id} {...panelProps} />
         </Sheet>
       ))}
+      {walkOnName !== null && props.campaign && (
+        <CharacterProfileDialog
+          character={null}
+          initialName={walkOnName}
+          title={`Add ${walkOnName} to the cast`}
+          description="Adds a narrator-controlled cast character to this campaign. Paragraphs tagged with this name use their profile."
+          onCreate={(input) => createCampaignCharacter(props.campaign!.id, input)}
+          onUpdate={(id, input) => updateCampaignCharacter(props.campaign!.id, id, input)}
+          onAvatarUpload={(id, file) => uploadCampaignCharacterAvatar(props.campaign!.id, id, file)}
+          onAvatarRemove={(id) => deleteCampaignCharacterAvatar(props.campaign!.id, id)}
+          onSaved={() => { void props.onSyncSession(props.sessionId).catch(() => {}); }}
+          onClose={() => setWalkOnName(null)}
+        />
+      )}
     </div>
   );
 }

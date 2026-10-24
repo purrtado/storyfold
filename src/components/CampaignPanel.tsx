@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ChevronRight, NotebookPen, PanelRightClose, PanelRightOpen, Plus, ScrollText, Users, X } from "lucide-react";
 import { STAT_KINDS, type Campaign, type CampaignStat, type Session, type StatDefinition } from "../../shared/domain";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
@@ -262,6 +262,8 @@ export function CampaignPanel(props: {
   onSyncSession: (sessionId: string) => Promise<void>;
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
+  /** Opens this character's card; a new `key` re-reveals the same character. */
+  revealCharacter?: { id: string; key: number } | null;
 }) {
   const [tab, setTab] = useState<PanelTabId>("characters");
   const [mounted, setMounted] = useState<Record<PanelTabId, boolean>>({ characters: true, notes: false, campaign: false });
@@ -283,6 +285,10 @@ export function CampaignPanel(props: {
     if (characterId) setOpenCharacterId(characterId);
     props.onCollapsedChange?.(false);
   };
+
+  useEffect(() => {
+    if (props.revealCharacter) expandTo("characters", props.revealCharacter.id);
+  }, [props.revealCharacter]);
 
   const onTablistKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const index = panelTabs.findIndex((entry) => entry.id === tab);
@@ -371,6 +377,8 @@ export function CampaignPanel(props: {
               sessionId={props.session.id}
               openId={openCharacterId}
               onOpenChange={setOpenCharacterId}
+              revealKey={props.revealCharacter?.key}
+              visible={tab === "characters" && !collapsed}
               onSyncSession={props.onSyncSession}
             />
           </div>

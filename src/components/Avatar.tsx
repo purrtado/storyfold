@@ -16,17 +16,21 @@ export function imageUrl(imageId: string) {
   return `/api/images/${encodeURIComponent(imageId)}`;
 }
 
-/** Character portrait: the captured image when present, else a name-derived monogram. */
-export function Avatar(props: { name: string; imageId?: string | null; className?: string }) {
+/**
+ * Character picture: the captured image when present, else a name-derived
+ * monogram. `portrait` draws an upright rounded rectangle cropped toward the top.
+ */
+export function Avatar(props: { name: string; imageId?: string | null; className?: string; portrait?: boolean }) {
   const size = props.className ?? "size-10 text-sm";
+  const shape = props.portrait ? "rounded-lg" : "rounded-full";
   if (props.imageId) {
-    return <img src={imageUrl(props.imageId)} alt="" className={`${size} flex-none rounded-full bg-raised object-cover`} />;
+    return <img src={imageUrl(props.imageId)} alt="" className={`${size} flex-none ${shape} bg-raised object-cover${props.portrait ? " object-top" : ""}`} />;
   }
   const h = hue(props.name);
   return (
     <span
       aria-hidden="true"
-      className={`${size} inline-grid flex-none place-items-center rounded-full font-semibold select-none`}
+      className={`${size} inline-grid flex-none place-items-center ${shape} font-semibold select-none`}
       style={{
         background: `light-dark(oklch(90% 0.06 ${h}), oklch(34% 0.07 ${h}))`,
         color: `light-dark(oklch(35% 0.09 ${h}), oklch(90% 0.05 ${h}))`,
