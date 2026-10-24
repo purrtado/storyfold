@@ -723,7 +723,7 @@ export function CharacterRoster(props: {
                 <img
                   src={imageUrl(character.avatar_id)}
                   alt={`Portrait of ${character.name}`}
-                  className="aspect-[3/4] max-h-[60dvh] w-full rounded-xl bg-raised object-cover object-top"
+                  className="aspect-[3/4] max-h-[60dvh] w-full rounded-xl bg-raised object-contain"
                 />
               )}
               <Profile character={character} />
