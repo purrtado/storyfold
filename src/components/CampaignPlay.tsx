@@ -529,7 +529,7 @@ export function CampaignPlay(props: {
   const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
   const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
-  const addToCast = isActiveSession ? setWalkOnName : undefined;
+  const addToCast = isActiveSession && !sessionBusy ? setWalkOnName : undefined;
   const showCharacter = (id: string) => {
     setRevealedCharacter((current) => ({ id, key: (current?.key ?? 0) + 1 }));
     if (!docked) setDetailsOpen(true);

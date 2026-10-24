@@ -79,6 +79,14 @@ test("Markdown links are not tags, and a tag alone in its paragraph attributes t
   ]);
 });
 
+test("CRLF blank lines separate paragraphs", () => {
+  expect(narrationSegments("Rain falls.\r\n\r\n[Vex] She laughs.\r\n\r\nThunder.", cast)).toEqual([
+    { kind: "narration", text: "Rain falls." },
+    { kind: "speaker", label: "Vex Calder", character: cast[1], text: "She laughs." },
+    { kind: "narration", text: "Thunder." },
+  ]);
+});
+
 test("an unfinished tag is held back only while streaming", () => {
   expect(narrationSegments("The door opens.\n\n[Ve", cast, true)).toEqual([
     { kind: "narration", text: "The door opens." },
