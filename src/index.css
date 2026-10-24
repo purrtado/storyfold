@@ -90,10 +90,10 @@ button, [role="button"] {
   outline: max(2px, 0.08em) solid var(--accent);
   outline-offset: 0.15em;
 }
-.composer:focus-visible { outline-color: transparent; }
+.composer:focus-visible, .composer-direction:focus-visible { outline-color: transparent; }
 
 @media (forced-colors: active) {
-  .composer:focus-visible { outline-color: Highlight; }
+  .composer:focus-visible, .composer-direction:focus-visible { outline-color: Highlight; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

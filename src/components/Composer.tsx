@@ -1,6 +1,6 @@
 // Adapted from beUI Prompt Input — https://beui.dev/components/agents/prompt-input
 // Auto-grow uses the repo's field-sizing CSS instead of the registry's measurement mirror.
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, Clapperboard, Square, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef } from "react";
 import { SPRING_PRESS } from "../lib/ease";
@@ -11,6 +11,9 @@ export interface ComposerProps {
   onValueChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onModelChange: (model: string) => void;
+  /** A one-reply out-of-character note; null keeps the field closed. Omit both to hide the control. */
+  direction?: string | null;
+  onDirectionChange?: (value: string | null) => void;
   selectedModel: string;
   defaultModel: string | null;
   models: ProviderModel[];
@@ -30,6 +33,8 @@ export function Composer({
   onValueChange,
   onSubmit,
   onModelChange,
+  direction = null,
+  onDirectionChange,
   selectedModel,
   defaultModel,
   models,
@@ -43,6 +48,8 @@ export function Composer({
 }: ComposerProps) {
   const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const directionRef = useRef<HTMLInputElement>(null);
+  const directionOpen = direction !== null;
   const modelSelectId = useId();
   const modelStatusId = useId();
   const canSubmit = Boolean(value.trim()) && !busy;
@@ -59,6 +66,10 @@ export function Composer({
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (directionOpen) directionRef.current?.focus();
+  }, [directionOpen]);
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
@@ -88,6 +99,40 @@ export function Composer({
         onSubmit={submit}
         className="relative mx-auto w-full max-w-3xl rounded-2xl border border-border/80 bg-raised p-2 transition-colors focus-within:border-foreground/25"
       >
+        {directionOpen && onDirectionChange && (
+          <div className="mbe-1 flex items-center gap-2 rounded-lg bg-surface ps-2 pe-1">
+            <span className="flex-none text-xs font-medium text-muted">OOC</span>
+            <input
+              ref={directionRef}
+              value={direction}
+              onChange={(event) => onDirectionChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && !event.defaultPrevented) {
+                  event.preventDefault();
+                  onDirectionChange(null);
+                  textareaRef.current?.focus({ preventScroll: true });
+                } else if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  textareaRef.current?.focus({ preventScroll: true });
+                }
+              }}
+              placeholder="Direction for the next reply only"
+              aria-label="Out-of-character direction for the next reply"
+              className="composer-direction min-h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted/55"
+            />
+            <button
+              type="button"
+              aria-label="Remove direction"
+              className="pressable inline-flex size-7 flex-none items-center justify-center rounded-md text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              onClick={() => {
+                onDirectionChange(null);
+                textareaRef.current?.focus({ preventScroll: true });
+              }}
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={value}
@@ -132,6 +177,17 @@ export function Composer({
               </p>
             )}
           </div>
+          {onDirectionChange && !directionOpen && (
+            <button
+              type="button"
+              aria-label="Direct the narrator"
+              title="Direct the narrator (OOC, next reply only)"
+              className="pressable hit-44 inline-flex size-8 flex-none items-center justify-center rounded-full text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              onClick={() => onDirectionChange("")}
+            >
+              <Clapperboard className="size-4" aria-hidden="true" />
+            </button>
+          )}
           {showStop ? (
             <motion.button
               type="button"

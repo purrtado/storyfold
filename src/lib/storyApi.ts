@@ -536,6 +536,7 @@ export async function requestSessionGeneration(
   sessionId: string,
   kind: "opening" | "message" | "regenerate",
   content: string,
+  direction: string | undefined,
   model: string | undefined,
   signal: AbortSignal,
 ): Promise<Response> {
@@ -546,6 +547,7 @@ export async function requestSessionGeneration(
     : `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
   const body = {
     ...(kind === "message" ? { content } : {}),
+    ...(direction ? { direction } : {}),
     ...(model ? { model } : {}),
   };
   return fetch(path, {

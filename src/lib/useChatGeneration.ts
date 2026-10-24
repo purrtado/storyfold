@@ -12,6 +12,8 @@ export type Generation = {
   playerMessageId?: string;
   /** The player text this generation was started with (kind "message"). */
   playerText?: string;
+  /** The out-of-character note sent with this generation. */
+  direction?: string;
   text: string;
   reasoning?: string;
   phase: GenerationPhase;
@@ -29,6 +31,7 @@ type GenerationRequest = {
   sessionId: string;
   kind: "opening" | "message" | "regenerate";
   content: string;
+  direction?: string;
   model?: string;
 };
 
@@ -67,6 +70,7 @@ export function useChatGeneration(options: {
           request.sessionId,
           request.kind,
           request.content,
+          request.direction,
           request.model,
           signal,
         );
@@ -173,11 +177,13 @@ export function useChatGeneration(options: {
     sessionId: string,
     kind: "opening" | "message" | "regenerate",
     content: string,
+    direction?: string,
     model?: string,
   ) => {
     if (busyRef.current) return false;
     busyRef.current = true;
-    const request = { id: ++requestSequence.current, sessionId, kind, content, ...(model ? { model } : {}) };
+    const note = direction?.trim();
+    const request = { id: ++requestSequence.current, sessionId, kind, content, ...(note ? { direction: note } : {}), ...(model ? { model } : {}) };
     requestRef.current = request;
     activeRequestRef.current = request;
     textRef.current = "";
@@ -190,22 +196,23 @@ export function useChatGeneration(options: {
       text: "",
       phase: "streaming",
       ...(kind === "message" ? { playerText: content } : {}),
+      ...(note ? { direction: note } : {}),
     });
     void chat.sendMessage(kind === "message" ? content : "Opening narration").catch(() => {});
     return true;
   }, [chat]);
 
-  const send = useCallback((sessionId: string, content: string, model?: string) => {
+  const send = useCallback((sessionId: string, content: string, direction?: string, model?: string) => {
     if (!content.trim()) return false;
-    return start(sessionId, "message", content, model);
+    return start(sessionId, "message", content, direction, model);
   }, [start]);
 
-  const open = useCallback((sessionId: string, model?: string) => {
-    return start(sessionId, "opening", "", model);
+  const open = useCallback((sessionId: string, direction?: string, model?: string) => {
+    return start(sessionId, "opening", "", direction, model);
   }, [start]);
 
-  const regenerate = useCallback((sessionId: string, model?: string) => {
-    return start(sessionId, "regenerate", "", model);
+  const regenerate = useCallback((sessionId: string, direction?: string, model?: string) => {
+    return start(sessionId, "regenerate", "", direction, model);
   }, [start]);
 
   const stop = useCallback(async (sessionId: string) => {
