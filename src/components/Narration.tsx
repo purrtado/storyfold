@@ -6,13 +6,15 @@ import { Markdown } from "./Markdown";
 
 /**
  * Narration with `[Name]`-tagged paragraphs attributed to their speaker.
- * Walk-ons (labels matching no campaign character) can be added to the cast.
+ * Campaign characters open in the campaign panel; walk-ons (labels matching
+ * no campaign character) can be added to the cast.
  */
 export function Narration(props: {
   content: string;
   streaming?: boolean;
   characters: CampaignCharacter[];
   onAddToCast?: (name: string) => void;
+  onShowCharacter?: (characterId: string) => void;
 }) {
   const segments = narrationSegments(props.content, props.characters, props.streaming);
   return (
@@ -21,16 +23,34 @@ export function Narration(props: {
         const streaming = props.streaming && index === segments.length - 1;
         if (segment.kind === "narration") return <Markdown key={index} content={segment.text} streaming={streaming} />;
         const { character, label } = segment;
+        const show = character && props.onShowCharacter ? () => props.onShowCharacter?.(character.id) : undefined;
+        const portrait = (
+          <Avatar
+            name={label}
+            imageId={character?.avatar_id}
+            portrait
+            className={`h-16 w-12 text-sm${character ? "" : " outline-1 outline-offset-2 outline-dashed outline-muted"}`}
+          />
+        );
         return (
           <div key={index} className="flex items-start gap-3">
-            <Avatar
-              name={label}
-              imageId={character?.avatar_id}
-              className={`size-8 text-xs${character ? "" : " outline-1 outline-offset-2 outline-dashed outline-muted"}`}
-            />
+            {show ? (
+              <button type="button" tabIndex={-1} aria-hidden="true" className="pressable flex-none rounded-lg" onClick={show}>
+                {portrait}
+              </button>
+            ) : portrait}
             <div className="min-w-0 flex-1">
               <p className="mbe-1 flex flex-wrap items-center gap-x-2 text-sm font-semibold">
-                <span>{label}</span>
+                {show ? (
+                  <button
+                    type="button"
+                    className="pressable rounded-sm underline-offset-2 [@media(hover:hover)_and_(pointer:fine)]:hover:underline"
+                    onClick={show}
+                    aria-label={`Show ${label}`}
+                  >
+                    {label}
+                  </button>
+                ) : <span>{label}</span>}
                 {character?.role === "protagonist" && (
                   <span className="inline-flex items-center gap-1 text-xs font-normal text-muted">
                     <TriangleAlert className="size-3.5 flex-none" aria-hidden="true" />
