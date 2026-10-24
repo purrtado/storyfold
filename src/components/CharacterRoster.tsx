@@ -302,6 +302,8 @@ export function CharacterRoster(props: {
   onOpenChange: (id: string | null) => void;
   /** Changes when play asks to reveal the open card; it then scrolls to the card's top. */
   revealKey?: number;
+  /** The reveal waits until the roster's tab panel is shown. */
+  visible?: boolean;
   onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const [requestEpoch] = useState(createRequestEpoch);
@@ -656,11 +658,12 @@ export function CharacterRoster(props: {
 
   const revealedKey = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!props.openId) return;
+    // A hidden tab panel cannot scroll; keep the reveal pending until shown.
+    if (!props.visible || !props.openId) return;
     const revealing = props.revealKey !== revealedKey.current;
     revealedKey.current = props.revealKey;
     cardRefs.current.get(props.openId)?.scrollIntoView({ block: revealing ? "start" : "nearest" });
-  }, [props.openId, props.revealKey]);
+  }, [props.openId, props.revealKey, props.visible]);
 
   const actionsDisabled = saving || deleteBusyId !== null;
   const relationshipRow = (relationship: Relationship) => (
