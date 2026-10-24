@@ -1293,6 +1293,8 @@ describe("regeneration, swipes, edits, and deletes", () => {
 
       const invalid = await postRegenerate(server.url, session.id, { direction: 7 });
       expect(invalid.status).toBe(400);
+      const explicitNull = await postRegenerate(server.url, session.id, { direction: null });
+      expect(explicitNull.status).toBe(400);
     } finally {
       await server.stop();
     }

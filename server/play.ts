@@ -626,10 +626,10 @@ export function parsePlayerContent(body: Record<string, unknown>): string {
   return content;
 }
 
-/** Optional one-reply direction: absent or blank means none. */
+/** Optional one-reply direction: omitted or blank means none. */
 export function parseDirection(body: Record<string, unknown>): string | null {
   const direction = body.direction;
-  if (direction === undefined || direction === null) return null;
+  if (direction === undefined) return null;
   if (typeof direction !== "string") throw new ValidationError("direction must be a string");
   const trimmed = direction.trim();
   if (trimmed.length > MAX_MESSAGE_CHARS) {
