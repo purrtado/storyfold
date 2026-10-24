@@ -378,7 +378,7 @@ export function CampaignPanel(props: {
               openId={openCharacterId}
               onOpenChange={setOpenCharacterId}
               revealKey={props.revealCharacter?.key}
-              visible={tab === "characters"}
+              visible={tab === "characters" && !collapsed}
               onSyncSession={props.onSyncSession}
             />
           </div>
