@@ -458,13 +458,14 @@ function MessageRow(props: {
   );
 
   if (message.role === "user") {
+    const editingInline = editing && !editExpanded;
     return (
       <article className="group flex flex-col items-end gap-1">
-        <div className="flex max-w-full items-start justify-end gap-1">
+        <div className={`flex max-w-full items-start justify-end gap-1 ${editingInline ? "w-full" : ""}`}>
           {menu && <span className={reveal}>{menu}</span>}
-          <div className="max-w-[90%] rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground">
+          <div className={`rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground ${editingInline ? "flex-1" : "max-w-[90%]"}`}>
             <p className="mbs-0 mbe-2 text-xs font-medium text-muted">{message.speaker_name}</p>
-            {editing && !editExpanded ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
+            {editingInline ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
           </div>
         </div>
         {props.trailing && props.canGenerate && (
