@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchModels,
   fetchProviders,
@@ -36,6 +36,8 @@ export function useModelSelection(): ModelPickerState {
   const [saved, setSaved] = useState<ModelSelection | null>(null);
   const [models, setModels] = useState<Record<string, ProviderModels>>({});
   const [saveError, setSaveError] = useState("");
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const latestSave = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -61,10 +63,16 @@ export function useModelSelection(): ModelPickerState {
     return () => { active = false; };
   }, []);
 
+  // Saves are queued so the server applies them in pick order; only the newest
+  // pick may report a failure.
   const select = useCallback((next: ModelSelection) => {
+    const sequence = ++latestSave.current;
     setSaved(next);
     setSaveError("");
-    saveSelection(next).catch((error: unknown) => {
+    const request = saveQueue.current.then(() => saveSelection(next));
+    saveQueue.current = request.catch(() => {});
+    request.catch((error: unknown) => {
+      if (sequence !== latestSave.current) return;
       setSaveError(error instanceof Error ? error.message : "Could not save the model choice.");
     });
   }, []);

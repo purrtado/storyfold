@@ -596,7 +596,10 @@ export function CampaignPlay(props: {
   // the app-wide exclusivity that `busy` tracks.
   const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
   const actionsAllowed = isActiveSession && transcriptReady && !sessionBusy;
-  const canGenerate = actionsAllowed && !busy;
+  // Without a usable choice the server would fall back to the saved one, which
+  // may be a model the player has since switched off.
+  const noModel = picker.status === "ready" && !selection;
+  const canGenerate = actionsAllowed && !busy && !noModel;
   // Forking is allowed in the active session and in closed (read-only) ones,
   // but the server refuses it while this campaign's active session generates.
   const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
@@ -816,7 +819,7 @@ export function CampaignPlay(props: {
                           placeholder="Open mid-chase through the night market"
                         />
                       </label>
-                      <button type="submit" className="pressable min-h-11 justify-self-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90">{live?.error ? "Retry opening" : "Begin opening"}</button>
+                      <button type="submit" disabled={noModel} className="pressable min-h-11 justify-self-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg disabled:pointer-events-none disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90">{live?.error ? "Retry opening" : "Begin opening"}</button>
                     </form>
                   )}
                 </div>
@@ -932,7 +935,7 @@ export function CampaignPlay(props: {
               placeholder={`What does ${protagonistOf(props.campaign).name} do or say?`}
               inputLabel={`What does ${protagonistOf(props.campaign).name} do or say?`}
               sendLabel="Send action"
-              busy={busy || !hasCompletedNarration}
+              busy={busy || noModel || !hasCompletedNarration}
               showStop={stopAvailable}
               onStop={() => { void props.onStop(stopTarget); }}
             />
