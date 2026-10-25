@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useImperativeHandle, useRef, type Ref } from "react";
+import { lazy, Suspense, useCallback, useImperativeHandle, useRef, type Ref, type RefObject } from "react";
 import { cn } from "../lib/utils";
 import "./text-editor.css";
 
@@ -20,6 +20,8 @@ export interface TextEditorProps {
   placeholders?: readonly string[];
   autoFocus?: boolean;
   className?: string;
+  /** Hands the document, selection and undo history from one editor instance to the next one mounted with the same ref. */
+  stateRef?: RefObject<unknown>;
   ref?: Ref<TextEditorHandle>;
 }
 

@@ -1,5 +1,5 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, type Completion, type CompletionContext } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyField, historyKeymap } from "@codemirror/commands";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { search, searchKeymap } from "@codemirror/search";
@@ -74,7 +74,7 @@ function placeholderCompletions(names: readonly string[]): Extension {
   return autocompletion({ override: [source], icons: false });
 }
 
-export default function TextEditorView({ value, onChange, labelledBy, label, markdown, placeholders, autoFocus, className, ref }: TextEditorProps) {
+export default function TextEditorView({ value, onChange, labelledBy, label, markdown, placeholders, autoFocus, className, stateRef, ref }: TextEditorProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const valueRef = useRef(value);
@@ -105,19 +105,18 @@ export default function TextEditorView({ value, onChange, labelledBy, label, mar
         onChangeRef.current(next);
       }),
     ];
-    const view = new EditorView({
-      parent: parentRef.current!,
-      state: EditorState.create({
-        doc: valueRef.current,
-        extensions: extensionsRef.current,
-        selection: autoFocus ? { anchor: valueRef.current.length } : undefined,
-      }),
-    });
+    const saved = stateRef?.current as { doc?: string } | null | undefined;
+    const config = { extensions: extensionsRef.current };
+    const state = saved?.doc === valueRef.current
+      ? EditorState.fromJSON(saved, config, { history: historyField })
+      : EditorState.create({ ...config, doc: valueRef.current, selection: autoFocus ? { anchor: valueRef.current.length } : undefined });
+    const view = new EditorView({ parent: parentRef.current!, state });
     viewRef.current = view;
     // A frame later, so a closing menu or dialog doesn't take focus back.
     const frame = autoFocus ? requestAnimationFrame(() => view.focus()) : 0;
     return () => {
       cancelAnimationFrame(frame);
+      if (stateRef) stateRef.current = view.state.toJSON({ history: historyField });
       view.destroy();
       viewRef.current = null;
     };

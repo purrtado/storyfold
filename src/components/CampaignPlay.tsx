@@ -119,6 +119,7 @@ function MessageRow(props: {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [editExpanded, setEditExpanded] = useState(false);
+  const editorState = useRef<unknown>(null);
   const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
   const [confirmFork, setConfirmFork] = useState(false);
   const [forkName, setForkName] = useState("");
@@ -161,6 +162,7 @@ function MessageRow(props: {
   const startEdit = () => {
     keepMenuFocus.current = true;
     setEditValue(message.content);
+    editorState.current = null;
     setEditExpanded(false);
     setEditing(true);
   };
@@ -210,6 +212,7 @@ function MessageRow(props: {
       label="Edit message"
       markdown
       autoFocus
+      stateRef={editorState}
       className={`rounded-lg border border-border bg-background ${expanded ? "[min-block-size:0] flex-1" : "min-h-24"}`}
     />
   );
