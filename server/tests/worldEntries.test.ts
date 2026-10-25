@@ -5,6 +5,7 @@ import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapsho
 import type { CharacterPrompt } from "../../shared/narration";
 import { DEFAULT_PROMPT_CARDS, NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import {
+  configureProvider,
   headersWith,
   makeConfigDirectory,
   openAiChatCompletionSse,
@@ -299,7 +300,7 @@ describe("captured grounding is immutable and drives narration", () => {
   });
 
   test("narration uses only the captured entries, not the live library", async () => {
-    await json("PUT", "/api/provider", { model: "glm-5.3", api_key: "test-key-world-entries" });
+    await configureProvider(base.url, "test-key-world-entries");
 
     const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom.", suggested_starting_situation: "" });
     const protagonist = await createCharacter({ name: "Sable", description: "A cynical ferrywoman spy." });

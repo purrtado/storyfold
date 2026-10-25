@@ -14,6 +14,7 @@ import {
 } from "../library";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
+  configureProvider,
   headersWith,
   makeConfigDirectory,
   openAiChatCompletionSse,
@@ -34,12 +35,7 @@ beforeAll(async () => {
   configDirectory = await makeConfigDirectory();
   databasePath = join(configDirectory, "campaign-flow.db");
   base = await startTestServer({ configDirectory, databasePath });
-  const created = await fetch(`${base.url}/api/provider`, {
-    method: "PUT",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({ model: "glm-5.3", api_key: API_KEY }),
-  });
-  expect(created.status).toBe(200);
+  await configureProvider(base.url, API_KEY);
 });
 
 afterAll(async () => {

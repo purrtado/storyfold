@@ -1,7 +1,6 @@
 import { chat, EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
-import { ZAI_BASE_URL } from "./config";
 
 export const MAX_MESSAGE_CHARS = 100_000;
 
@@ -140,9 +139,11 @@ async function* sanitizeRunStream(
   }
 }
 
-export interface ZaiRunRequest {
+export interface NarrationRunRequest {
+  baseUrl: string;
   model: string;
-  apiKey: string;
+  /** null for keyless local servers; no Authorization header is sent. */
+  apiKey: string | null;
   /** Fixed grounding instructions; prepended via the SDK's systemPrompts. */
   systemPrompt?: string;
   messages: NarrationMessage[];
@@ -154,13 +155,22 @@ export interface ZaiRunRequest {
   upstreamFetch?: typeof fetch;
 }
 
-export interface ZaiRun {
+export interface NarrationRun {
   stream: AsyncIterable<StreamChunk>;
   abortController: AbortController;
 }
 
-/** Starts a sanitized Z.AI chat-completions run for server-side consumption. */
-export function startZaiRun(request: ZaiRunRequest): ZaiRun {
+/** Strips the placeholder credential the SDK insists on for keyless providers. */
+function withoutAuthorization(upstreamFetch: typeof fetch): typeof fetch {
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    headers.delete("authorization");
+    return upstreamFetch(input, { ...init, headers });
+  }) as typeof fetch;
+}
+
+/** Starts a sanitized OpenAI-compatible chat-completions run for server-side consumption. */
+export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
   const abortController = request.abortController ?? new AbortController();
   const disconnectSignal = request.disconnectSignal;
   const abortFromDisconnect = () => abortController.abort(disconnectSignal?.reason);
@@ -170,13 +180,15 @@ export function startZaiRun(request: ZaiRunRequest): ZaiRun {
     disconnectSignal?.addEventListener("abort", abortFromDisconnect, { once: true });
   }
 
+  const upstreamFetch = request.upstreamFetch ?? fetch;
   const adapter = openaiCompatibleText(request.model, {
-    name: "zai",
-    baseURL: ZAI_BASE_URL,
-    apiKey: request.apiKey,
+    baseURL: request.baseUrl,
+    // The SDK falls back to OPENAI_API_KEY when no key is given; a placeholder
+    // keeps that ambient secret away from arbitrary provider hosts.
+    apiKey: request.apiKey ?? "keyless",
     api: "chat-completions",
     maxRetries: 0,
-    ...(request.upstreamFetch ? { fetch: request.upstreamFetch } : {}),
+    fetch: request.apiKey === null ? withoutAuthorization(upstreamFetch) : upstreamFetch,
   });
 
   const stream = chat({
