@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, Maximize2, Minimize2, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
@@ -23,6 +24,7 @@ import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
 import { CampaignPanel } from "./CampaignPanel";
 import { isActiveCampaignSession } from "../lib/campaignLifecycle";
+import { keepEscapeInFindPanel, TextEditor } from "./TextEditor";
 import "./message-menu.css";
 
 const DOCKED_QUERY = "(min-width: 80rem)";
@@ -118,6 +120,8 @@ function MessageRow(props: {
   const content = props.liveText ?? message.content;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
+  const [editExpanded, setEditExpanded] = useState(false);
+  const editorState = useRef<unknown>(null);
   const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
   const [confirmFork, setConfirmFork] = useState(false);
   const [forkName, setForkName] = useState("");
@@ -160,6 +164,8 @@ function MessageRow(props: {
   const startEdit = () => {
     keepMenuFocus.current = true;
     setEditValue(message.content);
+    editorState.current = null;
+    setEditExpanded(false);
     setEditing(true);
   };
   const startDelete = (scope: "message" | "after") => {
@@ -197,49 +203,82 @@ function MessageRow(props: {
     setDirecting(true);
   };
 
-  const editForm = (
-    <form
-      className="grid gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        saveEdit(false);
-      }}
-    >
-      <textarea
-        className="min-h-24 w-full rounded-lg border border-border bg-background p-3 text-[15px] leading-6 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
-        value={editValue}
-        onChange={(event) => setEditValue(event.target.value)}
-        rows={Math.min(10, Math.max(3, editValue.split("\n").length))}
-        autoFocus
-        aria-label="Edit message"
-      />
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
-          disabled={!editValue.trim()}
-        >
-          Save
-        </button>
-        {props.lastUser && props.canGenerate && (
-          <button
-            type="button"
-            className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised disabled:pointer-events-none disabled:opacity-50"
-            disabled={!editValue.trim()}
-            onClick={() => saveEdit(true)}
-          >
-            Save &amp; regenerate
-          </button>
-        )}
+  const submitEdit = (event: FormEvent) => {
+    event.preventDefault();
+    saveEdit(false);
+  };
+  const editField = (expanded: boolean) => (
+    <TextEditor
+      value={editValue}
+      onChange={setEditValue}
+      label="Edit message"
+      markdown
+      autoFocus
+      stateRef={editorState}
+      className={`rounded-lg border border-border bg-background ${expanded ? "[min-block-size:0] flex-1" : "min-h-24"}`}
+    />
+  );
+  const editButtons = (expanded: boolean) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="submit"
+        className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+        disabled={!editValue.trim()}
+      >
+        Save
+      </button>
+      {props.lastUser && props.canGenerate && (
         <button
           type="button"
-          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
-          onClick={() => setEditing(false)}
+          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised disabled:pointer-events-none disabled:opacity-50"
+          disabled={!editValue.trim()}
+          onClick={() => saveEdit(true)}
         >
-          Cancel
+          Save &amp; regenerate
         </button>
-      </div>
+      )}
+      <button
+        type="button"
+        className="pressable min-h-9 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised"
+        onClick={() => setEditing(false)}
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        className="pressable ms-auto inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+        aria-label={expanded ? "Collapse editor" : "Expand editor"}
+        onClick={() => setEditExpanded(!expanded)}
+      >
+        {expanded ? <Minimize2 className="size-4" aria-hidden="true" /> : <Maximize2 className="size-4" aria-hidden="true" />}
+      </button>
+    </div>
+  );
+  const editForm = (
+    <form className="grid gap-2" onSubmit={submitEdit}>
+      {editField(false)}
+      {editButtons(false)}
     </form>
+  );
+  const editDialog = editing && editExpanded && (
+    <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) setEditExpanded(false); }}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="backdrop fixed inset-0 z-30 bg-black/40" />
+        <DialogPrimitive.Content
+          aria-describedby={undefined}
+          // The collapsed editor takes focus itself when it remounts.
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          onEscapeKeyDown={keepEscapeInFindPanel}
+          className="fixed inset-0 z-40 flex flex-col bg-surface md:inset-bs-1/2 md:inset-be-auto md:start-1/2 md:h-[min(90dvh,52rem)] md:w-[min(calc(100vw-2rem),52rem)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-xl"
+        >
+          <form className="flex [min-block-size:0] flex-1 flex-col gap-3 p-4 [padding-block-end:calc(1rem+env(safe-area-inset-bottom,0px))] md:p-5" onSubmit={submitEdit}>
+            <DialogPrimitive.Title className="text-base font-semibold">Edit message</DialogPrimitive.Title>
+            {editField(true)}
+            {editButtons(true)}
+          </form>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 
   const deleteConfirm = confirmDelete && (
@@ -424,13 +463,14 @@ function MessageRow(props: {
   );
 
   if (message.role === "user") {
+    const editingInline = editing && !editExpanded;
     return (
       <article className="group flex flex-col items-end gap-1">
-        <div className="flex max-w-full items-start justify-end gap-1">
+        <div className={`flex max-w-full items-start justify-end gap-1 ${editingInline ? "w-full" : ""}`}>
           {menu && <span className={reveal}>{menu}</span>}
-          <div className="max-w-[90%] rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground">
+          <div className={`rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground ${editingInline ? "flex-1" : "max-w-[90%]"}`}>
             <p className="mbs-0 mbe-2 text-xs font-medium text-muted">{message.speaker_name}</p>
-            {editing ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
+            {editingInline ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
           </div>
         </div>
         {props.trailing && props.canGenerate && (
@@ -443,6 +483,7 @@ function MessageRow(props: {
             Regenerate
           </button>
         )}
+        {editDialog}
         {deleteConfirm}
         {forkConfirm}
         {directForm}
@@ -462,7 +503,7 @@ function MessageRow(props: {
       </div>
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {message.direction && <DirectionNote direction={message.direction} />}
-      {editing ? editForm : (
+      {editing && !editExpanded ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
           : message.status === "pending" ? <PendingDots /> : null
@@ -517,6 +558,7 @@ function MessageRow(props: {
           )}
         </div>
       )}
+      {editDialog}
       {deleteConfirm}
       {forkConfirm}
       {directForm}

@@ -35,6 +35,7 @@ import {
   useWorldEntries,
   useWorldStats,
 } from "../lib/libraryCache";
+import { keepEscapeInFindPanel, TextEditor } from "./TextEditor";
 import { worldEntryGroups } from "../lib/worldEntryGroups";
 import { Avatar } from "./Avatar";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
@@ -117,6 +118,10 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
       name: editor.name.trim(),
       description: editor.description.trim(),
     };
+    if (!input.description) {
+      setSaveError("Add a description.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -409,6 +414,7 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
         <DialogPrimitive.Portal>
           <DialogPrimitive.Overlay className="backdrop fixed inset-0 z-30 bg-black/40" />
           <DialogPrimitive.Content
+            onEscapeKeyDown={keepEscapeInFindPanel}
             onCloseAutoFocus={(event) => {
               event.preventDefault();
               if (entryOpenerRef.current?.isConnected) entryOpenerRef.current.focus();
@@ -435,16 +441,15 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
                       className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                     />
                   </label>
-                  <label className="grid gap-2 text-sm font-medium">
-                    Description
-                    <textarea
-                      required
-                      rows={10}
+                  <div className="grid gap-2 text-sm font-medium">
+                    <span id="compendium-entry-description">Description</span>
+                    <TextEditor
+                      labelledBy="compendium-entry-description"
                       value={editor.description}
-                      onChange={(event) => setEditor({ ...editor, description: event.target.value })}
-                      className="min-h-64 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      onChange={(description) => setEditor({ ...editor, description })}
+                      className="min-h-64 rounded-lg border border-border bg-background font-normal"
                     />
-                  </label>
+                  </div>
                   {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
                 </div>
               </div>
