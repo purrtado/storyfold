@@ -60,6 +60,25 @@ export function headersWith(extra: Record<string, string> = {}): Record<string, 
   return { host: `127.0.0.1:${SERVER_PORT}`, ...extra };
 }
 
+/** Adds one keyed provider and selects `model` on it; returns the provider id. */
+export async function configureProvider(serverUrl: string, apiKey: string, model = "glm-5.3"): Promise<string> {
+  const headers = headersWith({ origin: "http://localhost:5173", "content-type": "application/json" });
+  const created = await fetch(`${serverUrl}/api/providers`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: "Test provider", base_url: "https://provider.test/v1", api_key: apiKey }),
+  });
+  if (created.status !== 201) throw new Error(`provider setup failed: HTTP ${created.status}`);
+  const { provider } = (await created.json()) as { provider: { id: string } };
+  const selected = await fetch(`${serverUrl}/api/model-selection`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ provider_id: provider.id, model }),
+  });
+  if (selected.status !== 200) throw new Error(`model selection failed: HTTP ${selected.status}`);
+  return provider.id;
+}
+
 /** Protocol-real OpenAI chat-completions SSE body for one streamed reply. */
 export function openAiChatCompletionSse(model: string, deltas: string[]): string {
   const frames = [

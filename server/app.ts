@@ -1,14 +1,17 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { protagonistOf } from "../shared/domain";
+import { DATABASE_FILENAME, defaultDataDirectory } from "./config";
+import { ModelCatalog } from "./models";
 import {
-  CredentialStore,
-  DATABASE_FILENAME,
-  defaultDataDirectory,
-  publicConfig,
-  validateApiKey,
-  validateModel,
-} from "./config";
+  ProviderNotFoundError,
+  ProviderStore,
+  parseProviderCreate,
+  parseProviderPatch,
+  parseSelection,
+  publicProvider,
+  type ModelSelection,
+} from "./providers";
 import { openDatabase } from "./db";
 import {
   AlreadyOpenedError,
@@ -124,7 +127,7 @@ import {
 export interface CreateAppOptions {
   /** Overrides the credential directory (isolated tests). */
   configDirectory?: string;
-  /** Injection point for the Z.AI upstream call (tests only). */
+  /** Injection point for upstream provider calls, chat and /models (tests only). */
   upstreamFetch?: typeof fetch;
   /** Directory that holds storyfold.db (tests); defaults next to the credentials. */
   dataDirectory?: string;
@@ -143,51 +146,68 @@ export interface App {
 interface AppContext {
   db: Database;
   play: PlayService;
-  store: CredentialStore;
+  store: ProviderStore;
+  models: ModelCatalog;
   upstreamFetch: typeof fetch | undefined;
 }
 
-async function handleProviderGet(request: Request, store: CredentialStore): Promise<Response> {
-  // GET carries no secrets, but an untrusted cross-site document must not be
-  // able to probe the endpoint; a trusted tab navigating directly sends no
-  // Origin at all and stays allowed.
-  const origin = request.headers.get("origin");
-  if (origin !== null && trustedOrigin(request) === null) {
-    return jsonError(403, "Origin not allowed");
+async function handleProviders(
+  request: Request,
+  id: string | undefined,
+  child: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  try {
+    if (id === undefined) {
+      if (request.method === "GET") {
+        const config = await ctx.store.load();
+        return jsonResponse({ providers: config.providers.map(publicProvider), selection: config.selection });
+      }
+      if (request.method === "POST") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        const provider = await ctx.store.create(parseProviderCreate(body));
+        return jsonResponse({ provider: publicProvider(provider) }, 201);
+      }
+      return jsonError(405, "Method not allowed");
+    }
+    if (child === "models") {
+      if (request.method !== "GET") return jsonError(405, "Method not allowed");
+      const provider = await ctx.store.get(id);
+      if (!provider) return notFound("Unknown provider");
+      const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+      return jsonResponse(await ctx.models.list(provider, { refresh }));
+    }
+    if (child !== undefined) return jsonError(404, "Not found");
+    if (request.method === "PATCH") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      const { provider, credentialsChanged } = await ctx.store.update(id, parseProviderPatch(body));
+      if (credentialsChanged) ctx.models.invalidate(id);
+      return jsonResponse({ provider: publicProvider(provider) });
+    }
+    if (request.method === "DELETE") {
+      await ctx.store.remove(id);
+      ctx.models.invalidate(id);
+      return jsonResponse({ ok: true });
+    }
+    return jsonError(405, "Method not allowed");
+  } catch (error) {
+    if (error instanceof ProviderNotFoundError) return notFound("Unknown provider");
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
   }
-  return jsonResponse(publicConfig(await store.load()));
 }
 
-async function handleProviderPut(request: Request, store: CredentialStore): Promise<Response> {
-  if (!isJsonContentType(request)) {
-    return jsonError(415, "Content-Type must be application/json");
+async function handleModelSelection(request: Request, ctx: AppContext): Promise<Response> {
+  if (request.method !== "PUT") return jsonError(405, "Method not allowed");
+  const body = await readObjectBody(request);
+  if (body instanceof Response) return body;
+  try {
+    return jsonResponse({ selection: await ctx.store.setSelection(parseSelection(body)) });
+  } catch (error) {
+    if (error instanceof ProviderNotFoundError) return notFound("Unknown provider");
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
   }
-  const body = await readJsonBody(request, BODY_LIMITS.provider);
-  if (!body.ok) return body.response;
-  const object = requireObjectBody(body.value);
-  if (object instanceof Response) return object;
-
-  const { model, api_key } = object;
-  const modelError = validateModel(model);
-  if (modelError) return jsonError(400, modelError);
-  if (api_key === undefined && (await store.load()) === null) {
-    return jsonError(400, "api_key is required for a new configuration");
-  }
-  if (api_key !== undefined) {
-    const keyError = validateApiKey(api_key);
-    if (keyError) return jsonError(400, keyError);
-  }
-
-  await store.save({
-    model: model as string,
-    ...(api_key !== undefined ? { api_key: api_key as string } : {}),
-  });
-  return jsonResponse(publicConfig(await store.load()));
-}
-
-async function handleProviderDelete(_request: Request, store: CredentialStore): Promise<Response> {
-  await store.remove();
-  return jsonResponse(publicConfig(null));
 }
 
 function requireObjectBody(value: unknown): Record<string, unknown> | Response {
@@ -875,18 +895,13 @@ async function handlePlayPost(
 
   let content = "";
   let direction: string | null;
+  let requested: ModelSelection | null = null;
   try {
     if (kind === "messages") content = parsePlayerContent(body);
     direction = parseDirection(body);
+    if (body.provider_id !== undefined || body.model !== undefined) requested = parseSelection(body);
   } catch (error) {
     return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-  }
-  let model: string | undefined;
-  if (body.model !== undefined) {
-    if (typeof body.model !== "string" || validateModel(body.model) !== null) {
-      return jsonError(400, "model must be 1-128 characters of letters, digits, dot, underscore, colon or dash", undefined, { code: "invalid_input", accepted: false });
-    }
-    model = body.model;
   }
 
   const session = getSession(ctx.db, sessionId);
@@ -907,7 +922,11 @@ async function handlePlayPost(
   // atomic for the single Bun process. A Stop from another browser therefore
   // always finds the run registered, and the commit still precedes every
   // model invocation.
-  const settings = await ctx.store.load();
+  const config = await ctx.store.load();
+  const selection = requested ?? config.selection;
+  const provider = selection
+    ? config.providers.find((candidate) => candidate.id === selection.provider_id)
+    : undefined;
   const reserveTurn = (): ReservedTurn => {
     if (kind === "messages") {
       return ctx.play.reservePlayerTurn(sessionId, content, protagonistOf(campaign).name, direction);
@@ -919,9 +938,9 @@ async function handlePlayPost(
   };
   try {
     const reserved = reserveTurn();
-    if (settings === null) {
+    if (!selection || !provider) {
       ctx.play.failPending(reserved.pendingId);
-      return jsonError(400, "No provider API key configured. Add one in Settings.", undefined, {
+      return jsonError(400, "No model selected. Add a provider in Settings.", undefined, {
         code: "no_provider",
         accepted: true,
         ...(reserved.playerId !== null ? { player_message_id: reserved.playerId } : {}),
@@ -932,7 +951,7 @@ async function handlePlayPost(
       sessionId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
-      settings: { model: model ?? settings.model, apiKey: settings.api_key },
+      settings: { baseUrl: provider.base_url, model: selection.model, apiKey: provider.api_key },
       disconnectSignal: request.signal,
       upstreamFetch: ctx.upstreamFetch,
     });
@@ -945,26 +964,17 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   const segments = pathname.split("/").filter((segment) => segment.length > 0);
   const resource = segments[1];
 
-  if (pathname === "/api/provider") {
-    if (request.method === "GET") return handleProviderGet(request, ctx.store);
-    if (request.method === "PUT" || request.method === "DELETE") {
-      if (!hasTrustedOrigin(request)) return jsonError(403, "Origin not allowed");
-      return request.method === "PUT"
-        ? handleProviderPut(request, ctx.store)
-        : handleProviderDelete(request, ctx.store);
-    }
-    return jsonError(405, "Method not allowed");
-  }
-
-  // Domain reads are not categorically safe either: an unknown cross-site
-  // Origin is rejected exactly like the provider GET, while a trusted local
-  // document that sends no Origin at all keeps working. Mutations additionally
-  // require the Origin header (hasTrustedOrigin).
+  // Reads are not categorically safe either: an unknown cross-site Origin is
+  // rejected, while a trusted local document that sends no Origin at all keeps
+  // working. Mutations additionally require the Origin header.
   const origin = request.headers.get("origin");
   if (origin !== null && trustedOrigin(request) === null) return jsonError(403, "Origin not allowed");
-  const mutating = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
+  const mutating =
+    request.method === "POST" || request.method === "PUT" || request.method === "PATCH" || request.method === "DELETE";
   if (mutating && origin === null) return jsonError(403, "Origin not allowed");
 
+  if (resource === "providers") return handleProviders(request, segments[2], segments[3], ctx);
+  if (resource === "model-selection") return handleModelSelection(request, ctx);
   if (resource === "stats") return handleStats(request, segments[2], ctx.db);
   if (resource === "prompt-cards") return handlePromptCards(request, segments[2], ctx.db);
   if (resource === "worlds") {
@@ -1099,7 +1109,8 @@ export function createApp(options: CreateAppOptions = {}): App {
   const ctx: AppContext = {
     db,
     play: new PlayService(db),
-    store: new CredentialStore(options.configDirectory),
+    store: new ProviderStore(options.configDirectory),
+    models: new ModelCatalog(options.upstreamFetch),
     upstreamFetch: options.upstreamFetch,
   };
 

@@ -4,6 +4,7 @@ import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Character, type Session, type World } from "../../shared/domain";
 import {
+  configureProvider,
   headersWith,
   makeConfigDirectory,
   openAiChatCompletionSse,
@@ -307,7 +308,7 @@ describe("campaign characters API", () => {
   });
 
   test("campaign character edits reach the next narration and the player speaks with the current name", async () => {
-    await json("PUT", "/api/provider", { model: "glm-5.3", api_key: "test-key-campaign-characters" });
+    await configureProvider(base.url, "test-key-campaign-characters");
 
     const world = await createWorld({ name: "Prompt World", setting_brief: "p", suggested_starting_situation: "" });
     const protagonist = await createCharacter({ name: "Stale Name", description: "The played character." });

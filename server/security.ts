@@ -23,7 +23,6 @@ for (const interfaces of Object.values(networkInterfaces())) {
   }
 }
 
-const JSON_BODY_MAX_BYTES = 64 * 1024;
 const CHAT_BODY_MAX_BYTES = 1024 * 1024;
 /** Uploaded character pictures cap at 2 MiB, independent of the JSON body caps. */
 export const AVATAR_BODY_MAX_BYTES = 2 * 1024 * 1024;
@@ -213,7 +212,6 @@ export async function readRawBody(request: Request, limitBytes: number): Promise
 }
 
 export const BODY_LIMITS = {
-  provider: JSON_BODY_MAX_BYTES,
   chat: CHAT_BODY_MAX_BYTES,
   /** Domain text fields (worlds, characters, campaigns, play input) allow 100k chars. */
   text: CHAT_BODY_MAX_BYTES,

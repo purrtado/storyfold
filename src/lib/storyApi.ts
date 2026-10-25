@@ -1,4 +1,5 @@
 import type { Campaign, CampaignCharacter, CampaignStateItem, CampaignStat, Character, CharacterProfile, Message, PromptCard, Relationship, Session, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { ModelSelection } from "./providers";
 export type CampaignFork = { campaign: Campaign; session: Session };
 
 export async function fetchCampaignRelationships(campaignId: string): Promise<Relationship[]> {
@@ -581,7 +582,7 @@ export async function requestSessionGeneration(
   kind: "opening" | "message" | "regenerate",
   content: string,
   direction: string | undefined,
-  model: string | undefined,
+  model: ModelSelection | undefined,
   signal: AbortSignal,
 ): Promise<Response> {
   const path = kind === "opening"
@@ -592,7 +593,7 @@ export async function requestSessionGeneration(
   const body = {
     ...(kind === "message" ? { content } : {}),
     ...(direction ? { direction } : {}),
-    ...(model ? { model } : {}),
+    ...(model ? { provider_id: model.provider_id, model: model.model } : {}),
   };
   return fetch(path, {
     method: "POST",

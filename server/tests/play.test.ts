@@ -6,6 +6,7 @@ import { protagonistOf, type Campaign, type Message, type Session } from "../../
 import { openDatabase } from "../db";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
+  configureProvider,
   headersWith,
   makeConfigDirectory,
   openAiChatCompletionSse,
@@ -21,17 +22,13 @@ const TRUSTED_ORIGIN = "http://localhost:5173";
 let configDirectory: string;
 let databasePath: string;
 let base: TestServer;
+let providerId: string;
 
 beforeAll(async () => {
   configDirectory = await makeConfigDirectory();
   databasePath = join(configDirectory, "play.db");
   base = await startTestServer({ configDirectory, databasePath });
-  const created = await fetch(`${base.url}/api/provider`, {
-    method: "PUT",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({ model: "glm-5.3", api_key: API_KEY }),
-  });
-  expect(created.status).toBe(200);
+  providerId = await configureProvider(base.url, API_KEY);
 });
 
 afterAll(async () => {
@@ -547,24 +544,38 @@ describe("opening narration", () => {
     }
   });
 
-  test("openings accept a per-run model override", async () => {
+  test("a per-run provider override routes to that provider's endpoint, keyless without Authorization", async () => {
     const { session } = await seedStory(base.url);
-    const calls: Array<Record<string, unknown>> = [];
-    const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
-      calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response(openAiChatCompletionSse("glm-5.3-flash", ["Flash."]), {
+    const headers = headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" });
+    const created = await fetch(`${base.url}/api/providers`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Local", base_url: "http://127.0.0.1:11434/v1/" }),
+    });
+    const { provider } = (await created.json()) as { provider: { id: string } };
+    const calls: Array<{ url: string; authorization: string | null; body: Record<string, unknown> }> = [];
+    const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return new Response(openAiChatCompletionSse("llama3.3:70b", ["Local."]), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
       });
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const opened = await postOpening(server.url, session.id, { model: "glm-5.3-flash" });
+      const opened = await postOpening(server.url, session.id, { provider_id: provider.id, model: "llama3.3:70b" });
       await readSse(opened);
-      expect(calls[0].model).toBe("glm-5.3-flash");
+      expect(calls[0].url).toBe("http://127.0.0.1:11434/v1/chat/completions");
+      expect(calls[0].authorization).toBeNull();
+      expect(calls[0].body.model).toBe("llama3.3:70b");
       expect((await transcript(server.url, session.id))[0].status).toBe("complete");
     } finally {
       await server.stop();
+      await fetch(`${base.url}/api/providers/${provider.id}`, { method: "DELETE", headers });
     }
   });
 });
@@ -907,11 +918,7 @@ describe("missing provider", () => {
       expect(rejected.status).toBe(400);
       await rejected.text();
 
-      await fetch(`${server.url}/api/provider`, {
-        method: "PUT",
-        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-        body: JSON.stringify({ model: "glm-5.3", api_key: API_KEY }),
-      });
+      await configureProvider(server.url, API_KEY);
       const retry = await postMessage(server.url, session.id, { content: "Typed input." });
       expect(retry.status).toBe(200);
       await retry.text();
@@ -956,7 +963,7 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(first.variant_index).toBe(0);
 
       await readSse(await postRegenerate(server.url, session.id));
-      const modelOverride = await postRegenerate(server.url, session.id, { model: "glm-5.3-flash" });
+      const modelOverride = await postRegenerate(server.url, session.id, { provider_id: providerId, model: "glm-5.3-flash" });
       await readSse(modelOverride);
       expect(calls[2].model).toBe("glm-5.3-flash");
 

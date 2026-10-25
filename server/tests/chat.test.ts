@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import { startZaiRun } from "../chat";
+import { startNarrationRun } from "../chat";
 import { openAiChatCompletionSseRaw } from "./helpers";
 
 const API_KEY = "sk-zai-transport-test-key";
@@ -21,7 +21,7 @@ function textOf(events: StreamChunk[]): string {
     .join("");
 }
 
-describe("Z.AI transport (startZaiRun)", () => {
+describe("provider transport (startNarrationRun)", () => {
   test("upstream failures end with one redacted safe RUN_ERROR and never a finish", async () => {
     for (const status of [401, 429, 500]) {
       const upstream = (async (
@@ -32,7 +32,8 @@ describe("Z.AI transport (startZaiRun)", () => {
           status,
           headers: { "content-type": "application/json" },
         })) as typeof fetch;
-      const run = startZaiRun({
+      const run = startNarrationRun({
+        baseUrl: "https://provider.test/v1",
         model: "glm-5.3",
         apiKey: API_KEY,
         messages: [{ role: "user", content: "hi" }],
@@ -56,7 +57,8 @@ describe("Z.AI transport (startZaiRun)", () => {
         `{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens."}}`,
         { status: 400, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
-    const contextRun = startZaiRun({
+    const contextRun = startNarrationRun({
+      baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
       messages: [{ role: "user", content: "hi" }],
@@ -74,7 +76,8 @@ describe("Z.AI transport (startZaiRun)", () => {
         status: 400,
         headers: { "content-type": "application/json" },
       })) as typeof fetch;
-    const genericRun = startZaiRun({
+    const genericRun = startNarrationRun({
+      baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
       messages: [{ role: "user", content: "hi" }],
@@ -99,7 +102,8 @@ describe("Z.AI transport (startZaiRun)", () => {
       });
       return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
     }) as typeof fetch;
-    const run = startZaiRun({
+    const run = startNarrationRun({
+      baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
       messages: [{ role: "user", content: "hi" }],
@@ -120,7 +124,8 @@ describe("completion evidence (raw protocol)", () => {
   async function eventsFor(sse: string): Promise<StreamChunk[]> {
     const upstream = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
-    const run = startZaiRun({
+    const run = startNarrationRun({
+      baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
       messages: [{ role: "user", content: "hi" }],

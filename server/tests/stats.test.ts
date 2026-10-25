@@ -33,6 +33,7 @@ import {
 import { PlayService } from "../play";
 import { createRelationship, listRelationships, parseRelationshipPatch, updateRelationship } from "../relationships";
 import {
+  configureProvider,
   headersWith,
   makeConfigDirectory,
   openAiChatCompletionSse,
@@ -53,12 +54,7 @@ beforeAll(async () => {
   configDirectory = await makeConfigDirectory();
   databasePath = join(configDirectory, "stats.db");
   base = await startTestServer({ configDirectory, databasePath });
-  const provider = await fetch(`${base.url}/api/provider`, {
-    method: "PUT",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({ model: "glm-5.3", api_key: API_KEY }),
-  });
-  expect(provider.status).toBe(200);
+  await configureProvider(base.url, API_KEY);
 });
 
 afterAll(async () => {

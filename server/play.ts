@@ -14,7 +14,7 @@ import {
   sessionGroundingHandoff,
   ValidationError,
 } from "./library";
-import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
 import { listPromptCards } from "./promptCards";
 import { relationshipNarrationContext } from "./relationships";
 
@@ -65,8 +65,9 @@ const MESSAGE_COLUMNS =
   "id, session_id, position, role, speaker_name, content, status, direction, created_at, updated_at";
 
 export interface PlaySettings {
+  baseUrl: string;
   model: string;
-  apiKey: string;
+  apiKey: string | null;
 }
 
 interface ActiveRun {
@@ -509,7 +510,8 @@ export class PlayService {
       else history.push({ role: "user", content: directionNote(direction).trimStart() });
     }
 
-    const { stream: upstream } = startZaiRun({
+    const { stream: upstream } = startNarrationRun({
+      baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,
       systemPrompt: this.systemPrompt(sessionId),
