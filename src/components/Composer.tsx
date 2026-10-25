@@ -2,22 +2,18 @@
 // Auto-grow uses the repo's field-sizing CSS instead of the registry's measurement mirror.
 import { ArrowUp, Clapperboard, Square, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 import { SPRING_PRESS } from "../lib/ease";
-import type { ProviderModel } from "../lib/provider";
 
 export interface ComposerProps {
   value: string;
   onValueChange: (value: string) => void;
   onSubmit: (value: string) => void;
-  onModelChange: (model: string) => void;
+  /** Rendered at the start of the action row (the provider/model picker). */
+  modelControl?: ReactNode;
   /** A one-reply out-of-character note; null keeps the field closed. Omit both to hide the control. */
   direction?: string | null;
   onDirectionChange?: (value: string | null) => void;
-  selectedModel: string;
-  defaultModel: string | null;
-  models: ProviderModel[];
-  modelCatalogState: "loading" | "ready" | "error";
   placeholder?: string;
   inputLabel?: string;
   sendLabel?: string;
@@ -32,13 +28,9 @@ export function Composer({
   value,
   onValueChange,
   onSubmit,
-  onModelChange,
+  modelControl,
   direction = null,
   onDirectionChange,
-  selectedModel,
-  defaultModel,
-  models,
-  modelCatalogState,
   placeholder = "Write a message…",
   inputLabel = "Message",
   sendLabel = "Send message",
@@ -50,18 +42,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const directionRef = useRef<HTMLInputElement>(null);
   const directionOpen = direction !== null;
-  const modelSelectId = useId();
-  const modelStatusId = useId();
   const canSubmit = Boolean(value.trim()) && !busy;
-  const modelStatusText =
-    modelCatalogState === "loading"
-      ? "Loading available models…"
-      : modelCatalogState === "error"
-        ? "Could not load models. Messages will use the provider default."
-        : "";
-  const defaultModelName = defaultModel
-    ? (models.find((model) => model.id === defaultModel)?.name ?? defaultModel)
-    : "server setting";
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -145,38 +126,7 @@ export function Composer({
         />
 
         <div className="flex min-h-8 items-center gap-1 [margin-block-start:0.25rem]">
-          <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
-            <label htmlFor={modelSelectId} className="sr-only">
-              Message model
-            </label>
-            <select
-              id={modelSelectId}
-              value={selectedModel}
-              onChange={(event) => onModelChange(event.target.value)}
-              disabled={busy || modelCatalogState !== "ready"}
-              aria-describedby={modelStatusText ? modelStatusId : undefined}
-              className="min-w-0 max-w-full rounded-md border border-border bg-raised px-2 py-1 text-xs text-foreground active:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
-            >
-              <option value="">Default ({defaultModelName})</option>
-              {modelCatalogState === "ready" &&
-                models.map((model) =>
-                  model.id === defaultModel ? null : (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ),
-                )}
-            </select>
-            {modelStatusText && (
-              <p
-                id={modelStatusId}
-                role={modelCatalogState === "error" ? "alert" : "status"}
-                className="m-0 max-w-full text-xs text-muted"
-              >
-                {modelStatusText}
-              </p>
-            )}
-          </div>
+          <div className="flex min-w-0 flex-1 items-center">{modelControl}</div>
           {onDirectionChange && !directionOpen && (
             <button
               type="button"
