@@ -3,7 +3,8 @@ import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
-import { DEFAULT_PROMPT_CARDS, NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { countTokens } from "../../shared/tokens";
 import {
   configureProvider,
   headersWith,
@@ -223,26 +224,36 @@ describe("opening prompt budget", () => {
       name: "P", description, appearance: "", personality: "", background: "",
       baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
-    const base = narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
+    const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
       world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000) }] },
       starting_situation: "s",
       stats: [],
-      protagonist: snapshot("d"),
+      protagonist: snapshot("d".repeat(descriptionLength)),
       cast: [],
       notes: [],
       relationships: [],
       handoff: null,
       has_history: false,
-    }).length;
-    const exact = await createCharacter({ name: "P", description: "d".repeat(NARRATION_CHARACTER_BUDGET - base + 1) });
-    const over = await createCharacter({ name: "P", description: "d".repeat(NARRATION_CHARACTER_BUDGET - base + 2) });
+    }));
+    // Longest description whose prompt still fits; one more character passes the budget.
+    let low = 1;
+    let high = 100_000;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (promptTokens(middle) <= NARRATION_TOKEN_BUDGET) low = middle;
+      else high = middle - 1;
+    }
+    expect(promptTokens(low)).toBe(NARRATION_TOKEN_BUDGET);
+    expect(promptTokens(low + 1)).toBe(NARRATION_TOKEN_BUDGET + 1);
+    const exact = await createCharacter({ name: "P", description: "d".repeat(low) });
+    const over = await createCharacter({ name: "P", description: "d".repeat(low + 1) });
 
     const fits = await createCampaign({ world_id: world.id, protagonist_id: exact.id, starting_situation: "s" });
     expect(fits.status).toBe(201);
     const refused = await createCampaign({ world_id: world.id, protagonist_id: over.id, starting_situation: "s" });
     expect(refused.status).toBe(400);
     expect(refused.code).toBe("invalid_input");
-    expect(refused.error).toContain(String(NARRATION_CHARACTER_BUDGET));
+    expect(refused.error).toContain(String(NARRATION_TOKEN_BUDGET));
   });
 });
 

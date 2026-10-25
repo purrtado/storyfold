@@ -29,7 +29,8 @@ import {
   WORLD_ENTRY_KINDS,
   protagonistOf,
 } from "../shared/domain";
-import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
+import { NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../shared/narration";
+import { countTokens } from "../shared/tokens";
 import { campaignFromRow, hasAnyMessage, newId, nowIso, type CampaignRecord } from "./db";
 import { listPromptCards } from "./promptCards";
 
@@ -791,9 +792,10 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
       handoff: null,
       has_history: false,
     });
-    if (opening.length > NARRATION_CHARACTER_BUDGET) {
+    const openingTokens = countTokens(opening);
+    if (openingTokens > NARRATION_TOKEN_BUDGET) {
       throw new ValidationError(
-        `the opening prompt is ${opening.length} characters; the budget is ${NARRATION_CHARACTER_BUDGET}`,
+        `the opening prompt is ${openingTokens} tokens; the budget is ${NARRATION_TOKEN_BUDGET}`,
       );
     }
     const session = db.query<Session, [string]>("SELECT * FROM sessions WHERE id = ?").get(sessionId)!;

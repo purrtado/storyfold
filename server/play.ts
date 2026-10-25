@@ -3,7 +3,8 @@ import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Message } from "../shared/domain";
 import { protagonistOf } from "../shared/domain";
-import { NARRATION_CHARACTER_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
+import { NARRATION_TOKEN_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
+import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
 import {
   SessionClosedError,
@@ -138,7 +139,7 @@ export class PlayService {
       (id: string, text: string, speaker: string): ReservedTurn => {
         this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
-        this.assertWithinBudget(id, text.length + directionLength(direction));
+        this.assertWithinBudget(id, countTokens(text) + directionTokens(direction));
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
@@ -166,7 +167,7 @@ export class PlayService {
         .query<unknown, [string]>("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1")
         .get(id);
       if (existing) throw new AlreadyOpenedError("This session has already opened");
-      this.assertWithinBudget(id, directionLength(direction));
+      this.assertWithinBudget(id, directionTokens(direction));
       const pendingId = newId();
       this.insertMessage(
         id,
@@ -218,7 +219,7 @@ export class PlayService {
       this.db
         .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
         .run(id, position);
-      this.assertWithinBudget(id, directionLength(direction));
+      this.assertWithinBudget(id, directionTokens(direction));
       const pendingId = newId();
       this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId, direction);
       return { playerId: lastUser?.id ?? null, pendingId };
@@ -315,8 +316,9 @@ export class PlayService {
       if (!message) throw new UnknownEntityError("Unknown message");
       if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
       // Only the selected row feeds the model, so only its growth is checked.
-      if (message.selected === 1 && text.length > message.content.length) {
-        this.assertWithinBudget(sid, text.length - message.content.length);
+      if (message.selected === 1) {
+        const growth = countTokens(text) - countTokens(message.content);
+        if (growth > 0) this.assertWithinBudget(sid, growth);
       }
       const now = nowIso();
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
@@ -362,26 +364,27 @@ export class PlayService {
     );
   }
 
-  /** Same rows the model sees: player inputs plus completed narration. */
-  private completedHistoryCharacters(sessionId: string): number {
-    const row = this.db
-      .query<{ total: number | null }, [string]>(
-        "SELECT SUM(length(content)) AS total FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete')",
-      )
-      .get(sessionId);
-    return row?.total ?? 0;
+  private hasCompletedHistory(sessionId: string): boolean {
+    return (
+      this.db
+        .query<unknown, [string]>(
+          "SELECT 1 FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') AND length(content) > 0 LIMIT 1",
+        )
+        .get(sessionId) !== null
+    );
   }
 
   /**
    * The one size rule: the system prompt plus the completed history the model
-   * would see, grown by `extra` characters, must fit the narration budget.
+   * would see, grown by `extra` tokens, must fit the narration budget.
    * Nothing is truncated; the request is refused instead.
    */
   private assertWithinBudget(sessionId: string, extra: number): void {
-    const total = this.systemPrompt(sessionId).length + this.completedHistoryCharacters(sessionId) + extra;
-    if (total > NARRATION_CHARACTER_BUDGET) {
+    const history = this.modelHistory(sessionId).reduce((sum, message) => sum + countTokens(message.content), 0);
+    const total = countTokens(this.systemPrompt(sessionId)) + history + extra;
+    if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
-        `This would send ${total} characters to the narrator; the budget is ${NARRATION_CHARACTER_BUDGET}. ` +
+        `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
           "Shorten the campaign's notes or relationships, or begin the next session with a handoff.",
       );
     }
@@ -436,7 +439,7 @@ export class PlayService {
       notes: listCampaignState(this.db, campaign.id),
       relationships: relationshipNarrationContext(this.db, campaign),
       handoff: sessionGroundingHandoff(this.db, campaign.id, sessionId),
-      has_history: this.completedHistoryCharacters(sessionId) > 0,
+      has_history: this.hasCompletedHistory(sessionId),
     });
   }
 
@@ -642,6 +645,6 @@ export function parseDirection(body: Record<string, unknown>): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function directionLength(direction: string | null): number {
-  return direction === null ? 0 : directionNote(direction).length;
+function directionTokens(direction: string | null): number {
+  return direction === null ? 0 : countTokens(directionNote(direction));
 }

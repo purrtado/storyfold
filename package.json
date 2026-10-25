@@ -21,6 +21,7 @@
     "@tanstack/ai-openai": "^0.29.1",
     "@tanstack/ai-react": "^0.30.3",
     "clsx": "^2.1.1",
+    "gpt-tokenizer": "^4.1.0",
     "lucide-react": "^1.54.0",
     "motion": "^14.1.0",
     "react": "^19.2.0",

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
 import type { Campaign, Character, PromptCard, Session, StatValues, WorldEntry } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
-import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import { createCampaign, fetchPromptCards } from "../lib/storyApi";
 import {
   ensureWorldCharacters,
@@ -78,6 +78,7 @@ export function NewCampaignPage(props: {
   const [startError, setStartError] = useState("");
   const [promptCards, setPromptCards] = useState<PromptCard[] | undefined>(undefined);
   const [promptCardsError, setPromptCardsError] = useState("");
+  const [countTokens, setCountTokens] = useState<((text: string) => number) | null>(null);
   const seededWorldId = useRef<string | null | undefined>(undefined);
   const seededCharacterId = useRef<string | null | undefined>(undefined);
 
@@ -92,6 +93,7 @@ export function NewCampaignPage(props: {
     refreshWorlds();
     refreshCharacters();
     loadPromptCards();
+    import("../../shared/tokens").then((module) => setCountTokens(() => module.countTokens));
   }, []);
 
   const worldCharactersState = useWorldCharacters(draft.worldId);
@@ -167,7 +169,7 @@ export function NewCampaignPage(props: {
     .map((id) => characterById.get(id))
     .filter((character): character is Character => character !== undefined && character.id !== draft.protagonistId);
   const compendiumEntries = worldEntries.filter((entry) => entry.kind !== "scene");
-  const openingPromptLength = world && protagonist && promptCards !== undefined && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
+  const openingPrompt = world && protagonist && promptCards !== undefined && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
     ? narratorSystemPrompt(promptCards, {
       world: {
         name: world.name,
@@ -182,9 +184,14 @@ export function NewCampaignPage(props: {
       relationships: [],
       handoff: null,
       has_history: false,
-    }).length
+    })
     : null;
-  const overLimit = openingPromptLength !== null && openingPromptLength > NARRATION_CHARACTER_BUDGET;
+  const deferredOpeningPrompt = useDeferredValue(openingPrompt);
+  const openingPromptTokens = useMemo(
+    () => countTokens && deferredOpeningPrompt !== null ? countTokens(deferredOpeningPrompt) : null,
+    [countTokens, deferredOpeningPrompt],
+  );
+  const overLimit = openingPromptTokens !== null && openingPromptTokens > NARRATION_TOKEN_BUDGET;
   const canBegin = Boolean(
     world
     && protagonist
@@ -260,7 +267,7 @@ export function NewCampaignPage(props: {
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canBegin || !world || !protagonist || openingPromptLength === null) return;
+    if (!canBegin || !world || !protagonist || openingPrompt === null) return;
     setStarting(true);
     setStartError("");
     try {
@@ -493,16 +500,16 @@ export function NewCampaignPage(props: {
                       </div>
                     )}
 
-                    {openingPromptLength === null ? (
+                    {openingPromptTokens === null ? (
                       <p className="text-sm text-muted" role="status">The opening prompt count will appear when this world’s context and saved prompt cards are loaded.</p>
                     ) : (
                       <p className="text-sm font-medium tabular-nums" role="status" aria-live="polite">
-                        Opening prompt: {openingPromptLength.toLocaleString()} / {NARRATION_CHARACTER_BUDGET.toLocaleString()} characters
+                        Opening prompt: {openingPromptTokens.toLocaleString()} / {NARRATION_TOKEN_BUDGET.toLocaleString()} tokens
                       </p>
                     )}
                     {overLimit && (
                       <p className="text-sm text-muted" role="alert">
-                        This exceeds the {NARRATION_CHARACTER_BUDGET.toLocaleString()}-character opening prompt limit. Shorten the text or remove cast characters before starting.
+                        This exceeds the {NARRATION_TOKEN_BUDGET.toLocaleString()}-token opening prompt limit. Shorten the text or remove cast characters before starting.
                       </p>
                     )}
                   </section>
