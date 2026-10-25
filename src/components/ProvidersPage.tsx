@@ -299,7 +299,9 @@ function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (pr
   };
 
   const setManual = async (manual_models: string[]) => {
-    if (await save({ manual_models }, { ...provider, manual_models })) void load(false);
+    const saved = await save({ manual_models }, { ...provider, manual_models });
+    if (saved) void load(false);
+    return saved;
   };
 
   const ids = [...new Set([...(listing?.models.map((model) => model.id) ?? []), ...provider.manual_models])]
@@ -392,7 +394,9 @@ function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (pr
           event.preventDefault();
           const model = manualId.trim();
           if (!model || manual.has(model)) return;
-          void setManual([...provider.manual_models, model]).then(() => setManualId(""));
+          void setManual([...provider.manual_models, model]).then((saved) => {
+            if (saved) setManualId("");
+          });
         }}
       >
         <input
