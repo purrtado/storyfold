@@ -142,13 +142,14 @@ export class PlayService {
       (id: string, text: string, speaker: string): ReservedTurn => {
         this.requireOpenSession(id);
         if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
-        this.assertWithinBudget(id, countTokens(text) + directionTokens(direction));
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
         const now = nowIso();
         this.insertMessage(id, position, "user", speaker, text, "complete", now, playerId, null);
         this.insertMessage(id, position + 1, "assistant", NARRATOR_NAME, "", "pending", now, pendingId, direction);
+        // Checked against the history the model will actually receive; a refusal rolls the rows back.
+        this.assertWithinBudget(id, directionTokens(direction));
         return { playerId, pendingId };
       },
     );
