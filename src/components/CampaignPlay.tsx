@@ -3,6 +3,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, Maximize2, Minimize2, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
+import { Avatar } from "./Avatar";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
@@ -87,6 +88,8 @@ function MessageRow(props: {
   liveText?: string;
   reasoning?: string;
   characters: CampaignCharacter[];
+  /** The protagonist speaks the player's turns. */
+  protagonistAvatarId?: string | null;
   /** Offered on walk-on speakers; absent where the cast cannot change from here. */
   onAddToCast?: (name: string) => void;
   onShowCharacter: (characterId: string) => void;
@@ -465,28 +468,34 @@ function MessageRow(props: {
   if (message.role === "user") {
     const editingInline = editing && !editExpanded;
     return (
-      <article className="group flex flex-col items-end gap-1">
-        <div className={`flex max-w-full items-start justify-end gap-1 ${editingInline ? "w-full" : ""}`}>
-          {menu && <span className={reveal}>{menu}</span>}
-          <div className={`rounded-2xl rounded-ee-md bg-accent-soft px-4 py-3 text-foreground ${editingInline ? "flex-1" : "max-w-[90%]"}`}>
-            <p className="mbs-0 mbe-2 text-xs font-medium text-muted">{message.speaker_name}</p>
+      <article className="group flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-col items-end gap-1">
+          <div className="flex min-h-8 items-center gap-1 text-sm font-semibold">
+            {menu && <span className={reveal}>{menu}</span>}
+            <span>{message.speaker_name}</span>
+          </div>
+          <div className={`rounded-2xl rounded-se-md bg-accent-soft px-4 py-3 text-foreground ${editingInline ? "w-full" : "max-w-[90%]"}`}>
             {editingInline ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
           </div>
+          {props.trailing && props.canGenerate && (
+            <span className={reveal}>
+              <button
+                type="button"
+                className={messageControlClasses}
+                onClick={() => props.onRegenerate()}
+                aria-label="Regenerate reply"
+                title="Regenerate"
+              >
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+              </button>
+            </span>
+          )}
+          {editDialog}
+          {deleteConfirm}
+          {forkConfirm}
+          {directForm}
         </div>
-        {props.trailing && props.canGenerate && (
-          <button
-            type="button"
-            className={`pressable inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground${reveal}`}
-            onClick={() => props.onRegenerate()}
-          >
-            <RefreshCw className="size-3.5" aria-hidden="true" />
-            Regenerate
-          </button>
-        )}
-        {editDialog}
-        {deleteConfirm}
-        {forkConfirm}
-        {directForm}
+        <Avatar name={message.speaker_name} imageId={props.protagonistAvatarId} className="size-8 text-xs" />
       </article>
     );
   }
@@ -615,6 +624,7 @@ export function CampaignPlay(props: {
   const selection = picker.selection ?? undefined;
   const messages = props.messages ?? [];
   const characters = props.campaign?.characters ?? [];
+  const protagonistAvatarId = props.campaign ? protagonistOf(props.campaign).avatar_id : null;
   const live = props.generation?.sessionId === props.sessionId ? props.generation : null;
   const otherGeneration = props.generation && props.generation.sessionId !== props.sessionId && props.generation.phase !== "error"
     ? props.generation
@@ -875,6 +885,7 @@ export function CampaignPlay(props: {
                   reasoning={isLive ? live?.reasoning : undefined}
                   streaming={isLive && live?.phase === "streaming"}
                   characters={characters}
+                  protagonistAvatarId={protagonistAvatarId}
                   onAddToCast={addToCast}
                   onShowCharacter={showCharacter}
                   trailing={index === messages.length - 1}
@@ -913,6 +924,7 @@ export function CampaignPlay(props: {
                   actionsAllowed={false}
                   canGenerate={false}
                   characters={characters}
+                  protagonistAvatarId={protagonistAvatarId}
                   canFork={false}
                   activeSession={isActiveSession}
                   campaignName={props.campaign?.name ?? "Campaign"}
