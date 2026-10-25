@@ -65,7 +65,11 @@ function placeholderCompletions(names: readonly string[]): Extension {
   }));
   const source = (context: CompletionContext) => {
     const match = context.matchBefore(/\{\{\w*/);
-    return match ? { from: match.from + 2, options, validFor: /^\w*$/ } : null;
+    if (!match) return null;
+    // Completing inside `{{rel|ationships}}` replaces the whole name, not just the part before the cursor.
+    const line = context.state.doc.lineAt(context.pos);
+    const rest = /^\w*/.exec(line.text.slice(context.pos - line.from))![0].length;
+    return { from: match.from + 2, to: context.pos + rest, options, validFor: /^\w*$/ };
   };
   return autocompletion({ override: [source], icons: false });
 }
