@@ -19,6 +19,9 @@ import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./c
 import { listPromptCards } from "./promptCards";
 import { relationshipNarrationContext } from "./relationships";
 
+/** Stands in for the player's turn when an opening request has no history. */
+const OPENING_REQUEST = "Begin the opening scene.";
+
 export const NARRATOR_NAME = "Narrator";
 
 /** A reply is already being generated for this session; nothing was saved. */
@@ -380,8 +383,10 @@ export class PlayService {
    * Nothing is truncated; the request is refused instead.
    */
   private assertWithinBudget(sessionId: string, extra: number): void {
-    const history = this.modelHistory(sessionId).reduce((sum, message) => sum + countTokens(message.content), 0);
-    const total = countTokens(this.systemPrompt(sessionId)) + history + extra;
+    const messages = this.modelHistory(sessionId);
+    const history = messages.reduce((sum, message) => sum + countTokens(message.content), 0);
+    const opening = messages.length === 0 ? countTokens(OPENING_REQUEST) : 0;
+    const total = countTokens(this.systemPrompt(sessionId)) + history + opening + extra;
     if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
         `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
@@ -505,7 +510,7 @@ export class PlayService {
     // An opening request carries no player row; whether the story starts
     // fresh depends on the history, not on the protocol kind.
     const history = this.modelHistory(sessionId);
-    if (history.length === 0) history.push({ role: "user", content: "Begin the opening scene." });
+    if (history.length === 0) history.push({ role: "user", content: OPENING_REQUEST });
     const direction = this.getMessage(options.pendingId)?.direction ?? null;
     if (direction !== null) {
       const last = history.at(-1)!;

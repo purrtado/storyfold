@@ -187,11 +187,12 @@ export function NewCampaignPage(props: {
     })
     : null;
   const deferredOpeningPrompt = useDeferredValue(openingPrompt);
+  const countIsCurrent = deferredOpeningPrompt === openingPrompt;
   const openingPromptTokens = useMemo(
     () => countTokens && deferredOpeningPrompt !== null ? countTokens(deferredOpeningPrompt) : null,
     [countTokens, deferredOpeningPrompt],
   );
-  const overLimit = openingPromptTokens !== null && openingPromptTokens > NARRATION_TOKEN_BUDGET;
+  const overLimit = countIsCurrent && openingPromptTokens !== null && openingPromptTokens > NARRATION_TOKEN_BUDGET;
   const canBegin = Boolean(
     world
     && protagonist
@@ -200,6 +201,8 @@ export function NewCampaignPage(props: {
     && worldStatsState.items !== undefined
     && promptCards !== undefined
     && !starting
+    && countIsCurrent
+    && openingPromptTokens !== null
     && !overLimit,
   );
   const coldLoadError = (worlds === undefined ? worldsState.loadError : undefined)
@@ -504,7 +507,7 @@ export function NewCampaignPage(props: {
                       <p className="text-sm text-muted" role="status">The opening prompt count will appear when this world’s context and saved prompt cards are loaded.</p>
                     ) : (
                       <p className="text-sm font-medium tabular-nums" role="status" aria-live="polite">
-                        Opening prompt: {openingPromptTokens.toLocaleString()} / {NARRATION_TOKEN_BUDGET.toLocaleString()} tokens
+                        Opening prompt: {countIsCurrent ? openingPromptTokens.toLocaleString() : "…"} / {NARRATION_TOKEN_BUDGET.toLocaleString()} tokens
                       </p>
                     )}
                     {overLimit && (
