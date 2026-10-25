@@ -3,7 +3,9 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
-import { fetchProvider, type ProviderConfig } from "../lib/provider";
+import type { ModelSelection } from "../lib/providers";
+import { useModelSelection } from "../lib/useModelSelection";
+import { ModelPicker } from "./ModelPicker";
 import {
   createCampaignCharacter,
   deleteCampaignCharacterAvatar,
@@ -542,13 +544,11 @@ export function CampaignPlay(props: {
   messagesError: string;
   generation: Generation | null;
   draft: string;
-  selectedModel: string;
   onOpenSidebar: () => void;
   onDraftChange: (sessionId: string, value: string) => void;
-  onModelChange: (sessionId: string, model: string) => void;
-  onSend: (sessionId: string, value: string, direction?: string, model?: string) => void;
-  onOpen: (sessionId: string, direction?: string, model?: string) => boolean;
-  onRegenerate: (sessionId: string, direction?: string, model?: string) => boolean;
+  onSend: (sessionId: string, value: string, direction?: string, model?: ModelSelection) => void;
+  onOpen: (sessionId: string, direction?: string, model?: ModelSelection) => boolean;
+  onRegenerate: (sessionId: string, direction?: string, model?: ModelSelection) => boolean;
   onSelectVariant: (sessionId: string, messageId: string) => Promise<void>;
   onEditMessage: (sessionId: string, messageId: string, content: string) => Promise<void>;
   onDeleteMessage: (sessionId: string, messageId: string, scope?: "variant" | "after") => Promise<void>;
@@ -569,8 +569,8 @@ export function CampaignPlay(props: {
   // null: the composer's direction field is closed.
   const [direction, setDirection] = useState<string | null>(null);
   const [openingDirection, setOpeningDirection] = useState("");
-  const [provider, setProvider] = useState<ProviderConfig | null>(null);
-  const [modelCatalogState, setModelCatalogState] = useState<"loading" | "ready" | "error">("loading");
+  const picker = useModelSelection();
+  const selection = picker.selection ?? undefined;
   const messages = props.messages ?? [];
   const characters = props.campaign?.characters ?? [];
   const live = props.generation?.sessionId === props.sessionId ? props.generation : null;
@@ -582,12 +582,6 @@ export function CampaignPlay(props: {
     && props.generation.phase === "error"
     ? props.generation
     : null;
-  const selectedModel = modelCatalogState === "ready"
-    && props.selectedModel
-    && props.selectedModel !== provider?.model
-    && provider?.models.some((model) => model.id === props.selectedModel)
-    ? props.selectedModel
-    : "";
   const isActiveSession = Boolean(
     props.campaign
     && props.session
@@ -596,7 +590,7 @@ export function CampaignPlay(props: {
   const hasPending = messages.some((message) => message.role === "assistant" && message.status === "pending")
     || Boolean(live?.pendingMessageId && live.phase !== "error");
   const transcriptReady = props.messages !== undefined && !props.messagesError;
-  const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || modelCatalogState === "loading";
+  const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || picker.status === "loading";
   const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
   // Row actions match what the server accepts for this session; only sends need
   // the app-wide exclusivity that `busy` tracks.
@@ -614,27 +608,6 @@ export function CampaignPlay(props: {
     if (!docked) setDetailsOpen(true);
   };
   const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
-
-  useEffect(() => {
-    let active = true;
-    fetchProvider().then(
-      (loaded) => {
-        if (!active) return;
-        setProvider(loaded);
-        setModelCatalogState("ready");
-      },
-      () => {
-        if (active) setModelCatalogState("error");
-      },
-    );
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (modelCatalogState === "ready" && props.selectedModel && props.selectedModel === provider?.model) {
-      props.onModelChange(props.sessionId, "");
-    }
-  }, [modelCatalogState, props.onModelChange, props.selectedModel, props.sessionId, provider?.model]);
 
   useEffect(() => {
     setFollowing(true);
@@ -655,21 +628,20 @@ export function CampaignPlay(props: {
 
   const handleSend = (value: string) => {
     setFollowing(true);
-    props.onSend(props.sessionId, value, direction ?? undefined, selectedModel || undefined);
+    props.onSend(props.sessionId, value, direction ?? undefined, selection);
   };
   // The direction belongs to the accepted turn; a refused send keeps it for the retry.
   const acceptedTurnId = live?.kind === "message" ? live.pendingMessageId : undefined;
   useEffect(() => {
     if (acceptedTurnId) setDirection(null);
   }, [acceptedTurnId]);
-  const regenerateModel = selectedModel || undefined;
   const surfaceActionError = (error: unknown) => {
     setActionError(error instanceof Error && error.message.trim() ? error.message : "That action failed. Try again.");
   };
   const handleRegenerate = (direction?: string) => {
     setActionError("");
     setFollowing(true);
-    props.onRegenerate(props.sessionId, direction, regenerateModel);
+    props.onRegenerate(props.sessionId, direction, selection);
   };
   const handleSelectVariant = (messageId: string) => {
     setActionError("");
@@ -680,7 +652,7 @@ export function CampaignPlay(props: {
     const saved = props.onEditMessage(props.sessionId, messageId, content);
     saved.catch(surfaceActionError);
     if (!andRegenerate) return saved;
-    return saved.then(() => { props.onRegenerate(props.sessionId, undefined, regenerateModel); });
+    return saved.then(() => { props.onRegenerate(props.sessionId, undefined, selection); });
   };
   const handleDeleteMessage = (messageId: string, scope?: "variant" | "after") => {
     setActionError("");
@@ -832,7 +804,7 @@ export function CampaignPlay(props: {
                       className="grid w-full max-w-md gap-3"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        props.onOpen(props.sessionId, openingDirection, selectedModel || undefined);
+                        props.onOpen(props.sessionId, openingDirection, selection);
                       }}
                     >
                       <label className="grid gap-1 text-start text-sm">
@@ -923,7 +895,7 @@ export function CampaignPlay(props: {
             <div className="mx-auto flex w-full max-w-3xl items-start gap-2 px-4 pbe-2 text-sm" role="alert">
               <p className="flex-1 text-muted">
                 {live.error}
-                {live.code === "no_provider" && <> — <Link className="font-medium text-accent underline underline-offset-2" to="/settings/providers">Set up Z.AI in Settings</Link>.</>}
+                {live.code === "no_provider" && <> — <Link className="font-medium text-accent underline underline-offset-2" to="/settings/providers">Add a provider in Settings</Link>.</>}
               </p>
               <button type="button" className="pressable inline-flex size-8 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={props.onDismissGeneration} aria-label="Dismiss notice"><X className="size-4" aria-hidden="true" /></button>
             </div>
@@ -956,11 +928,7 @@ export function CampaignPlay(props: {
               onSubmit={handleSend}
               direction={direction}
               onDirectionChange={setDirection}
-              selectedModel={selectedModel}
-              onModelChange={(model) => props.onModelChange(props.sessionId, model)}
-              defaultModel={provider?.model ?? null}
-              models={provider?.models ?? []}
-              modelCatalogState={modelCatalogState}
+              modelControl={<ModelPicker picker={picker} disabled={busy} />}
               placeholder={`What does ${protagonistOf(props.campaign).name} do or say?`}
               inputLabel={`What does ${protagonistOf(props.campaign).name} do or say?`}
               sendLabel="Send action"

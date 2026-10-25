@@ -42,7 +42,6 @@ export default function App() {
   const [messageErrors, setMessageErrors] = useState<Record<string, string>>({});
   const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>({});
   const campaignLoads = useRef(false);
   const campaignListRequest = useRef(0);
   const sessionLoads = useRef(new Set<string>());
@@ -239,16 +238,6 @@ export default function App() {
     navigate("/campaigns/new");
   };
 
-  const changeModel = useCallback((sessionId: string, model: string) => {
-    setModelOverrides((current) => {
-      if (model) return { ...current, [sessionId]: model };
-      if (!(sessionId in current)) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
-  }, []);
-
   const changeDraft = useCallback((sessionId: string, value: string) => {
     setDrafts((current) => ({ ...current, [sessionId]: value }));
   }, []);
@@ -385,10 +374,8 @@ export default function App() {
               messagesError={messageErrors[activeSessionId] ?? ""}
               generation={generation}
               draft={drafts[activeSessionId] ?? ""}
-              selectedModel={modelOverrides[activeSessionId] ?? ""}
               onOpenSidebar={() => setMobileOpen(true)}
               onDraftChange={changeDraft}
-              onModelChange={changeModel}
               onSend={send}
               onOpen={open}
               onRegenerate={regenerate}
