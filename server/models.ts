@@ -116,11 +116,12 @@ export class ModelCatalog {
       this.refresh(provider).catch(() => {});
     }
 
-    const ids = [...new Set([...(entry?.ids ?? []), ...provider.manual_models])].sort((a, b) =>
-      a.localeCompare(b),
-    );
-    const disabled = new Set(provider.disabled_models);
+    // Manual ids always appear; remote ids fill the rest of the cap, so a
+    // "disable all" of the listing always fits in disabled_models.
     const manual = new Set(provider.manual_models);
+    const remote = (entry?.ids ?? []).filter((id) => !manual.has(id)).slice(0, MODEL_LIST_MAX - manual.size);
+    const ids = [...remote, ...provider.manual_models].sort((a, b) => a.localeCompare(b));
+    const disabled = new Set(provider.disabled_models);
     return {
       models: ids.map((id) => ({ id, enabled: !disabled.has(id), manual: manual.has(id) })),
       fetched_at: entry ? new Date(entry.fetchedAt).toISOString() : null,
