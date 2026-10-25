@@ -241,17 +241,23 @@ function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (pr
   const [filter, setFilter] = useState("");
   const [manualId, setManualId] = useState("");
   const latestSave = useRef(0);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const latestLoad = useRef(0);
   const id = useId();
 
+  // Only the newest load may write state; an older one can finish last with
+  // results for a previous base URL or key.
   const load = useCallback(async (refresh: boolean) => {
+    const sequence = ++latestLoad.current;
     setLoading(true);
     setLoadError("");
     try {
-      setListing(await fetchModels(provider.id, refresh));
+      const next = await fetchModels(provider.id, refresh);
+      if (sequence === latestLoad.current) setListing(next);
     } catch (cause) {
-      setLoadError(errorText(cause, "Could not load models."));
+      if (sequence === latestLoad.current) setLoadError(errorText(cause, "Could not load models."));
     } finally {
-      setLoading(false);
+      if (sequence === latestLoad.current) setLoading(false);
     }
   }, [provider.id]);
 
@@ -261,13 +267,16 @@ function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (pr
     if (props.open) void load(false);
   }, [props.open, load, credentials]);
 
-  // Only the newest toggle's response or rollback may land; earlier ones are superseded.
+  // Each PATCH carries a whole list, so requests are queued to reach the server
+  // in click order; only the newest response or rollback may land locally.
   const save = async (patch: ProviderPatch, optimistic: Provider) => {
     const sequence = ++latestSave.current;
     setSaveError("");
     onSaved(optimistic);
     try {
-      const saved = await updateProvider(provider.id, patch);
+      const request = saveQueue.current.then(() => updateProvider(provider.id, patch));
+      saveQueue.current = request.catch(() => {});
+      const saved = await request;
       if (sequence === latestSave.current) onSaved(saved);
       return true;
     } catch (cause) {
