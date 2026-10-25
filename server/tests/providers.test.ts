@@ -324,11 +324,16 @@ describe("Providers API", () => {
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     try {
-      const created = await call("POST", "/api/providers", { name: "Huge", base_url: BASE_URL });
+      const created = await call("POST", "/api/providers", {
+        name: "Huge",
+        base_url: BASE_URL,
+        manual_models: ["hand/added-1", "hand/added-2"],
+      });
       const { provider } = (await created.json()) as { provider: { id: string } };
       const listing = (await (await call("GET", `/api/providers/${provider.id}/models`)).json()) as {
         models: Array<{ id: string }>;
       };
+      expect(listing.models.map((model) => model.id)).toContain("hand/added-2");
       const disabled = await call("PATCH", `/api/providers/${provider.id}`, {
         disabled_models: listing.models.map((model) => model.id),
       });
