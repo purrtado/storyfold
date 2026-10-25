@@ -190,11 +190,6 @@ function ProviderSettingsForm(props: {
             onChange={(event) => setBaseUrl(event.target.value)}
           />
         </label>
-        {urlChanged && provider.has_api_key && !apiKey.trim() && (
-          <p className="m-0 text-sm text-muted" role="note">
-            Saving a new base URL deletes the saved API key. Enter the key again to keep using one.
-          </p>
-        )}
         <label className="grid gap-1 text-sm font-medium" htmlFor={`${id}-key`}>
           API key
           <input
@@ -530,8 +525,7 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
 
           <p className="theme-desc [margin-block-start:1rem] max-w-prose">
             Storyfold is a local, single-user install. Providers and their API keys are stored by the Storyfold
-            server on this machine; keys are never sent back to the browser. Changing a provider’s base URL deletes
-            its saved key.
+            server on this machine; keys are never sent back to the browser.
           </p>
         </main>
       </div>

@@ -60,7 +60,7 @@ export interface ProviderCreate {
 export interface ProviderPatch {
   name?: string;
   base_url?: string;
-  /** null removes the stored key; undefined keeps it (unless base_url changes). */
+  /** null removes the stored key; undefined keeps it. */
   api_key?: string | null;
   disabled_models?: string[];
   manual_models?: string[];
@@ -318,18 +318,14 @@ export class ProviderStore {
     });
   }
 
-  /**
-   * Moving a provider to a new base_url drops its stored key unless the same
-   * patch supplies one: a key must never follow an edit to a different host.
-   */
+  /** A new base_url or key drops the provider's cached model list (credentialsChanged). */
   update(id: string, patch: ProviderPatch): Promise<{ provider: StoredProvider; credentialsChanged: boolean }> {
     return this.mutate((config) => {
       const index = config.providers.findIndex((provider) => provider.id === id);
       if (index === -1) throw new ProviderNotFoundError();
       const current = config.providers[index];
       const baseUrlChanged = patch.base_url !== undefined && patch.base_url !== current.base_url;
-      const apiKey =
-        patch.api_key !== undefined ? patch.api_key : baseUrlChanged ? null : current.api_key;
+      const apiKey = patch.api_key !== undefined ? patch.api_key : current.api_key;
       const provider: StoredProvider = {
         ...current,
         ...patch,
