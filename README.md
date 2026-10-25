@@ -132,6 +132,8 @@ The narrator system prompt is one global, ordered list of **prompt cards**, edit
 
 Cards are served by `GET /api/prompt-cards` (`{cards}` in order), created with `POST {title, body?, enabled?}` (appended last; `201 {card}`), edited with `PATCH /api/prompt-cards/:id {title?, body?, enabled?}`, and deleted with `DELETE`. `PUT /api/prompt-cards/order {ids}` sets the order and must name every card exactly once; `POST /api/prompt-cards/reset` replaces every card with the defaults. Both answer `{cards}`. Edits apply from the next narrator call, and the narration budget counts the rendered prompt.
 
+Message editing and prompt-card bodies use a plain-text editor with automatic bracket and quote pairing and find/replace. Use the **Find & replace** button or `Ctrl/⌘+F`.
+
 ## Development workspace
 
 The schema carries a version (`PRAGMA user_version`, currently 5). Version 3 and 4 workspaces upgrade in place on startup (version 3 gains the narration `direction` column; both gain the default prompt cards; nothing else changes); otherwise there are no migrations or compatibility layer: a workspace database created by an older schema is refused at startup with a message to delete it, and the Vite proxy answers every `/api` request with 500 meanwhile. Point `STORYFOLD_DATA_DIR` at a fresh directory to use the new schema; this does not delete, reset, or overwrite the existing database, which remains untouched:

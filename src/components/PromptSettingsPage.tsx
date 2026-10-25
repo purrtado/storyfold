@@ -14,6 +14,7 @@ import {
 import { SPRING_LAYOUT } from "../lib/ease";
 import { AppHeader } from "./AppHeader";
 import { Collapsible, CollapsibleContent, CollapsibleIndicator, CollapsibleTrigger } from "./Collapsible";
+import { TextEditor, type TextEditorHandle } from "./TextEditor";
 import "./settings.css";
 
 type PromptDraft = Pick<PromptCard, "title" | "body">;
@@ -40,21 +41,11 @@ function PromptCardRow(props: {
 }) {
   const controls = useDragControls();
   const reduce = useReducedMotion() ?? false;
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<TextEditorHandle>(null);
   const changed = props.draft.title !== props.card.title || props.draft.body !== props.card.body;
 
   const insertPlaceholder = (name: string) => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const value = `{{${name}}}`;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const body = `${props.draft.body.slice(0, start)}${value}${props.draft.body.slice(end)}`;
-    props.onDraft({ ...props.draft, body });
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + value.length, start + value.length);
-    });
+    editorRef.current?.insertText(`{{${name}}}`);
   };
 
   return (
@@ -111,16 +102,18 @@ function PromptCardRow(props: {
                 onChange={(event) => props.onDraft({ ...props.draft, title: event.target.value })}
               />
             </label>
-            <label className="grid gap-1 text-sm font-medium" htmlFor={`prompt-body-${props.card.id}`}>
-              Body
-              <textarea
-                ref={textareaRef}
-                id={`prompt-body-${props.card.id}`}
-                className={`${inputClass} min-h-48 resize-y whitespace-pre-wrap font-mono leading-6`}
-                value={props.draft.body}
-                onChange={(event) => props.onDraft({ ...props.draft, body: event.target.value })}
-              />
-            </label>
+            <div className="grid gap-1 text-sm font-medium">
+              <span>Body</span>
+              {props.expanded && (
+                <TextEditor
+                  ref={editorRef}
+                  ariaLabel="Prompt body"
+                  value={props.draft.body}
+                  onChange={(body) => props.onDraft({ ...props.draft, body })}
+                  size="prompt"
+                />
+              )}
+            </div>
             <div className="flex flex-wrap gap-2" aria-label="Insert placeholder">
               {PROMPT_PLACEHOLDERS.map((name) => (
                 <button key={name} type="button" className="pressable rounded-md border border-border px-2 py-1 font-mono text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => insertPlaceholder(name)}>{`{{${name}}}`}</button>

@@ -18,6 +18,7 @@ import { Narration } from "./Narration";
 import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
+import { TextEditor } from "./TextEditor";
 import { Sheet } from "./Sheet";
 import { CampaignPanel } from "./CampaignPanel";
 import { isActiveCampaignSession } from "../lib/campaignLifecycle";
@@ -203,13 +204,11 @@ function MessageRow(props: {
         saveEdit(false);
       }}
     >
-      <textarea
-        className="min-h-24 w-full rounded-lg border border-border bg-background p-3 text-[15px] leading-6 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+      <TextEditor
+        ariaLabel="Edit message"
         value={editValue}
-        onChange={(event) => setEditValue(event.target.value)}
-        rows={Math.min(10, Math.max(3, editValue.split("\n").length))}
+        onChange={setEditValue}
         autoFocus
-        aria-label="Edit message"
       />
       <div className="flex flex-wrap gap-2">
         <button

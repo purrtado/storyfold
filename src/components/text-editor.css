@@ -1,0 +1,88 @@
+.story-editor {
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+}
+
+.story-editor__tools {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: flex-end;
+  border-block-end: 1px solid var(--border);
+  padding-inline: 0.5rem;
+}
+
+.story-editor__find {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 0.375rem;
+  padding-inline: 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.story-editor__find:active { background: var(--surface); }
+
+@media (hover: hover) and (pointer: fine) {
+  .story-editor__find:hover { background: var(--surface); color: var(--foreground); }
+}
+
+.story-editor__surface .cm-editor {
+  min-height: 6rem;
+  max-height: 60vh;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+}
+
+.story-editor--prompt .story-editor__surface .cm-editor { min-height: 12rem; }
+
+.story-editor__surface .cm-editor.cm-focused {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.story-editor__surface .cm-scroller {
+  overflow: auto;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+
+.story-editor__surface .cm-content { padding: 0.75rem; }
+
+.story-editor__surface .cm-search {
+  border-block-start: 1px solid var(--border);
+  padding: 0.5rem;
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.story-editor__surface .cm-search input:not([type="checkbox"]) {
+  min-height: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding-inline: 0.5rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.story-editor__surface .cm-search button {
+  min-height: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding-inline: 0.5rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.story-editor__surface .cm-search button:active { background: var(--surface); }
+
+@media (hover: hover) and (pointer: fine) {
+  .story-editor__surface .cm-search button:hover { background: var(--surface); }
+}
+.story-editor__surface .cm-line { padding: 0; }
