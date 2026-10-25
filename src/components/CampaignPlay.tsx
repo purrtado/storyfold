@@ -163,7 +163,10 @@ function MessageRow(props: {
   const forkConfirmRef = useRef<HTMLFormElement>(null);
   const directFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
-    if (confirmDelete) deleteConfirmRef.current?.scrollIntoView({ block: "nearest" });
+    if (!confirmDelete) return;
+    deleteConfirmRef.current?.scrollIntoView({ block: "nearest" });
+    const frame = requestAnimationFrame(() => deleteConfirmRef.current?.querySelector<HTMLButtonElement>("button:last-of-type")?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
   }, [confirmDelete]);
   useEffect(() => {
     if (!confirmFork) return;
