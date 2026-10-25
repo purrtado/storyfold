@@ -146,14 +146,7 @@ export function Sidebar(props: {
           </nav>
         )}
       </section>
-      <div className="flex flex-col gap-2">
-        <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted">
-          Campaigns stay on this Storyfold server.{" "}
-          <Link to="/settings/providers" className="font-medium text-accent underline underline-offset-2">Add a provider</Link>
-          {" "}to begin a story.
-        </p>
-        <UserMenu />
-      </div>
+      <UserMenu />
     </div>
   );
 }
