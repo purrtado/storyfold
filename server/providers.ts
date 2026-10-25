@@ -9,7 +9,8 @@ const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;
 const API_KEY_MAX_LENGTH = 512;
 const NAME_MAX_LENGTH = 64;
 const BASE_URL_MAX_LENGTH = 2048;
-const MODEL_LIST_MAX = 2000;
+/** Caps every model-id list: stored opt-outs, manual ids, and a provider's /models response. */
+export const MODEL_LIST_MAX = 5000;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 /** Single-provider installs predating the provider list stored this endpoint and catalog. */
