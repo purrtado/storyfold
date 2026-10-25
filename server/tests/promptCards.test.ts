@@ -68,12 +68,13 @@ describe("prompt card API", () => {
 
   test("unknown placeholders are refused by name and nothing is saved", async () => {
     const [first] = await cards();
-    const response = await call("PATCH", `/${first!.id}`, { body: "Hello {{cats}} and {{ cast }} and {{cast}}." });
+    const response = await call("PATCH", `/${first!.id}`, { body: "Hello {{cats}} and {{ cast }} and {{cast\n}} and {{cast}}." });
     expect(response.status).toBe(400);
     const error = (await response.json()) as { error: string; code: string };
     expect(error.code).toBe("invalid_input");
     expect(error.error).toContain("{{cats}}");
     expect(error.error).toContain("{{ cast }}");
+    expect(error.error).toContain("{{cast\n}}");
     expect((await cards())[0]!.body).toBe(first!.body);
   });
 

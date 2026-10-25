@@ -77,13 +77,21 @@ export function NewCampaignPage(props: {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [promptCards, setPromptCards] = useState<PromptCard[] | undefined>(undefined);
+  const [promptCardsError, setPromptCardsError] = useState("");
   const seededWorldId = useRef<string | null | undefined>(undefined);
   const seededCharacterId = useRef<string | null | undefined>(undefined);
+
+  const loadPromptCards = () => {
+    setPromptCardsError("");
+    fetchPromptCards()
+      .then(setPromptCards)
+      .catch((error) => setPromptCardsError(error instanceof Error ? error.message : "Could not load prompt cards."));
+  };
 
   useEffect(() => {
     refreshWorlds();
     refreshCharacters();
-    fetchPromptCards().then(setPromptCards).catch(() => setPromptCards(undefined));
+    loadPromptCards();
   }, []);
 
   const worldCharactersState = useWorldCharacters(draft.worldId);
@@ -477,6 +485,12 @@ export function NewCampaignPage(props: {
                         {worldCharactersState.refreshError}
                         <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldCharacters(draft.worldId)}>Retry</button>
                       </p>
+                    )}
+                    {promptCardsError && (
+                      <div className="grid justify-items-start gap-2" role="alert">
+                        <p className="text-sm text-muted">{promptCardsError}</p>
+                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={loadPromptCards}>Try again</button>
+                      </div>
                     )}
 
                     {openingPromptLength === null ? (

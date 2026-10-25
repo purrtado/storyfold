@@ -77,9 +77,10 @@ function PromptCardRow(props: {
         >
           <button
             type="button"
-            className="pressable hit-44 inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+            className="pressable hit-44 inline-flex size-9 flex-none touch-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
             aria-label={`Drag ${props.card.title} to reorder`}
-            onPointerDown={(event) => { props.onDragStart(); controls.start(event); }}
+            disabled={props.busy}
+            onPointerDown={(event) => { if (props.busy) return; props.onDragStart(); controls.start(event); }}
           ><GripVertical className="size-4" aria-hidden="true" /></button>
           <CollapsibleTrigger className="pressable flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-start">
             <span className="min-w-0">

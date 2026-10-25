@@ -74,7 +74,7 @@ export const PROMPT_PLACEHOLDERS = [
 
 export type PromptPlaceholder = (typeof PROMPT_PLACEHOLDERS)[number];
 
-const PLACEHOLDER_PATTERN = /\{\{(.*?)\}\}/g;
+const PLACEHOLDER_PATTERN = /\{\{([\s\S]*?)\}\}/g;
 
 function isPlaceholder(name: string): name is PromptPlaceholder {
   return (PROMPT_PLACEHOLDERS as readonly string[]).includes(name);
