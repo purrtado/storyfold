@@ -132,3 +132,49 @@
     color: var(--foreground);
   }
 }
+
+/* Native checkbox drawn as an on/off switch: keyboard operable, global focus ring. */
+.prompt-switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  inline-size: 2.25rem;
+  block-size: 1.25rem;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+}
+
+.prompt-switch::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 0.125rem;
+  inset-inline-start: 0.125rem;
+  inline-size: 1rem;
+  block-size: 1rem;
+  border-radius: 50%;
+  background: var(--background);
+}
+
+.prompt-switch:checked {
+  background: var(--accent);
+}
+
+.prompt-switch:checked::before {
+  translate: 1rem 0;
+}
+
+.prompt-switch:active::before {
+  scale: 0.9;
+}
+
+.prompt-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prompt-switch::before {
+    transition: translate 160ms cubic-bezier(0.2, 0, 0, 1), scale 160ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}

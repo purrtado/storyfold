@@ -31,6 +31,7 @@ import {
 } from "../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../shared/narration";
 import { campaignFromRow, hasAnyMessage, newId, nowIso, type CampaignRecord } from "./db";
+import { listPromptCards } from "./promptCards";
 
 /** Request rejected before any state changed; the message is client-safe. */
 export class ValidationError extends Error {}
@@ -39,7 +40,7 @@ export class UnknownEntityError extends Error {}
 
 const TEXT_MAX_CHARS = 100_000;
 
-function requiredText(value: unknown, field: string): string {
+export function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ValidationError(`${field} must be a non-empty string`);
   }
@@ -51,7 +52,7 @@ function requiredText(value: unknown, field: string): string {
 }
 
 /** Optional but bounded: an absent suggestion stays an empty string end to end. */
-function optionalText(value: unknown, field: string): string {
+export function optionalText(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new ValidationError(`${field} must be a string`);
   }
@@ -779,7 +780,7 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     ).run(sessionId, campaignId, "Opening session", now, now);
 
     const campaign = getCampaign(db, campaignId)!;
-    const opening = narratorSystemPrompt({
+    const opening = narratorSystemPrompt(listPromptCards(db), {
       world: campaign.world_snapshot,
       starting_situation: campaign.starting_situation,
       stats: campaign.stats,

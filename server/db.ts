@@ -12,6 +12,7 @@ import type {
   WorldSnapshot,
 } from "../shared/domain";
 import { WORLD_ENTRY_KINDS } from "../shared/domain";
+import { DEFAULT_PROMPT_CARDS } from "../shared/narration";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worlds (
@@ -212,6 +213,16 @@ CREATE TABLE IF NOT EXISTS character_avatars (
   image_id TEXT NOT NULL REFERENCES images(id),
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS prompt_cards (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  position INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function nowIso(): string {
@@ -222,8 +233,8 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; only version 3 upgrades in place. */
-const SCHEMA_VERSION = 4;
+/** Bumped whenever SCHEMA changes; versions 3 and 4 upgrade in place. */
+const SCHEMA_VERSION = 5;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -237,10 +248,21 @@ const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
   { applies_to: "relationship", label: "Tension", description: "Unresolved friction between them. High tension colors every exchange.", low_label: "at ease", high_label: "hostile", min: 0, max: 10, default_value: 0, color: "orange" },
 ];
 
+/** Replaces every prompt card with the defaults, in order and enabled. */
+export function insertDefaultPromptCards(db: Database): void {
+  const now = nowIso();
+  db.exec("DELETE FROM prompt_cards");
+  const insert = db.query(
+    "INSERT INTO prompt_cards (id, title, body, enabled, position, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
+  );
+  DEFAULT_PROMPT_CARDS.forEach((card, index) => insert.run(newId(), card.title, card.body, index + 1, now, now));
+}
+
 /**
  * Opens the workspace database with foreign keys and the schema in place. A
- * version 3 workspace gains the narration direction column; any other
- * version is refused rather than migrated; a fresh one gets the stat bank seed.
+ * version 3 workspace gains the narration direction column, and versions 3
+ * and 4 gain the default prompt cards; any other version is refused rather
+ * than migrated; a fresh one gets the stat bank and prompt card seeds.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -250,27 +272,30 @@ export function openDatabase(path: string): Database {
   if (populated && version === 3) {
     db.transaction(() => {
       db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      db.exec("PRAGMA user_version = 4");
     })();
-  } else if (populated && version !== SCHEMA_VERSION) {
+  } else if (populated && version !== 4 && version !== SCHEMA_VERSION) {
     db.close();
     throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
   }
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
-  if (!populated) {
-    const now = nowIso();
-    const insert = db.query(
-      `INSERT INTO stat_definitions
-         (id, world_id, applies_to, label, description, low_label, high_label, min, max, default_value, color, created_at, updated_at)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const stat of STAT_BANK_SEED) {
-      insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
+  db.transaction(() => {
+    if (!populated) {
+      const now = nowIso();
+      const insert = db.query(
+        `INSERT INTO stat_definitions
+           (id, world_id, applies_to, label, description, low_label, high_label, min, max, default_value, color, created_at, updated_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const stat of STAT_BANK_SEED) {
+        insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
+      }
     }
-  }
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    if (!populated || version < SCHEMA_VERSION) insertDefaultPromptCards(db);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  })();
   return db;
 }
 

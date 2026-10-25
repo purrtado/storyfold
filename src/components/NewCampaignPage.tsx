@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Globe2, UserRound } from "lucide-react";
-import type { Campaign, Character, Session, StatValues, WorldEntry } from "../../shared/domain";
+import type { Campaign, Character, PromptCard, Session, StatValues, WorldEntry } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
 import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
-import { createCampaign } from "../lib/storyApi";
+import { createCampaign, fetchPromptCards } from "../lib/storyApi";
 import {
   ensureWorldCharacters,
   ensureWorldEntries,
@@ -76,12 +76,22 @@ export function NewCampaignPage(props: {
   });
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
+  const [promptCards, setPromptCards] = useState<PromptCard[] | undefined>(undefined);
+  const [promptCardsError, setPromptCardsError] = useState("");
   const seededWorldId = useRef<string | null | undefined>(undefined);
   const seededCharacterId = useRef<string | null | undefined>(undefined);
+
+  const loadPromptCards = () => {
+    setPromptCardsError("");
+    fetchPromptCards()
+      .then(setPromptCards)
+      .catch((error) => setPromptCardsError(error instanceof Error ? error.message : "Could not load prompt cards."));
+  };
 
   useEffect(() => {
     refreshWorlds();
     refreshCharacters();
+    loadPromptCards();
   }, []);
 
   const worldCharactersState = useWorldCharacters(draft.worldId);
@@ -157,8 +167,8 @@ export function NewCampaignPage(props: {
     .map((id) => characterById.get(id))
     .filter((character): character is Character => character !== undefined && character.id !== draft.protagonistId);
   const compendiumEntries = worldEntries.filter((entry) => entry.kind !== "scene");
-  const openingPromptLength = world && protagonist && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
-    ? narratorSystemPrompt({
+  const openingPromptLength = world && protagonist && promptCards !== undefined && worldEntriesState.items !== undefined && worldCharactersState.items !== undefined && worldStatsState.items !== undefined
+    ? narratorSystemPrompt(promptCards, {
       world: {
         name: world.name,
         setting_brief: world.setting_brief,
@@ -181,6 +191,7 @@ export function NewCampaignPage(props: {
     && worldEntriesState.items !== undefined
     && worldCharactersState.items !== undefined
     && worldStatsState.items !== undefined
+    && promptCards !== undefined
     && !starting
     && !overLimit,
   );
@@ -475,9 +486,15 @@ export function NewCampaignPage(props: {
                         <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshWorldCharacters(draft.worldId)}>Retry</button>
                       </p>
                     )}
+                    {promptCardsError && (
+                      <div className="grid justify-items-start gap-2" role="alert">
+                        <p className="text-sm text-muted">{promptCardsError}</p>
+                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={loadPromptCards}>Try again</button>
+                      </div>
+                    )}
 
                     {openingPromptLength === null ? (
-                      <p className="text-sm text-muted" role="status">The opening prompt count will appear when this world’s context is loaded.</p>
+                      <p className="text-sm text-muted" role="status">The opening prompt count will appear when this world’s context and saved prompt cards are loaded.</p>
                     ) : (
                       <p className="text-sm font-medium tabular-nums" role="status" aria-live="polite">
                         Opening prompt: {openingPromptLength.toLocaleString()} / {NARRATION_CHARACTER_BUDGET.toLocaleString()} characters
