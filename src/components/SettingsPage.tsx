@@ -1,20 +1,28 @@
-import { useId } from "react";
+import { useId, useState, type ComponentType, type SVGProps } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { SPRING_LAYOUT } from "../lib/ease";
 import { Link, NavLink } from "react-router-dom";
-import { ArrowLeft, Gauge, KeyRound, MessageSquareText, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { ArrowLeft, Ellipsis, Gauge, KeyRound, MessageSquareText, Monitor, Moon, Pencil, Settings, Sun } from "lucide-react";
 import type { ThemePreference } from "../lib/useTheme";
+import { storeMessageControls, storedMessageControls, type MessageControls } from "../lib/messageControls";
 import { AppHeader } from "./AppHeader";
 import { RailExpand, SidebarBrand } from "./Sidebar";
 import { Tooltip } from "./Tooltip";
 import { UserMenu } from "./UserMenu";
 import "./settings.css";
 
-const themeOptions = [
+type SegmentOption<T extends string> = { value: T; label: string; Icon: ComponentType<SVGProps<SVGSVGElement>> };
+
+const themeOptions: SegmentOption<ThemePreference>[] = [
   { value: "system", label: "System", Icon: Monitor },
   { value: "light", label: "Light", Icon: Sun },
   { value: "dark", label: "Dark", Icon: Moon },
-] as const;
+];
+
+const messageControlOptions: SegmentOption<MessageControls>[] = [
+  { value: "menu", label: "Menu", Icon: Ellipsis },
+  { value: "inline", label: "Icons", Icon: Pencil },
+];
 
 const navRow =
   "pressable flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-start text-sm no-underline active:bg-raised";
@@ -137,13 +145,66 @@ export function SettingsSidebar(props: {
   );
 }
 
+function SegmentedSetting<T extends string>(props: {
+  name: string;
+  label: string;
+  description: string;
+  options: SegmentOption<T>[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const indicatorId = useId();
+  const reducedMotion = useReducedMotion();
+
+  return (
+    <fieldset className="theme-group">
+      <legend className="sr-only">{props.label}</legend>
+      <div className="theme-body">
+        <div className="theme-copy">
+          <p className="theme-label" aria-hidden="true">
+            {props.label}
+          </p>
+          <p className="theme-desc">{props.description}</p>
+        </div>
+        <motion.div layoutRoot className="theme-segments">
+          {props.options.map(({ value, label, Icon }) => (
+            <label key={value} className="theme-segment">
+              {props.value === value &&
+                (reducedMotion ? (
+                  <span className="theme-indicator" aria-hidden="true" />
+                ) : (
+                  <motion.span
+                    className="theme-indicator"
+                    aria-hidden="true"
+                    layoutId={indicatorId}
+                    transition={SPRING_LAYOUT}
+                    style={{ borderRadius: 9999 }}
+                  />
+                ))}
+              <input
+                className="theme-input"
+                type="radio"
+                name={props.name}
+                value={value}
+                checked={props.value === value}
+                onChange={() => props.onChange(value)}
+              />
+              <Icon className="theme-seg-icon" aria-hidden="true" />
+              <span>{label}</span>
+            </label>
+          ))}
+        </motion.div>
+      </div>
+    </fieldset>
+  );
+}
+
 export function SettingsPage(props: {
   preference: ThemePreference;
   onPreferenceChange: (preference: ThemePreference) => void;
   onOpenSidebar: () => void;
 }) {
-  const indicatorId = useId();
-  const reducedMotion = useReducedMotion();
+  const [messageControls, setMessageControls] = useState(storedMessageControls);
 
   return (
     <div className="flex min-inline-size-0 flex-1 flex-col">
@@ -153,45 +214,25 @@ export function SettingsPage(props: {
         <main className="settings-main">
           <h2 className="settings-heading">General</h2>
 
-          <fieldset className="theme-group">
-            <legend className="sr-only">Theme</legend>
-            <div className="theme-body">
-              <div className="theme-copy">
-                <p className="theme-label" aria-hidden="true">
-                  Theme
-                </p>
-                <p className="theme-desc">Choose how Storyfold looks.</p>
-              </div>
-              <motion.div layoutRoot className="theme-segments">
-                {themeOptions.map(({ value, label, Icon }) => (
-                  <label key={value} className="theme-segment">
-                    {props.preference === value &&
-                      (reducedMotion ? (
-                        <span className="theme-indicator" aria-hidden="true" />
-                      ) : (
-                        <motion.span
-                          className="theme-indicator"
-                          aria-hidden="true"
-                          layoutId={indicatorId}
-                          transition={SPRING_LAYOUT}
-                          style={{ borderRadius: 9999 }}
-                        />
-                      ))}
-                    <input
-                      className="theme-input"
-                      type="radio"
-                      name="theme"
-                      value={value}
-                      checked={props.preference === value}
-                      onChange={() => props.onPreferenceChange(value)}
-                    />
-                    <Icon className="theme-seg-icon" aria-hidden="true" />
-                    <span>{label}</span>
-                  </label>
-                ))}
-              </motion.div>
-            </div>
-          </fieldset>
+          <SegmentedSetting
+            name="theme"
+            label="Theme"
+            description="Choose how Storyfold looks."
+            options={themeOptions}
+            value={props.preference}
+            onChange={props.onPreferenceChange}
+          />
+          <SegmentedSetting
+            name="message-controls"
+            label="Message controls"
+            description="Show message actions in a ⋯ menu or as icons under each message."
+            options={messageControlOptions}
+            value={messageControls}
+            onChange={(value) => {
+              storeMessageControls(value);
+              setMessageControls(value);
+            }}
+          />
         </main>
       </div>
     </div>

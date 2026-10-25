@@ -2,11 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, Maximize2, Minimize2, PanelRightOpen, RefreshCw, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
+import { storedMessageControls, type MessageControls } from "../lib/messageControls";
 import { ModelPicker } from "./ModelPicker";
 import {
   createCampaignCharacter,
@@ -110,6 +111,7 @@ function MessageRow(props: {
   onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
   onForkMessage: (messageId: string, name: string) => Promise<void>;
+  controls: MessageControls;
 }) {
   const { message } = props;
   const isDraft = message.status !== "complete";
@@ -146,9 +148,17 @@ function MessageRow(props: {
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
   const reveal = canAct && !editing && !confirmDelete && !confirmFork && !directing ? ` ${REVEAL_CLASSES}` : "";
 
-  // Radix returns focus to the ⋯ trigger on close; skip that when an item opens
+  // Radix returns focus to the trigger on close; skip that when an item opens
   // an inline form, so it keeps focus and scrolls into view.
   const keepMenuFocus = useRef(false);
+  const resetMenuFocus = (open: boolean) => {
+    if (open) keepMenuFocus.current = false;
+  };
+  const skipMenuFocusReturn = (event: Event) => {
+    if (!keepMenuFocus.current) return;
+    keepMenuFocus.current = false;
+    event.preventDefault();
+  };
   const deleteConfirmRef = useRef<HTMLDivElement>(null);
   const forkConfirmRef = useRef<HTMLFormElement>(null);
   const directFormRef = useRef<HTMLFormElement>(null);
@@ -408,8 +418,9 @@ function MessageRow(props: {
     </form>
   );
 
-  const menu = (canAct || canFork) && (
-    <DropdownMenu.Root>
+  const hasActions = canAct || canFork;
+  const menu = props.controls === "menu" && hasActions && (
+    <DropdownMenu.Root onOpenChange={resetMenuFocus}>
       <DropdownMenu.Trigger asChild>
         <button type="button" className={messageControlClasses} aria-label="Message actions">
           <Ellipsis className="size-4" aria-hidden="true" />
@@ -421,11 +432,7 @@ function MessageRow(props: {
           sideOffset={4}
           collisionPadding={12}
           className="message-menu-content"
-          onCloseAutoFocus={(event) => {
-            if (!keepMenuFocus.current) return;
-            keepMenuFocus.current = false;
-            event.preventDefault();
-          }}
+          onCloseAutoFocus={skipMenuFocusReturn}
         >
           {canDirect && (
             <DropdownMenu.Item className="message-menu-item" onSelect={startDirect}>
@@ -465,6 +472,46 @@ function MessageRow(props: {
     </DropdownMenu.Root>
   );
 
+  const iconButton = (label: string, Icon: LucideIcon, onClick: () => void) => (
+    <button type="button" className={messageControlClasses} aria-label={label} title={label} onClick={onClick}>
+      <Icon className="size-3.5" aria-hidden="true" />
+    </button>
+  );
+  const inlineControls = props.controls === "inline" && hasActions && (
+    <>
+      {canDirect && iconButton("Regenerate with direction", MessageSquareQuote, startDirect)}
+      {canEdit && iconButton("Edit", Pencil, startEdit)}
+      {canFork && iconButton("Fork from here", GitBranch, startFork)}
+      {canDeleteSwipe && iconButton("Delete swipe", Rewind, () => runDelete("variant"))}
+      {canAct && (
+        <DropdownMenu.Root onOpenChange={resetMenuFocus}>
+          <DropdownMenu.Trigger asChild>
+            <button type="button" className={messageControlClasses} aria-label="Delete" title="Delete">
+              <Trash2 className="size-3.5" aria-hidden="true" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={4}
+              collisionPadding={12}
+              className="message-menu-content"
+              onCloseAutoFocus={skipMenuFocusReturn}
+            >
+              <DropdownMenu.Item className="message-menu-item" onSelect={() => startDelete("message")}>
+                This message
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className="message-menu-item" onSelect={() => startDelete("after")}>
+                This and everything after
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      )}
+    </>
+  );
+  const regenerateTurn = props.trailing && props.canGenerate;
+
   if (message.role === "user") {
     const editingInline = editing && !editExpanded;
     return (
@@ -477,18 +524,11 @@ function MessageRow(props: {
           <div className={`rounded-2xl rounded-se-md bg-accent-soft px-4 py-3 text-foreground ${editingInline ? "w-full" : "max-w-[90%]"}`}>
             {editingInline ? editForm : <p className="whitespace-pre-wrap text-[15px] leading-6">{message.content}</p>}
           </div>
-          {props.trailing && props.canGenerate && (
-            <span className={reveal}>
-              <button
-                type="button"
-                className={messageControlClasses}
-                onClick={() => props.onRegenerate()}
-                aria-label="Regenerate reply"
-                title="Regenerate"
-              >
-                <RefreshCw className="size-3.5" aria-hidden="true" />
-              </button>
-            </span>
+          {(inlineControls || regenerateTurn) && (
+            <div className={`flex items-center gap-0.5${reveal}`} role="group" aria-label="Message actions">
+              {inlineControls}
+              {regenerateTurn && iconButton("Regenerate reply", RefreshCw, () => props.onRegenerate())}
+            </div>
           )}
           {editDialog}
           {deleteConfirm}
@@ -517,7 +557,7 @@ function MessageRow(props: {
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
           : message.status === "pending" ? <PendingDots /> : null
       )}
-      {(showSwipes || canRegenerate || canRetry) && (
+      {(showSwipes || canRegenerate || canRetry || inlineControls) && (
         <div className="mbs-2 flex flex-wrap items-center gap-2">
           {showSwipes && (
             <div className="flex items-center gap-0.5 text-xs font-normal text-muted" role="group" aria-label="Alternate replies">
@@ -564,6 +604,11 @@ function MessageRow(props: {
               <RefreshCw className="size-3.5" aria-hidden="true" />
               Retry
             </button>
+          )}
+          {inlineControls && (
+            <div className={`flex items-center gap-0.5${reveal}`} role="group" aria-label="Message actions">
+              {inlineControls}
+            </div>
           )}
         </div>
       )}
@@ -615,6 +660,7 @@ export function CampaignPlay(props: {
   const [revealedCharacter, setRevealedCharacter] = useState<{ id: string; key: number } | null>(null);
   const docked = useSyncExternalStore(subscribeDocked, () => window.matchMedia(DOCKED_QUERY).matches);
   const [panelCollapsed, setPanelCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
+  const [messageControls] = useState(storedMessageControls);
   const [following, setFollowing] = useState(true);
   const [actionError, setActionError] = useState("");
   // null: the composer's direction field is closed.
@@ -901,6 +947,7 @@ export function CampaignPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  controls={messageControls}
                 />
                 );
               })}
@@ -934,6 +981,7 @@ export function CampaignPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  controls={messageControls}
                   onShowCharacter={showCharacter}
                 />
               )}
