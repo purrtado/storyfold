@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { useChat } from "@tanstack/ai-react";
+import type { ModelSelection } from "./providers";
 import { ApiError, requestSessionGeneration, stopSessionGeneration } from "./storyApi";
 
 type GenerationPhase = "streaming" | "stopping" | "error";
@@ -32,7 +33,7 @@ type GenerationRequest = {
   kind: "opening" | "message" | "regenerate";
   content: string;
   direction?: string;
-  model?: string;
+  model?: ModelSelection;
 };
 
 type ErrorEnvelope = {
@@ -178,7 +179,7 @@ export function useChatGeneration(options: {
     kind: "opening" | "message" | "regenerate",
     content: string,
     direction?: string,
-    model?: string,
+    model?: ModelSelection,
   ) => {
     if (busyRef.current) return false;
     busyRef.current = true;
@@ -202,16 +203,16 @@ export function useChatGeneration(options: {
     return true;
   }, [chat]);
 
-  const send = useCallback((sessionId: string, content: string, direction?: string, model?: string) => {
+  const send = useCallback((sessionId: string, content: string, direction?: string, model?: ModelSelection) => {
     if (!content.trim()) return false;
     return start(sessionId, "message", content, direction, model);
   }, [start]);
 
-  const open = useCallback((sessionId: string, direction?: string, model?: string) => {
+  const open = useCallback((sessionId: string, direction?: string, model?: ModelSelection) => {
     return start(sessionId, "opening", "", direction, model);
   }, [start]);
 
-  const regenerate = useCallback((sessionId: string, direction?: string, model?: string) => {
+  const regenerate = useCallback((sessionId: string, direction?: string, model?: ModelSelection) => {
     return start(sessionId, "regenerate", "", direction, model);
   }, [start]);
 
