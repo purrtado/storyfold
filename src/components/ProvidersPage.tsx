@@ -115,7 +115,8 @@ function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCan
 
 function ProviderSettingsForm(props: {
   provider: Provider;
-  onSaved: (provider: Provider) => void;
+  /** credentialsChanged: the save touched the key or base URL, so the server dropped its model list. */
+  onSaved: (provider: Provider, credentialsChanged: boolean) => void;
   onDeleted: () => void;
 }) {
   const { provider } = props;
@@ -133,7 +134,7 @@ function ProviderSettingsForm(props: {
     setFeedback(null);
     try {
       const saved = await updateProvider(provider.id, patch);
-      props.onSaved(saved);
+      props.onSaved(saved, patch.api_key !== undefined || patch.base_url !== undefined);
       setName(saved.name);
       setBaseUrl(saved.base_url);
       setApiKey("");
@@ -232,7 +233,13 @@ function ProviderSettingsForm(props: {
   );
 }
 
-function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (provider: Provider) => void }) {
+function ProviderModels(props: {
+  provider: Provider;
+  open: boolean;
+  /** Bumped after each key or base URL save. */
+  credentialsRevision: number;
+  onSaved: (provider: Provider) => void;
+}) {
   const { provider, onSaved } = props;
   const [listing, setListing] = useState<ModelListing | null>(null);
   const [loading, setLoading] = useState(false);
@@ -261,11 +268,10 @@ function ProviderModels(props: { provider: Provider; open: boolean; onSaved: (pr
     }
   }, [provider.id]);
 
-  // A changed base URL or key empties the server cache; refetch when they change.
-  const credentials = `${provider.base_url}|${provider.has_api_key}`;
+  // A key or base URL save empties the server cache; refetch after each one.
   useEffect(() => {
     if (props.open) void load(false);
-  }, [props.open, load, credentials]);
+  }, [props.open, load, props.credentialsRevision]);
 
   // Each PATCH carries a whole list, so requests are queued to reach the server
   // in click order; only the newest response or rollback may land locally.
@@ -420,6 +426,7 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
   const [loadError, setLoadError] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [credentialRevisions, setCredentialRevisions] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -498,11 +505,21 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
                         <div className="border-bs border-border pbs-3">
                           <ProviderSettingsForm
                             provider={provider}
-                            onSaved={replace}
+                            onSaved={(saved, credentialsChanged) => {
+                              replace(saved);
+                              if (credentialsChanged) {
+                                setCredentialRevisions((current) => ({ ...current, [saved.id]: (current[saved.id] ?? 0) + 1 }));
+                              }
+                            }}
                             onDeleted={() => setProviders((current) => current?.filter((item) => item.id !== provider.id) ?? null)}
                           />
                         </div>
-                        <ProviderModels provider={provider} open={expandedId === provider.id} onSaved={replace} />
+                        <ProviderModels
+                          provider={provider}
+                          open={expandedId === provider.id}
+                          credentialsRevision={credentialRevisions[provider.id] ?? 0}
+                          onSaved={replace}
+                        />
                       </CollapsibleContent>
                     </Collapsible>
                   </li>
