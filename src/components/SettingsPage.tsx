@@ -2,7 +2,7 @@ import { useId } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { SPRING_LAYOUT } from "../lib/ease";
 import { Link, NavLink } from "react-router-dom";
-import { ArrowLeft, Gauge, KeyRound, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { ArrowLeft, Gauge, KeyRound, MessageSquareText, Monitor, Moon, Settings, Sun } from "lucide-react";
 import type { ThemePreference } from "../lib/useTheme";
 import { AppHeader } from "./AppHeader";
 import { RailExpand, SidebarBrand } from "./Sidebar";
@@ -72,6 +72,18 @@ export function SettingsSidebar(props: {
           </NavLink>
         </Tooltip>
 
+        <Tooltip content="Prompt" side="right">
+          <NavLink
+            to="/settings/prompt"
+            className={({ isActive }) =>
+              isActive ? "rail-btn rail-btn--active" : "rail-btn"
+            }
+            aria-label="Prompt"
+          >
+            <MessageSquareText className="size-4.5" aria-hidden="true" />
+          </NavLink>
+        </Tooltip>
+
         <div className="[margin-block-start:auto]">
           <UserMenu compact />
         </div>
@@ -108,6 +120,13 @@ export function SettingsSidebar(props: {
         >
           <Gauge className="size-4 shrink-0" aria-hidden="true" />
           Stats
+        </NavLink>
+        <NavLink
+          to="/settings/prompt"
+          className={({ isActive }) => (isActive ? navRowActive : navRowInactive)}
+        >
+          <MessageSquareText className="size-4 shrink-0" aria-hidden="true" />
+          Prompt
         </NavLink>
       </nav>
 

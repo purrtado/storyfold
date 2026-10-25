@@ -1,4 +1,4 @@
-import type { Campaign, CampaignCharacter, CampaignStateItem, CampaignStat, Character, CharacterProfile, Message, Relationship, Session, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { Campaign, CampaignCharacter, CampaignStateItem, CampaignStat, Character, CharacterProfile, Message, PromptCard, Relationship, Session, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 export type CampaignFork = { campaign: Campaign; session: Session };
 
 export async function fetchCampaignRelationships(campaignId: string): Promise<Relationship[]> {
@@ -461,6 +461,50 @@ export async function fetchStats(): Promise<StatDefinition[]> {
   return (await request<{ stats: StatDefinition[] }>("/api/stats")).stats;
 }
 
+
+export async function fetchPromptCards(): Promise<PromptCard[]> {
+  return (await request<{ cards: PromptCard[] }>("/api/prompt-cards")).cards;
+}
+
+export async function createPromptCard(input: { title: string; body?: string; enabled?: boolean }): Promise<PromptCard> {
+  return (
+    await request<{ card: PromptCard }>("/api/prompt-cards", {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  ).card;
+}
+
+export async function updatePromptCard(
+  id: string,
+  patch: Partial<Pick<PromptCard, "title" | "body" | "enabled">>,
+): Promise<PromptCard> {
+  return (
+    await request<{ card: PromptCard }>(`/api/prompt-cards/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    })
+  ).card;
+}
+
+export async function deletePromptCard(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/prompt-cards/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function orderPromptCards(ids: string[]): Promise<PromptCard[]> {
+  return (await request<{ cards: PromptCard[] }>("/api/prompt-cards/order", {
+    method: "PUT",
+    body: JSON.stringify({ ids }),
+  })).cards;
+}
+
+export async function resetPromptCards(): Promise<PromptCard[]> {
+  return (await request<{ cards: PromptCard[] }>("/api/prompt-cards/reset", {
+    method: "POST",
+  })).cards;
+}
 export async function createStat(input: StatFields): Promise<StatDefinition> {
   return (
     await request<{ stat: StatDefinition }>("/api/stats", {

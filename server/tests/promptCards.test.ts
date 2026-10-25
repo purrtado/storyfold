@@ -79,13 +79,14 @@ describe("prompt card API", () => {
 
   test("order must name every card exactly once and needs a trusted origin", async () => {
     const ids = (await cards()).map((card) => card.id);
+    const reversed = [...ids].reverse();
     expect((await call("PUT", "/order", { ids: ids.slice(1) })).status).toBe(400);
     expect((await call("PUT", "/order", { ids: [ids[0], ...ids.slice(0, -1)] })).status).toBe(400);
-    expect((await call("PUT", "/order", { ids: ids.toReversed() }, null)).status).toBe(403);
+    expect((await call("PUT", "/order", { ids: reversed }, null)).status).toBe(403);
 
-    const reordered = await call("PUT", "/order", { ids: ids.toReversed() });
+    const reordered = await call("PUT", "/order", { ids: reversed });
     expect(reordered.status).toBe(200);
-    expect((await cards()).map((card) => card.id)).toEqual(ids.toReversed());
+    expect((await cards()).map((card) => card.id)).toEqual(reversed);
   });
 
   test("reset restores the default cards, enabled and in order", async () => {
