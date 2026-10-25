@@ -150,6 +150,7 @@ The composer, transcript scroller, tooltips, and theme indicator are adapted fro
 - [Message Scroller](https://beui.dev/components/agents/message-scroller) — reader-aware transcript viewport. Deviations: viewport resizes (composer growth, mobile drawer) re-align the live edge instantly while you are following, wheel, touch, and upward keyboard scrolling interrupt an in-flight follow, and the optional message navigation rail is omitted.
 - [Tooltip](https://beui.dev/components/motion/tooltip) — hover/focus tooltips on the sidebar rail.
 - [Tabs](https://beui.dev/components/motion/tabs) — shared-layout spring indicator adapted to the settings theme radios, without tab panels or overflow controls. The pill slides between choices; reduced-motion users get an instant selection change.
+- [Collapsible](https://beui.dev/components/motion/collapsible) — prompt card expand/collapse on **Settings → Prompt**. Controlled only, with the repo's button styling on the trigger; the `render` slot is omitted. The cards' reorder list shares its layout spring, so expanding a card moves its neighbours without stretching their text.
 
 Dependencies added for these components: `motion` (reduced-motion-aware animation), `@floating-ui/dom` (tooltip positioning), `lucide-react` (send icon), and `clsx` + `tailwind-merge` (the `cn` class helper).
 

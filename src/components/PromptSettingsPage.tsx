@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type Ref } from "react";
-import { ChevronDown, ChevronRight, GripVertical, Plus, RotateCcw, Trash2 } from "lucide-react";
-import { Reorder, useDragControls } from "motion/react";
+import { GripVertical, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
 import type { PromptCard } from "../../shared/domain";
 import { PROMPT_PLACEHOLDERS } from "../../shared/narration";
 import {
@@ -11,7 +11,9 @@ import {
   resetPromptCards,
   updatePromptCard,
 } from "../lib/storyApi";
+import { SPRING_LAYOUT } from "../lib/ease";
 import { AppHeader } from "./AppHeader";
+import { Collapsible, CollapsibleContent, CollapsibleIndicator, CollapsibleTrigger } from "./Collapsible";
 import "./settings.css";
 
 type PromptDraft = Pick<PromptCard, "title" | "body">;
@@ -37,6 +39,7 @@ function PromptCardRow(props: {
   saveError?: string;
 }) {
   const controls = useDragControls();
+  const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const changed = props.draft.title !== props.card.title || props.draft.body !== props.card.body;
 
@@ -60,80 +63,80 @@ function PromptCardRow(props: {
       value={props.card}
       dragListener={false}
       dragControls={controls}
-      className={`grid gap-3 rounded-xl border border-border p-3 ${props.card.enabled ? "bg-background" : "bg-raised text-muted"}`}
+      transition={{ layout: SPRING_LAYOUT }}
+      // Inline radius so layout projection scale-corrects the corners.
+      style={{ borderRadius: 12 }}
+      className={`border border-border ${props.card.enabled ? "bg-background" : "bg-raised text-muted"}`}
       onDragEnd={props.onDragEnd}
     >
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="pressable hit-44 inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
-          aria-label={`Drag ${props.card.title} to reorder`}
-          onPointerDown={(event) => { props.onDragStart(); controls.start(event); }}
-        ><GripVertical className="size-4" aria-hidden="true" /></button>
-        <button
-          type="button"
-          className="pressable min-w-0 flex-1 cursor-pointer text-start"
-          aria-expanded={props.expanded}
-          onClick={props.onExpand}
+      <Collapsible open={props.expanded} onOpenChange={props.onExpand}>
+        <motion.div
+          layout={reduce ? false : "position"}
+          transition={{ layout: SPRING_LAYOUT }}
+          className="flex min-w-0 items-center gap-2 p-3"
         >
-          <span className="block truncate font-medium">{props.card.title}</span>
-          <span className="block text-xs text-muted">{props.card.body.length.toLocaleString()} characters</span>
-        </button>
-        <input
-          type="checkbox"
-          role="switch"
-          className="prompt-switch"
-          aria-label={`Include ${props.card.title} in the prompt`}
-          checked={props.card.enabled}
-          disabled={props.busy}
-          onChange={props.onToggle}
-        />
-        <button
-          type="button"
-          className="pressable hit-44 inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
-          aria-label={`${props.expanded ? "Collapse" : "Expand"} ${props.card.title}`}
-          aria-expanded={props.expanded}
-          onClick={props.onExpand}
-        >{props.expanded ? <ChevronDown className="size-4" aria-hidden="true" /> : <ChevronRight className="size-4" aria-hidden="true" />}</button>
-      </div>
-      {props.expanded && (
-        <div className="grid gap-3 border-bs border-border pbs-3">
-          <label className="grid gap-1 text-sm font-medium" htmlFor={`prompt-title-${props.card.id}`}>
-            Title
-            <input
-              id={`prompt-title-${props.card.id}`}
-              ref={props.titleInputRef}
-              className={inputClass}
-              value={props.draft.title}
-              onChange={(event) => props.onDraft({ ...props.draft, title: event.target.value })}
-            />
-          </label>
-          <label className="grid gap-1 text-sm font-medium" htmlFor={`prompt-body-${props.card.id}`}>
-            Body
-            <textarea
-              ref={textareaRef}
-              id={`prompt-body-${props.card.id}`}
-              className={`${inputClass} min-h-48 resize-y whitespace-pre-wrap font-mono leading-6`}
-              value={props.draft.body}
-              onChange={(event) => props.onDraft({ ...props.draft, body: event.target.value })}
-            />
-          </label>
-          <div className="flex flex-wrap gap-2" aria-label="Insert placeholder">
-            {PROMPT_PLACEHOLDERS.map((name) => (
-              <button key={name} type="button" className="pressable rounded-md border border-border px-2 py-1 font-mono text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => insertPlaceholder(name)}>{`{{${name}}}`}</button>
-            ))}
+          <button
+            type="button"
+            className="pressable hit-44 inline-flex size-9 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
+            aria-label={`Drag ${props.card.title} to reorder`}
+            onPointerDown={(event) => { props.onDragStart(); controls.start(event); }}
+          ><GripVertical className="size-4" aria-hidden="true" /></button>
+          <CollapsibleTrigger className="pressable flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-start">
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{props.card.title}</span>
+              <span className="block text-xs text-muted">{props.card.body.length.toLocaleString()} characters</span>
+            </span>
+            <CollapsibleIndicator />
+          </CollapsibleTrigger>
+          <input
+            type="checkbox"
+            role="switch"
+            className="prompt-switch"
+            aria-label={`Include ${props.card.title} in the prompt`}
+            checked={props.card.enabled}
+            disabled={props.busy}
+            onChange={props.onToggle}
+          />
+        </motion.div>
+        <CollapsibleContent contentClassName="px-3 pbe-3">
+          <div className="grid gap-3 border-bs border-border pbs-3">
+            <label className="grid gap-1 text-sm font-medium" htmlFor={`prompt-title-${props.card.id}`}>
+              Title
+              <input
+                id={`prompt-title-${props.card.id}`}
+                ref={props.titleInputRef}
+                className={inputClass}
+                value={props.draft.title}
+                onChange={(event) => props.onDraft({ ...props.draft, title: event.target.value })}
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-medium" htmlFor={`prompt-body-${props.card.id}`}>
+              Body
+              <textarea
+                ref={textareaRef}
+                id={`prompt-body-${props.card.id}`}
+                className={`${inputClass} min-h-48 resize-y whitespace-pre-wrap font-mono leading-6`}
+                value={props.draft.body}
+                onChange={(event) => props.onDraft({ ...props.draft, body: event.target.value })}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2" aria-label="Insert placeholder">
+              {PROMPT_PLACEHOLDERS.map((name) => (
+                <button key={name} type="button" className="pressable rounded-md border border-border px-2 py-1 font-mono text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => insertPlaceholder(name)}>{`{{${name}}}`}</button>
+              ))}
+            </div>
+            {props.saveError && <p className="text-sm text-muted" role="alert">{props.saveError}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={buttonClass} disabled={!changed || props.busy} onClick={props.onSave}>Save</button>
+              <button type="button" className={buttonClass} disabled={!props.canMoveUp || props.busy} onClick={() => props.onMove(-1)}>Move up</button>
+              <button type="button" className={buttonClass} disabled={!props.canMoveDown || props.busy} onClick={() => props.onMove(1)}>Move down</button>
+              <button type="button" className="pressable inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={props.busy} onClick={props.onDelete}>
+                <Trash2 className="size-4" aria-hidden="true" />Delete
+              </button>
+            </div>
           </div>
-          {props.saveError && <p className="text-sm text-muted" role="alert">{props.saveError}</p>}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={buttonClass} disabled={!changed || props.busy} onClick={props.onSave}>Save</button>
-            <button type="button" className={buttonClass} disabled={!props.canMoveUp || props.busy} onClick={() => props.onMove(-1)}>Move up</button>
-            <button type="button" className={buttonClass} disabled={!props.canMoveDown || props.busy} onClick={() => props.onMove(1)}>Move down</button>
-            <button type="button" className="pressable inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={props.busy} onClick={props.onDelete}>
-              <Trash2 className="size-4" aria-hidden="true" />Delete
-            </button>
-          </div>
-        </div>
-      )}
+        </CollapsibleContent>
+      </Collapsible>
     </Reorder.Item>
   );
 }
