@@ -43,9 +43,9 @@ Run server regression tests with `bun test`. To exercise a production build loca
 
 Open **Settings → Providers** (`/settings/providers`):
 
-1. Enter your Z.AI API key.
-2. Choose a **Default model** from the curated dropdown: `GLM-5.3` (default) or `GLM-5.3 Flash` — the two models documented for every GLM Coding Plan tier ([model overview](https://docs.z.ai/devpack/overview)).
-3. Save, return to the app, and start or resume a campaign.
+1. **Add provider**, optionally starting from a preset (OpenAI, OpenRouter, Z.AI Coding Plan, Ollama, LM Studio) that fills in the name and base URL, and enter an API key if the provider needs one.
+2. Expand the provider to edit it or manage its **Models**: switch off the ones you don't want in the composer (filter the list and use **Enable/Disable all** for long lists), **Refresh** the list from the provider, or add a model id by hand.
+3. Return to the app, pick the provider and model in the composer, and start or resume a campaign.
 
 Each provider is an OpenAI-compatible chat-completions endpoint: a name, a base URL (requests go to `<base URL>/chat/completions`), and an optional API key (local servers such as Ollama or LM Studio need none; keyless requests send no `Authorization` header). The server lists a provider's models from `GET <base URL>/models` and caches each list in memory: a list younger than an hour is served as-is, an older one is served immediately while a background refresh runs, and a failed fetch keeps the last known list. Changing a provider's base URL or key drops its cached list. Every listed model is enabled by default; disabling one is sticky, so it stays hidden even if the provider stops and later resumes listing it. Model ids can also be added by hand for providers whose `/models` is missing or incomplete.
 
