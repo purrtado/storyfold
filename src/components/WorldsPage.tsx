@@ -6,6 +6,7 @@ import { refreshStats, refreshWorlds, useStats, useWorlds, worldsLibrary } from 
 import { AppHeader } from "./AppHeader";
 import { STAT_KIND_LABELS } from "./StatDefinitionList";
 import { WorldCompendium } from "./WorldCompendium";
+import { TextEditor } from "./TextEditor";
 
 const emptyWorld: WorldInput = {
   name: "",
@@ -89,6 +90,10 @@ export function WorldsPage(props: {
       setting_brief: editor.value.setting_brief.trim(),
       suggested_starting_situation: editor.value.suggested_starting_situation.trim(),
     };
+    if (!input.setting_brief) {
+      setSaveError("Add a setting brief.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -147,25 +152,24 @@ export function WorldsPage(props: {
                       className="min-h-11 rounded-lg border border-border bg-raised px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                     />
                   </label>
-                  <label className="grid gap-1.5 text-sm font-medium">
-                    Setting brief
-                    <textarea
-                      required
-                      rows={4}
+                  <div className="grid gap-1.5 text-sm font-medium">
+                    <span id="world-setting-brief">Setting brief</span>
+                    <TextEditor
+                      labelledBy="world-setting-brief"
                       value={editor.value.setting_brief}
-                      onChange={(event) => setEditor({ ...editor, value: { ...editor.value, setting_brief: event.target.value } })}
-                      className="min-h-28 resize-y rounded-lg border border-border bg-raised px-3 py-2 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      onChange={(setting_brief) => setEditor({ ...editor, value: { ...editor.value, setting_brief } })}
+                      className="min-h-28 rounded-lg border border-border bg-raised font-normal"
                     />
-                  </label>
-                  <label className="grid gap-1.5 text-sm font-medium">
-                    Suggested starting situation <span className="font-normal text-muted">Optional</span>
-                    <textarea
-                      rows={3}
+                  </div>
+                  <div className="grid gap-1.5 text-sm font-medium">
+                    <span id="world-starting-situation">Suggested starting situation <span className="font-normal text-muted">Optional</span></span>
+                    <TextEditor
+                      labelledBy="world-starting-situation"
                       value={editor.value.suggested_starting_situation}
-                      onChange={(event) => setEditor({ ...editor, value: { ...editor.value, suggested_starting_situation: event.target.value } })}
-                      className="min-h-24 resize-y rounded-lg border border-border bg-raised px-3 py-2 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      onChange={(suggested_starting_situation) => setEditor({ ...editor, value: { ...editor.value, suggested_starting_situation } })}
+                      className="min-h-24 rounded-lg border border-border bg-raised font-normal"
                     />
-                  </label>
+                  </div>
                   {!editor.id && (
                     <fieldset className="grid gap-2 text-sm font-medium">
                       <legend>

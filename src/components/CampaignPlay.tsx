@@ -22,7 +22,7 @@ import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
 import { CampaignPanel } from "./CampaignPanel";
 import { isActiveCampaignSession } from "../lib/campaignLifecycle";
-import { TextEditor } from "./TextEditor";
+import { keepEscapeInFindPanel, TextEditor } from "./TextEditor";
 import "./message-menu.css";
 
 const DOCKED_QUERY = "(min-width: 80rem)";
@@ -263,8 +263,7 @@ function MessageRow(props: {
           aria-describedby={undefined}
           // The collapsed editor takes focus itself when it remounts.
           onCloseAutoFocus={(event) => event.preventDefault()}
-          // Escape in the find panel closes the panel, not the dialog.
-          onEscapeKeyDown={(event) => { if (event.target instanceof Element && event.target.closest(".cm-panel")) event.preventDefault(); }}
+          onEscapeKeyDown={keepEscapeInFindPanel}
           className="fixed inset-0 z-40 flex flex-col bg-surface md:inset-bs-1/2 md:inset-be-auto md:start-1/2 md:h-[min(90dvh,52rem)] md:w-[min(calc(100vw-2rem),52rem)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-xl"
         >
           <form className="flex [min-block-size:0] flex-1 flex-col gap-3 p-4 [padding-block-end:calc(1rem+env(safe-area-inset-bottom,0px))] md:p-5" onSubmit={submitEdit}>

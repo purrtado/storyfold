@@ -25,6 +25,11 @@ export interface TextEditorProps {
 
 const TextEditorView = lazy(() => import("./TextEditorView"));
 
+/** For a dialog's `onEscapeKeyDown`: Escape in an editor's find panel closes the panel, not the dialog. */
+export function keepEscapeInFindPanel(event: KeyboardEvent) {
+  if (event.target instanceof Element && event.target.closest(".cm-panel")) event.preventDefault();
+}
+
 /** Plain-text editor with find/replace, bracket pairing and undo history; CodeMirror loads on first use. */
 export function TextEditor(props: TextEditorProps) {
   return (
