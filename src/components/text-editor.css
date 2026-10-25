@@ -9,7 +9,9 @@
   outline-offset: 2px;
 }
 
+/* Grows with its text, or scrolls inside a wrapper given a fixed height. */
 .text-editor .cm-editor {
+  min-block-size: 0;
   border-radius: inherit;
   color: var(--foreground);
   font-size: max(16px, 1rem);
@@ -21,6 +23,7 @@
 }
 
 .text-editor .cm-editor .cm-scroller {
+  overflow: auto;
   font-family: inherit;
   line-height: 1.5rem;
 }

@@ -108,8 +108,10 @@ export default function TextEditorView({ value, onChange, labelledBy, label, mar
       }),
     });
     viewRef.current = view;
-    if (autoFocus) view.focus();
+    // A frame later, so a closing menu or dialog doesn't take focus back.
+    const frame = autoFocus ? requestAnimationFrame(() => view.focus()) : 0;
     return () => {
+      cancelAnimationFrame(frame);
       view.destroy();
       viewRef.current = null;
     };
