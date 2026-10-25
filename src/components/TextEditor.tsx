@@ -1,4 +1,4 @@
-import { lazy, Suspense, type Ref } from "react";
+import { lazy, Suspense, useCallback, useImperativeHandle, useRef, type Ref } from "react";
 import { cn } from "../lib/utils";
 import "./text-editor.css";
 
@@ -31,10 +31,26 @@ export function keepEscapeInFindPanel(event: KeyboardEvent) {
 }
 
 /** Plain-text editor with find/replace, bracket pairing and undo history; CodeMirror loads on first use. */
-export function TextEditor(props: TextEditorProps) {
+export function TextEditor({ ref, ...props }: TextEditorProps) {
+  const viewHandle = useRef<TextEditorHandle | null>(null);
+  // Placeholder buttons are usable while the editor chunk is still loading.
+  const pendingInserts = useRef<string[]>([]);
+  const setViewHandle = useCallback((handle: TextEditorHandle | null) => {
+    viewHandle.current = handle;
+    if (!handle) return;
+    for (const text of pendingInserts.current.splice(0)) handle.insert(text);
+  }, []);
+  useImperativeHandle(ref, () => ({
+    focus: () => viewHandle.current?.focus(),
+    insert: (text) => {
+      if (viewHandle.current) viewHandle.current.insert(text);
+      else pendingInserts.current.push(text);
+    },
+  }), []);
+
   return (
     <Suspense fallback={<div className={cn("text-editor", props.className)} aria-busy="true" />}>
-      <TextEditorView {...props} />
+      <TextEditorView {...props} ref={setViewHandle} />
     </Suspense>
   );
 }

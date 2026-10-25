@@ -75,6 +75,7 @@ export default function TextEditorView({ value, onChange, labelledBy, label, mar
   const viewRef = useRef<EditorView | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
+  const extensionsRef = useRef<Extension[]>([]);
   useLayoutEffect(() => { onChangeRef.current = onChange; });
 
   // Configuration is read once at mount; rebuilding the view would drop undo history.
@@ -82,28 +83,29 @@ export default function TextEditorView({ value, onChange, labelledBy, label, mar
     const attributes: Record<string, string> = { spellcheck: "true", autocorrect: "on", autocapitalize: "sentences" };
     if (labelledBy) attributes["aria-labelledby"] = labelledBy;
     if (label) attributes["aria-label"] = label;
+    extensionsRef.current = [
+      history(),
+      closeBrackets(),
+      pairedBrackets,
+      search({ top: true }),
+      EditorView.lineWrapping,
+      EditorView.contentAttributes.of(attributes),
+      keymap.of([...closeBracketsKeymap, ...completionKeymap, ...searchKeymap, ...historyKeymap, ...defaultKeymap]),
+      markdown ? [markdownLanguage, syntaxHighlighting(markdownStyle), wrapWithMarkup] : [],
+      placeholders ? [placeholderTokens(placeholders), placeholderCompletions(placeholders)] : [],
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        const next = update.state.doc.toString();
+        if (next === valueRef.current) return;
+        valueRef.current = next;
+        onChangeRef.current(next);
+      }),
+    ];
     const view = new EditorView({
       parent: parentRef.current!,
       state: EditorState.create({
         doc: valueRef.current,
-        extensions: [
-          history(),
-          closeBrackets(),
-          pairedBrackets,
-          search({ top: true }),
-          EditorView.lineWrapping,
-          EditorView.contentAttributes.of(attributes),
-          keymap.of([...closeBracketsKeymap, ...completionKeymap, ...searchKeymap, ...historyKeymap, ...defaultKeymap]),
-          markdown ? [markdownLanguage, syntaxHighlighting(markdownStyle), wrapWithMarkup] : [],
-          placeholders ? [placeholderTokens(placeholders), placeholderCompletions(placeholders)] : [],
-          EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
-            const next = update.state.doc.toString();
-            if (next === valueRef.current) return;
-            valueRef.current = next;
-            onChangeRef.current(next);
-          }),
-        ],
+        extensions: extensionsRef.current,
         selection: autoFocus ? { anchor: valueRef.current.length } : undefined,
       }),
     });
@@ -117,11 +119,12 @@ export default function TextEditorView({ value, onChange, labelledBy, label, mar
     };
   }, []);
 
+  // A value set from outside (another record, a reset) is a new document: undo must not reach the old one.
   useEffect(() => {
     const view = viewRef.current;
     if (!view || value === valueRef.current) return;
     valueRef.current = value;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+    view.setState(EditorState.create({ doc: value, extensions: extensionsRef.current }));
   }, [value]);
 
   useImperativeHandle(ref, () => ({
