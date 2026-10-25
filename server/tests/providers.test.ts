@@ -60,7 +60,7 @@ describe("ProviderStore", () => {
     });
   });
 
-  test("a new base_url drops the stored key unless the same patch supplies one", async () => {
+  test("a base_url-only edit keeps the stored key and still invalidates the model list", async () => {
     await withStore(async (store) => {
       const { id } = await store.create(createInput());
 
@@ -69,11 +69,11 @@ describe("ProviderStore", () => {
       expect(renamed.credentialsChanged).toBe(false);
 
       const moved = await store.update(id, { base_url: "https://elsewhere.test/v1" });
-      expect(moved.provider.api_key).toBeNull();
+      expect(moved.provider.api_key).toBe(API_KEY);
       expect(moved.credentialsChanged).toBe(true);
 
-      const rekeyed = await store.update(id, { base_url: "https://third.test/v1", api_key: "sk-new" });
-      expect(rekeyed.provider.api_key).toBe("sk-new");
+      const removed = await store.update(id, { api_key: null });
+      expect(removed.provider.api_key).toBeNull();
     });
   });
 

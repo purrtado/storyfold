@@ -53,7 +53,7 @@ The selected provider and model is one global choice saved with the configuratio
 
 Configuration belongs to this local installation, not a user account. The server saves it at `$XDG_CONFIG_HOME/storyfold/config.json`, or `~/.config/storyfold/config.json` when an absolute XDG path is not configured. The directory is created with mode `0700`, and the file with mode `0600`; API keys are stored in plaintext, protected by your OS user permissions, not encryption.
 
-Saved keys are never returned to the browser or stored in browser localStorage, and are never part of logs, error messages, or cache keys; upstream errors reach the browser only as fixed messages. Changing a provider's base URL deletes its saved key unless a new key is entered in the same save, so a key never follows an edit to a different host. `/models` fetches refuse redirects for the same reason.
+Saved keys are never returned to the browser or stored in browser localStorage, and are never part of logs, error messages, or cache keys; upstream errors reach the browser only as fixed messages. Editing a provider's base URL keeps its saved key; use **Remove key** to delete it. `/models` fetches refuse redirects, so a key is only ever sent to the configured host.
 
 API: `GET /api/providers` → `{providers, selection}` (each provider reports `has_api_key`, never the key), `POST /api/providers {name, base_url, api_key?, manual_models?}`, `PATCH /api/providers/:id {name?, base_url?, api_key? (null removes), disabled_models?, manual_models?}`, `DELETE /api/providers/:id`, `GET /api/providers/:id/models[?refresh=1]` → `{models: [{id, enabled, manual}], fetched_at, error}`, and `PUT /api/model-selection {provider_id, model}`.
 
