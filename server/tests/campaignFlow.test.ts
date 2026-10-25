@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { protagonistOf, type Campaign, type Message, type Session } from "../../shared/domain";
-import { NARRATION_CHARACTER_BUDGET } from "../../shared/narration";
+import { NARRATION_TOKEN_BUDGET } from "../../shared/narration";
+import { countTokens } from "../../shared/tokens";
 import { openDatabase } from "../db";
 import {
   beginNextSession,
@@ -1090,12 +1091,14 @@ describe("narration budget", () => {
       await first.text();
 
       const db = openDatabase(databasePath);
-      const prompt = new PlayService(db).systemPrompt(seeded.session.id).length;
+      const prompt = countTokens(new PlayService(db).systemPrompt(seeded.session.id));
       db.close();
-      const room = NARRATION_CHARACTER_BUDGET - prompt - 100_000 - "Short.".length;
+      const room = NARRATION_TOKEN_BUDGET - prompt - countTokens("a".repeat(100_000)) - countTokens("Short.");
+      // Each " b" is one token, so the probe sizes are exact.
+      expect(countTokens(" b".repeat(room))).toBe(room);
 
       const before = await transcript(server.url, seeded.session.id);
-      const over = await postMessage(server.url, seeded.session.id, "b".repeat(room + 1));
+      const over = await postMessage(server.url, seeded.session.id, " b".repeat(room + 1));
       expect(over.status).toBe(413);
       const body = (await over.json()) as { code?: string; accepted?: boolean; error?: string };
       expect(body.code).toBe("context_limit");
@@ -1103,7 +1106,7 @@ describe("narration budget", () => {
       expect(body.error).toContain("begin the next session");
       expect(await transcript(server.url, seeded.session.id)).toEqual(before);
 
-      const fits = await postMessage(server.url, seeded.session.id, "b".repeat(room));
+      const fits = await postMessage(server.url, seeded.session.id, " b".repeat(room));
       expect(fits.status).toBe(200);
       await fits.text();
     } finally {

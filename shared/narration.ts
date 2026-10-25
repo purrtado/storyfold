@@ -2,11 +2,11 @@ import type { CampaignStateItem, CharacterProfile, PromptCard, StatFields, StatV
 import { CHARACTER_PROFILE_FIELDS } from "./domain";
 
 /**
- * One size budget, in characters, for everything sent to the narrator: the
- * system prompt plus the session's completed history. Characters, not tokens;
- * nothing is ever truncated — a request that would pass it is refused.
+ * One size budget, in tokens (see shared/tokens.ts), for everything sent to
+ * the narrator: the system prompt plus the session's completed history.
+ * Nothing is ever truncated — a request that would pass it is refused.
  */
-export const NARRATION_CHARACTER_BUDGET = 160_000;
+export const NARRATION_TOKEN_BUDGET = 40_000;
 
 export interface RelationshipPrompt {
   source_name: string;
