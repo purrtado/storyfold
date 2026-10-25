@@ -312,6 +312,33 @@ describe("Providers API", () => {
     }
   });
 
+  test("every model a provider can list can be disabled in one save", async () => {
+    const dir = await makeConfigDirectory();
+    const ids = Array.from({ length: 6000 }, (_, index) => `vendor/model-${index}`);
+    const upstreamFetch = (async () => Response.json({ data: ids.map((id) => ({ id })) })) as unknown as typeof fetch;
+    const server = await startTestServer({ configDirectory: dir, upstreamFetch });
+    const call = (method: string, path: string, body?: unknown) =>
+      fetch(`${server.url}${path}`, {
+        method,
+        headers: headersWith(TRUSTED),
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+    try {
+      const created = await call("POST", "/api/providers", { name: "Huge", base_url: BASE_URL });
+      const { provider } = (await created.json()) as { provider: { id: string } };
+      const listing = (await (await call("GET", `/api/providers/${provider.id}/models`)).json()) as {
+        models: Array<{ id: string }>;
+      };
+      const disabled = await call("PATCH", `/api/providers/${provider.id}`, {
+        disabled_models: listing.models.map((model) => model.id),
+      });
+      expect(disabled.status).toBe(200);
+    } finally {
+      await server.stop();
+      await removeDirectory(dir);
+    }
+  });
+
   test("rejects invalid input and untrusted or missing origins", async () => {
     const dir = await makeConfigDirectory();
     const server = await startTestServer({ configDirectory: dir });

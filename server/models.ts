@@ -1,9 +1,8 @@
-import { isValidModel, type StoredProvider } from "./providers";
+import { MODEL_LIST_MAX, isValidModel, type StoredProvider } from "./providers";
 
 /** A listing younger than this is served as-is; older ones are served while a refresh runs. */
 const FRESH_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
-const REMOTE_MODELS_MAX = 5000;
 
 export interface ModelEntry {
   id: string;
@@ -62,7 +61,7 @@ async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof
   for (const item of data) {
     const id: unknown = typeof item === "object" && item !== null && "id" in item ? item.id : undefined;
     if (isValidModel(id)) ids.add(id);
-    if (ids.size >= REMOTE_MODELS_MAX) break;
+    if (ids.size >= MODEL_LIST_MAX) break;
   }
   return [...ids].sort((a, b) => a.localeCompare(b));
 }
