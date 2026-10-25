@@ -15,6 +15,7 @@ import {
   ValidationError,
 } from "./library";
 import { startZaiRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { listPromptCards } from "./promptCards";
 import { relationshipNarrationContext } from "./relationships";
 
 export const NARRATOR_NAME = "Narrator";
@@ -418,13 +419,14 @@ export class PlayService {
   }
 
   /**
-   * Narrator grounding for this session from what its campaign owns: the
-   * world snapshot, its characters, current notes and relationships, and the
-   * handoff that grounds the session. The library and worlds are never consulted.
+   * Narrator grounding for this session: the saved prompt cards filled from
+   * what its campaign owns — the world snapshot, its characters, current notes
+   * and relationships, and the handoff that grounds the session. The library
+   * and worlds are never consulted.
    */
   systemPrompt(sessionId: string): string {
     const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
-    return narratorSystemPrompt({
+    return narratorSystemPrompt(listPromptCards(this.db), {
       world: campaign.world_snapshot,
       starting_situation: campaign.starting_situation,
       stats: campaign.stats,

@@ -97,6 +97,16 @@ import {
   updateRelationship,
 } from "./relationships";
 import {
+  createPromptCard,
+  deletePromptCard,
+  listPromptCards,
+  parsePromptCardInput,
+  parsePromptCardPatch,
+  reorderPromptCards,
+  resetPromptCards,
+  updatePromptCard,
+} from "./promptCards";
+import {
   AVATAR_BODY_MAX_BYTES,
   BODY_LIMITS,
   hasTrustedOrigin,
@@ -703,6 +713,44 @@ async function handleStats(request: Request, id: string | undefined, db: Databas
   return jsonError(405, "Method not allowed");
 }
 
+/** PUT is not in the generic mutating set, so the order route enforces the trusted-Origin rule itself. */
+async function handlePromptCards(request: Request, id: string | undefined, db: Database): Promise<Response> {
+  try {
+    if (id === undefined) {
+      if (request.method === "GET") return jsonResponse({ cards: listPromptCards(db) });
+      if (request.method === "POST") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        return jsonResponse({ card: createPromptCard(db, parsePromptCardInput(body)) }, 201);
+      }
+      return jsonError(405, "Method not allowed");
+    }
+    if (id === "order") {
+      if (request.method !== "PUT") return jsonError(405, "Method not allowed");
+      if (!hasTrustedOrigin(request)) return jsonError(403, "Origin not allowed");
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      return jsonResponse({ cards: reorderPromptCards(db, body.ids) });
+    }
+    if (id === "reset") {
+      if (request.method !== "POST") return jsonError(405, "Method not allowed");
+      return jsonResponse({ cards: resetPromptCards(db) });
+    }
+    if (request.method === "PATCH") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      const card = updatePromptCard(db, id, parsePromptCardPatch(body));
+      return card ? jsonResponse({ card }) : notFound("Unknown prompt card");
+    }
+    if (request.method === "DELETE") {
+      return deletePromptCard(db, id) ? jsonResponse({ ok: true }) : notFound("Unknown prompt card");
+    }
+    return jsonError(405, "Method not allowed");
+  } catch (error) {
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+  }
+}
+
 async function handleWorldStats(request: Request, worldId: string | undefined, db: Database): Promise<Response> {
   if (worldId === undefined || !getWorld(db, worldId)) return notFound("Unknown world");
   if (request.method === "GET") return jsonResponse({ stats: listStatDefinitions(db, worldId) });
@@ -918,6 +966,7 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   if (mutating && origin === null) return jsonError(403, "Origin not allowed");
 
   if (resource === "stats") return handleStats(request, segments[2], ctx.db);
+  if (resource === "prompt-cards") return handlePromptCards(request, segments[2], ctx.db);
   if (resource === "worlds") {
     if (segments[3] === "stats") return handleWorldStats(request, segments[2], ctx.db);
     if (segments[3] === "entries") {

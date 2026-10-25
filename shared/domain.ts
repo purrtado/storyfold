@@ -219,3 +219,17 @@ export interface Message {
   created_at: string;
   updated_at: string;
 }
+
+/**
+ * One ordered piece of the global narrator prompt. Enabled bodies are sent in
+ * `position` order; the title only labels the card in the editor.
+ */
+export interface PromptCard {
+  id: string;
+  title: string;
+  body: string;
+  enabled: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}

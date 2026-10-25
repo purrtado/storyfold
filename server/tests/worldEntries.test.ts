@@ -3,7 +3,7 @@ import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
-import { NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { DEFAULT_PROMPT_CARDS, NARRATION_CHARACTER_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import {
   headersWith,
   makeConfigDirectory,
@@ -222,7 +222,7 @@ describe("opening prompt budget", () => {
       name: "P", description, appearance: "", personality: "", background: "",
       baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
-    const base = narratorSystemPrompt({
+    const base = narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
       world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000) }] },
       starting_situation: "s",
       stats: [],

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCampaign, createCharacter, createWorld, parseCharacterInput } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
+import { listPromptCards } from "../promptCards";
+import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
 
 const NOW = "2026-01-01T00:00:00Z";
 
@@ -66,7 +68,7 @@ describe("schema version", () => {
     }
   });
 
-  test("a version 3 workspace keeps its transcript and gains narration directions", () => {
+  test("a version 3 workspace keeps its transcript and gains narration directions and prompt cards", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
       const path = join(directory, "v3.db");
@@ -76,15 +78,39 @@ describe("schema version", () => {
       const { session } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
       const messageId = insertMessage(session.id, 1, "assistant", "complete", "Kept narration.");
       db.exec("ALTER TABLE messages DROP COLUMN direction");
+      db.exec("DROP TABLE prompt_cards");
       db.exec("PRAGMA user_version = 3");
       db.close();
 
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(4);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(5);
       expect(db.query("SELECT content, direction FROM messages WHERE id = ?").get(messageId)).toEqual({
         content: "Kept narration.",
         direction: null,
       });
+      expect(listPromptCards(db).map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
+    } finally {
+      db.close();
+      db = openDatabase(":memory:");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a version 4 workspace gains the default prompt cards once", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    try {
+      const path = join(directory, "v4.db");
+      db.close();
+      db = openDatabase(path);
+      db.exec("DROP TABLE prompt_cards");
+      db.exec("PRAGMA user_version = 4");
+      db.close();
+
+      db = openDatabase(path);
+      db.close();
+      db = openDatabase(path);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(5);
+      expect(listPromptCards(db)).toHaveLength(DEFAULT_PROMPT_CARDS.length);
     } finally {
       db.close();
       db = openDatabase(":memory:");
