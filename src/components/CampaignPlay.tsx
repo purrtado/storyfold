@@ -804,7 +804,7 @@ export function CampaignPlay(props: {
     const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
     return [
       ...messages.slice(0, -1),
-      { ...trailingMessage, status: "pending" as const, content: "", direction: live?.direction ?? null, variant_ids: [...kept, ""], variant_index: kept.length },
+      { ...trailingMessage, status: "pending" as const, content: "", direction: live?.direction ?? null, lore: null, variant_ids: [...kept, ""], variant_index: kept.length },
     ];
   })() : messages;
 

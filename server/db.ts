@@ -278,19 +278,18 @@ export function openDatabase(path: string): Database {
     db.close();
     throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
   }
-  if (populated && version < SCHEMA_VERSION) {
-    db.transaction(() => {
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
+  // One transaction, so an interrupted upgrade leaves the old version to retry from.
+  db.transaction(() => {
+    if (populated && version < SCHEMA_VERSION) {
       if (version === 3) db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
       db.exec("ALTER TABLE world_entries ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords))");
       db.exec("ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
       db.exec("ALTER TABLE world_entries ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0");
       db.exec("ALTER TABLE messages ADD COLUMN lore TEXT CHECK (lore IS NULL OR json_valid(lore))");
-    })();
-  }
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec(SCHEMA);
-  db.transaction(() => {
+    }
+    db.exec(SCHEMA);
     if (!populated) {
       const now = nowIso();
       const insert = db.query(
