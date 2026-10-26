@@ -1,90 +1,5 @@
-import type { Campaign, CampaignCharacter, CampaignStateItem, CampaignStat, Character, CharacterProfile, Message, PromptCard, Relationship, Session, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { Chat, Character, CharacterProfile, Message, PromptCard, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 import type { ModelSelection } from "./providers";
-export type CampaignFork = { campaign: Campaign; session: Session };
-
-export async function fetchCampaignRelationships(campaignId: string): Promise<Relationship[]> {
-  return (await request<{ relationships: Relationship[] }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
-  )).relationships;
-}
-
-export async function createCampaignCharacter(
-  campaignId: string,
-  input: CampaignCharacterInput,
-): Promise<CampaignCharacter> {
-  return (
-    await request<{ character: CampaignCharacter }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/characters`,
-      { method: "POST", body: JSON.stringify(input) },
-    )
-  ).character;
-}
-
-export async function updateCampaignCharacter(
-  campaignId: string,
-  characterId: string,
-  patch: CampaignCharacterPatch,
-): Promise<CampaignCharacter> {
-  return (
-    await request<{ character: CampaignCharacter }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
-    )
-  ).character;
-}
-
-export async function deleteCampaignCharacter(
-  campaignId: string,
-  characterId: string,
-): Promise<{ ok: true }> {
-  return request<{ ok: true }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}`,
-    { method: "DELETE" },
-  );
-}
-
-/** Uploads the picture's raw bytes; the server rejects >2 MiB and format mismatches. */
-export async function uploadCampaignCharacterAvatar(
-  campaignId: string,
-  characterId: string,
-  file: File,
-): Promise<CampaignCharacter> {
-  return (
-    await request<{ character: CampaignCharacter }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/avatar`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
-      },
-    )
-  ).character;
-}
-
-export async function deleteCampaignCharacterAvatar(
-  campaignId: string,
-  characterId: string,
-): Promise<CampaignCharacter> {
-  return (
-    await request<{ character: CampaignCharacter }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/avatar`,
-      { method: "DELETE" },
-    )
-  ).character;
-}
-
-/** Copies the character's current profile and avatar into the campaign's world. */
-export async function saveCampaignCharacterToWorld(
-  campaignId: string,
-  characterId: string,
-): Promise<Character> {
-  return (
-    await request<{ character: Character }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/save-to-world`,
-      { method: "POST" },
-    )
-  ).character;
-}
 
 export type RelationshipInput = {
   source_id: string;
@@ -97,162 +12,51 @@ export type RelationshipInput = {
 
 export type RelationshipPatch = Partial<Pick<RelationshipInput, "how_met" | "status" | "known_facts" | "stats">>;
 
-export async function createCampaignRelationship(
-  campaignId: string,
+export async function fetchWorldRelationships(worldId: string): Promise<Relationship[]> {
+  return (await request<{ relationships: Relationship[] }>(
+    `/api/worlds/${encodeURIComponent(worldId)}/relationships`,
+  )).relationships;
+}
+
+export async function createWorldRelationship(
+  worldId: string,
   input: RelationshipInput,
 ): Promise<Relationship> {
   return (await request<{ relationship: Relationship }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships`,
+    `/api/worlds/${encodeURIComponent(worldId)}/relationships`,
     { method: "POST", body: JSON.stringify(input) },
   )).relationship;
 }
 
-export async function updateCampaignRelationship(
-  campaignId: string,
+export async function updateWorldRelationship(
+  worldId: string,
   relationshipId: string,
   input: RelationshipPatch,
 ): Promise<Relationship> {
   return (await request<{ relationship: Relationship }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    `/api/worlds/${encodeURIComponent(worldId)}/relationships/${encodeURIComponent(relationshipId)}`,
     { method: "PATCH", body: JSON.stringify(input) },
   )).relationship;
 }
 
-export async function deleteCampaignRelationship(
-  campaignId: string,
+export async function deleteWorldRelationship(
+  worldId: string,
   relationshipId: string,
 ): Promise<{ ok: true }> {
   return request<{ ok: true }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/relationships/${encodeURIComponent(relationshipId)}`,
+    `/api/worlds/${encodeURIComponent(worldId)}/relationships/${encodeURIComponent(relationshipId)}`,
     { method: "DELETE" },
   );
 }
 
 export type StatFieldsPatch = Partial<Omit<StatFields, "applies_to">>;
 
-export async function createCampaignStat(
-  campaignId: string,
-  input: StatFields,
-): Promise<CampaignStat> {
-  return (
-    await request<{ stat: CampaignStat }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/stats`,
-      { method: "POST", body: JSON.stringify(input) },
-    )
-  ).stat;
-}
-
-export async function updateCampaignStat(
-  campaignId: string,
-  statId: string,
-  patch: StatFieldsPatch,
-): Promise<CampaignStat> {
-  return (
-    await request<{ stat: CampaignStat }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/stats/${encodeURIComponent(statId)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
-    )
-  ).stat;
-}
-
-export async function deleteCampaignStat(
-  campaignId: string,
-  statId: string,
-): Promise<{ ok: true }> {
-  return request<{ ok: true }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/stats/${encodeURIComponent(statId)}`,
-    { method: "DELETE" },
-  );
-}
-
-export async function importCampaignStats(
-  campaignId: string,
-  statIds: string[],
-): Promise<CampaignStat[]> {
-  return (
-    await request<{ stats: CampaignStat[] }>(
-      `/api/campaigns/${encodeURIComponent(campaignId)}/stats/import`,
-      { method: "POST", body: JSON.stringify({ stat_ids: statIds }) },
-    )
-  ).stats;
-}
-
-export type CampaignStateInput = Pick<
-  CampaignStateItem,
-  "category" | "subject" | "content"
->;
-
-export async function fetchCampaignState(campaignId: string): Promise<CampaignStateItem[]> {
-  return (await request<{ items: CampaignStateItem[] }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/state`,
-  )).items;
-}
-
-export async function createCampaignStateItem(
-  campaignId: string,
-  input: CampaignStateInput,
-): Promise<CampaignStateItem> {
-  return request<CampaignStateItem>(`/api/campaigns/${encodeURIComponent(campaignId)}/state`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateCampaignStateItem(
-  campaignId: string,
-  itemId: string,
-  input: CampaignStateInput,
-): Promise<CampaignStateItem> {
-  return request<CampaignStateItem>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
-    { method: "PATCH", body: JSON.stringify(input) },
-  );
-}
-
-export async function deleteCampaignStateItem(campaignId: string, itemId: string): Promise<{ ok: true }> {
-  return request<{ ok: true }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/state/${encodeURIComponent(itemId)}`,
-    { method: "DELETE" },
-  );
-}
-
-export async function fetchCampaignSessions(campaignId: string): Promise<Session[]> {
-  return (await request<{ sessions: Session[] }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
-  )).sessions;
-}
-
-export async function createCampaignSession(
-  campaignId: string,
-  input: { title: string; handoff: string },
-): Promise<Session> {
-  return (await request<{ session: Session }>(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/sessions`,
-    { method: "POST", body: JSON.stringify(input) },
-  )).session;
-}
-
-export async function forkFromMessage(
-  sessionId: string,
-  messageId: string,
-  name: string,
-): Promise<CampaignFork> {
-  return request<CampaignFork>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/fork`,
-    { method: "POST", body: JSON.stringify({ name }) },
-  );
-}
-
-export type WorldInput = Pick<
-  World,
-  "name" | "setting_brief" | "suggested_starting_situation"
->;
+export type WorldInput = Pick<World, "name" | "setting_brief">;
 export type CharacterInput = Pick<CharacterProfile, "name" | "description">
   & Partial<Omit<CharacterProfile, "name" | "description">>;
-export type CharacterPatch = Partial<CharacterInput>;
-export type CharacterSceneFields = Partial<Pick<CampaignCharacter, "context_mode" | "summary" | "aliases" | "sticky">>;
-export type CampaignCharacterInput = CharacterInput & CharacterSceneFields;
-export type CampaignCharacterPatch = CharacterPatch & CharacterSceneFields & {
+export type CharacterSceneFields = Partial<Pick<Character, "context_mode" | "summary" | "aliases" | "sticky">>;
+export type CharacterCreateInput = CharacterInput & CharacterSceneFields;
+export type CharacterPatch = Partial<CharacterInput> & CharacterSceneFields & {
   stats_enabled?: boolean;
   stats?: StatValues;
 };
@@ -347,19 +151,6 @@ export async function updateWorld(id: string, input: WorldInput): Promise<World>
   ).world;
 }
 
-export async function fetchCharacters(): Promise<Character[]> {
-  return (await request<{ characters: Character[] }>("/api/characters")).characters;
-}
-
-export async function createCharacter(input: CharacterInput): Promise<Character> {
-  return (
-    await request<{ character: Character }>("/api/characters", {
-      method: "POST",
-      body: JSON.stringify(input),
-    })
-  ).character;
-}
-
 export async function updateCharacter(id: string, input: CharacterPatch): Promise<Character> {
   return (
     await request<{ character: Character }>(`/api/characters/${encodeURIComponent(id)}`, {
@@ -369,18 +160,8 @@ export async function updateCharacter(id: string, input: CharacterPatch): Promis
   ).character;
 }
 
-/** Works for world characters; the server refuses to delete library characters. */
 export async function deleteCharacter(id: string): Promise<{ ok: true }> {
   return request<{ ok: true }>(`/api/characters/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-export async function copyCharacterToLibrary(id: string): Promise<Character> {
-  return (
-    await request<{ character: Character }>(
-      `/api/characters/${encodeURIComponent(id)}/copy-to-library`,
-      { method: "POST" },
-    )
-  ).character;
 }
 
 export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
@@ -415,7 +196,7 @@ export async function listWorldCharacters(worldId: string): Promise<Character[]>
   return (await request<{ characters: Character[] }>(path)).characters;
 }
 
-export async function createWorldCharacter(worldId: string, input: CharacterInput): Promise<Character> {
+export async function createWorldCharacter(worldId: string, input: CharacterCreateInput): Promise<Character> {
   const path = `/api/worlds/${encodeURIComponent(worldId)}/characters`;
   return (
     await request<{ character: Character }>(path, {
@@ -546,41 +327,71 @@ export async function createWorldStat(worldId: string, input: StatFields): Promi
   ).stat;
 }
 
-export type CampaignInput = {
-  world_id: string;
-  protagonist_id: string;
-  cast_character_ids?: string[];
-  starting_situation?: string;
-  name?: string;
-};
-
-export async function fetchCampaigns(): Promise<Campaign[]> {
-  return (await request<{ campaigns: Campaign[] }>("/api/campaigns")).campaigns;
-}
-
-export async function createCampaign(input: CampaignInput): Promise<{ campaign: Campaign; session: Session }> {
-  return request<{ campaign: Campaign; session: Session }>("/api/campaigns", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-
-export async function fetchSession(id: string): Promise<{ session: Session; campaign: Campaign }> {
-  return request<{ session: Session; campaign: Campaign }>(`/api/sessions/${encodeURIComponent(id)}`);
-}
-
-export async function fetchSessionMessages(id: string): Promise<TranscriptMessage[]> {
+export async function importWorldStats(worldId: string, statIds: string[]): Promise<StatDefinition[]> {
   return (
-    await request<{ messages: TranscriptMessage[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`)
+    await request<{ stats: StatDefinition[] }>(
+      `/api/worlds/${encodeURIComponent(worldId)}/stats/import`,
+      { method: "POST", body: JSON.stringify({ stat_ids: statIds }) },
+    )
+  ).stats;
+}
+
+export type ChatInput = { protagonist_id: string; opening?: string; title?: string };
+
+export async function fetchChats(): Promise<Chat[]> {
+  return (await request<{ chats: Chat[] }>("/api/chats")).chats;
+}
+
+export async function fetchWorldChats(worldId: string): Promise<Chat[]> {
+  return (await request<{ chats: Chat[] }>(`/api/worlds/${encodeURIComponent(worldId)}/chats`)).chats;
+}
+
+export async function createChat(worldId: string, input: ChatInput): Promise<Chat> {
+  return (
+    await request<{ chat: Chat }>(`/api/worlds/${encodeURIComponent(worldId)}/chats`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  ).chat;
+}
+
+export async function fetchChat(id: string): Promise<{ chat: Chat; world: World }> {
+  return request<{ chat: Chat; world: World }>(`/api/chats/${encodeURIComponent(id)}`);
+}
+
+export async function renameChat(id: string, title: string): Promise<Chat> {
+  return (
+    await request<{ chat: Chat }>(`/api/chats/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    })
+  ).chat;
+}
+
+export async function deleteChat(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function branchChat(chatId: string, messageId: string): Promise<Chat> {
+  return (
+    await request<{ chat: Chat }>(
+      `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}/branch`,
+      { method: "POST", body: JSON.stringify({}) },
+    )
+  ).chat;
+}
+
+export async function fetchChatMessages(id: string): Promise<TranscriptMessage[]> {
+  return (
+    await request<{ messages: TranscriptMessage[] }>(`/api/chats/${encodeURIComponent(id)}/messages`)
   ).messages;
 }
 
 /** Narration rows carry alternate replies; only the trailing narration has them populated. */
 export type TranscriptMessage = Message & { variant_ids?: string[]; variant_index?: number };
 
-export async function requestSessionGeneration(
-  sessionId: string,
+export async function requestChatGeneration(
+  chatId: string,
   kind: "opening" | "message" | "regenerate",
   content: string,
   direction: string | undefined,
@@ -588,10 +399,10 @@ export async function requestSessionGeneration(
   signal: AbortSignal,
 ): Promise<Response> {
   const path = kind === "opening"
-    ? `/api/sessions/${encodeURIComponent(sessionId)}/opening`
+    ? `/api/chats/${encodeURIComponent(chatId)}/opening`
     : kind === "regenerate"
-    ? `/api/sessions/${encodeURIComponent(sessionId)}/regenerate`
-    : `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
+    ? `/api/chats/${encodeURIComponent(chatId)}/regenerate`
+    : `/api/chats/${encodeURIComponent(chatId)}/messages`;
   const body = {
     ...(kind === "message" ? { content } : {}),
     ...(direction ? { direction } : {}),
@@ -605,19 +416,19 @@ export async function requestSessionGeneration(
   });
 }
 
-export async function stopSessionGeneration(sessionId: string): Promise<{ pending: boolean; message: Message | null }> {
+export async function stopChatGeneration(chatId: string): Promise<{ pending: boolean; message: Message | null }> {
   return request<{ pending: boolean; message: Message | null }>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+    `/api/chats/${encodeURIComponent(chatId)}/stop`,
     { method: "POST" },
   );
 }
 
-export async function editSessionMessage(
-  sessionId: string,
+export async function editChatMessage(
+  chatId: string,
   messageId: string,
   content: string,
 ): Promise<Message> {
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
+  const path = `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`;
   return (
     await request<{ message: Message }>(path, {
       method: "PATCH",
@@ -626,17 +437,17 @@ export async function editSessionMessage(
   ).message;
 }
 
-export async function selectSessionVariant(sessionId: string, messageId: string): Promise<TranscriptMessage[]> {
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/select`;
+export async function selectChatVariant(chatId: string, messageId: string): Promise<TranscriptMessage[]> {
+  const path = `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}/select`;
   return (await request<{ messages: TranscriptMessage[] }>(path, { method: "POST" })).messages;
 }
 
-export async function deleteSessionMessage(
-  sessionId: string,
+export async function deleteChatMessage(
+  chatId: string,
   messageId: string,
   scope?: "variant" | "after",
 ): Promise<TranscriptMessage[]> {
   const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}${query}`;
+  const path = `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}${query}`;
   return (await request<{ messages: TranscriptMessage[] }>(path, { method: "DELETE" })).messages;
 }

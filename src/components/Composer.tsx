@@ -19,7 +19,7 @@ export interface ComposerProps {
   sendLabel?: string;
   /** A reply is being generated anywhere in the app; sends wait. */
   busy?: boolean;
-  /** This session owns the running reply and shows the stop control. */
+  /** This chat owns the running reply and shows the stop control. */
   showStop?: boolean;
   onStop?: () => void;
 }

@@ -2,21 +2,23 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
-import { protagonistOf, type Campaign, type CampaignCharacter, type MessageLore, type Session } from "../../shared/domain";
+import type { Character, Chat, MessageLore, World } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
 import { storedMessageControls, type MessageControls } from "../lib/messageControls";
 import { ModelPicker } from "./ModelPicker";
 import {
-  createCampaignCharacter,
-  deleteCampaignCharacterAvatar,
-  forkFromMessage,
-  updateCampaignCharacter,
-  uploadCampaignCharacterAvatar,
+  branchChat,
+  createWorldCharacter,
+  deleteChat,
+  deleteCharacterAvatar,
+  updateCharacter,
+  uploadCharacterAvatar,
   type TranscriptMessage,
 } from "../lib/storyApi";
+import { applyWorldCharacterSaved, ensureWorldCharacters, refreshChats, refreshWorldChats, useWorldCharacters } from "../lib/libraryCache";
 import type { Generation } from "../lib/useChatGeneration";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
 import { Narration } from "./Narration";
@@ -24,13 +26,12 @@ import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
 import { MessageScroller } from "./MessageScroller";
 import { Sheet } from "./Sheet";
-import { CampaignPanel } from "./CampaignPanel";
-import { isActiveCampaignSession } from "../lib/campaignLifecycle";
+import { WorldPanel } from "./WorldPanel";
 import { keepEscapeInFindPanel, TextEditor } from "./TextEditor";
 import "./message-menu.css";
 
 const DOCKED_QUERY = "(min-width: 80rem)";
-const PANEL_COLLAPSED_KEY = "storyfold-campaign-panel-collapsed";
+const PANEL_COLLAPSED_KEY = "storyfold-world-panel-collapsed";
 
 function subscribeDocked(onChange: () => void) {
   const query = window.matchMedia(DOCKED_QUERY);
@@ -88,29 +89,26 @@ function MessageRow(props: {
   message: TranscriptMessage;
   liveText?: string;
   reasoning?: string;
-  characters: CampaignCharacter[];
+  characters: Character[];
+  protagonistId: string;
   /** The protagonist speaks the player's turns. */
   protagonistAvatarId?: string | null;
-  /** Offered on walk-on speakers; absent where the cast cannot change from here. */
+  /** Offered on walk-on speakers; absent while a reply is running. */
   onAddToCast?: (name: string) => void;
   onShowCharacter: (characterId: string) => void;
   streaming?: boolean;
   trailing: boolean;
   lastUser: boolean;
   actionsAllowed: boolean;
-  /** Generation-starting controls need the app-wide exclusivity, not just session-level actions. */
+  /** Generation-starting controls need the app-wide exclusivity, not just chat-level actions. */
   canGenerate: boolean;
-  /** Forking works in the active session and in closed (read-only) sessions. */
-  canFork: boolean;
-  /** A closed session forks from its checkpoint, not the current state. */
-  activeSession: boolean;
-  campaignName: string;
+  canBranch: boolean;
   deleteCount: number;
   onRegenerate: (direction?: string) => void;
   onSelectVariant: (messageId: string) => void;
   onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
-  onForkMessage: (messageId: string, name: string) => Promise<void>;
+  onBranchMessage: (messageId: string) => Promise<void>;
   controls: MessageControls;
 }) {
   const { message } = props;
@@ -128,9 +126,8 @@ function MessageRow(props: {
   const [editExpanded, setEditExpanded] = useState(false);
   const editorState = useRef<unknown>(null);
   const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
-  const [confirmFork, setConfirmFork] = useState(false);
-  const [forkName, setForkName] = useState("");
-  const [forking, setForking] = useState(false);
+  const [confirmBranch, setConfirmBranch] = useState(false);
+  const [branching, setBranching] = useState(false);
   const [directing, setDirecting] = useState(false);
   const [directionValue, setDirectionValue] = useState("");
 
@@ -140,13 +137,13 @@ function MessageRow(props: {
   const showSwipes = trailingNarration && variantIds.length > 1;
   const canAct = props.actionsAllowed;
   const canEdit = canAct && message.status === "complete";
-  const canFork = props.canFork && !isDraft;
+  const canBranch = props.canBranch && !isDraft;
   const canDeleteSwipe = canAct && trailingNarration && !isDraft && variantIds.length > 1;
   const canRegenerate = props.canGenerate && trailingNarration && !isDraft;
   const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
   const canDirect = props.canGenerate && props.trailing;
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
-  const reveal = canAct && !editing && !confirmDelete && !confirmFork && !directing ? ` ${REVEAL_CLASSES}` : "";
+  const reveal = canAct && !editing && !confirmDelete && !confirmBranch && !directing ? ` ${REVEAL_CLASSES}` : "";
 
   // Radix returns focus to the trigger on close; skip that when an item opens
   // an inline form, so it keeps focus and scrolls into view.
@@ -160,7 +157,7 @@ function MessageRow(props: {
     event.preventDefault();
   };
   const deleteConfirmRef = useRef<HTMLDivElement>(null);
-  const forkConfirmRef = useRef<HTMLFormElement>(null);
+  const branchConfirmRef = useRef<HTMLDivElement>(null);
   const directFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
     if (!confirmDelete) return;
@@ -169,11 +166,11 @@ function MessageRow(props: {
     return () => cancelAnimationFrame(frame);
   }, [confirmDelete]);
   useEffect(() => {
-    if (!confirmFork) return;
-    forkConfirmRef.current?.scrollIntoView({ block: "nearest" });
-    const frame = requestAnimationFrame(() => forkConfirmRef.current?.querySelector("input")?.focus({ preventScroll: true }));
+    if (!confirmBranch) return;
+    branchConfirmRef.current?.scrollIntoView({ block: "nearest" });
+    const frame = requestAnimationFrame(() => branchConfirmRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
-  }, [confirmFork]);
+  }, [confirmBranch]);
   useEffect(() => {
     if (directing) directFormRef.current?.scrollIntoView({ block: "nearest" });
   }, [directing]);
@@ -200,17 +197,16 @@ function MessageRow(props: {
       () => {},
     );
   };
-  const startFork = () => {
+  const startBranch = () => {
     keepMenuFocus.current = true;
-    setForkName(`${props.campaignName} fork`);
-    setConfirmFork(true);
+    setConfirmBranch(true);
   };
-  const runFork = () => {
-    if (forking) return;
-    setForking(true);
-    props.onForkMessage(message.id, forkName).then(
-      () => setConfirmFork(false),
-      () => setForking(false), // the parent surfaces the error banner
+  const runBranch = () => {
+    if (branching) return;
+    setBranching(true);
+    props.onBranchMessage(message.id).then(
+      () => setConfirmBranch(false),
+      () => setBranching(false), // the parent surfaces the error banner
     );
   };
   const startDirect = () => {
@@ -306,8 +302,8 @@ function MessageRow(props: {
     >
       <span className="text-sm text-muted">
         {confirmDelete === "after"
-          ? `Delete this message and everything after it? This removes ${props.deleteCount} messages; notes and relationships are unchanged.`
-          : "Delete this message? Notes and relationships are unchanged."}
+          ? `Delete this message and everything after it? This removes ${props.deleteCount} messages; the world is unchanged.`
+          : "Delete this message? The world is unchanged."}
       </span>
       <button
         type="button"
@@ -326,51 +322,33 @@ function MessageRow(props: {
     </div>
   );
 
-  const forkConfirm = confirmFork && (
-    <form
-      ref={forkConfirmRef}
+  const branchConfirm = confirmBranch && (
+    <div
+      ref={branchConfirmRef}
       className="mbs-2 grid gap-2 rounded-lg border border-border bg-surface p-3"
       role="group"
-      aria-label="Confirm forking the campaign from this message"
-      onSubmit={(event) => {
-        event.preventDefault();
-        runFork();
-      }}
+      aria-label="Confirm branching the chat from this message"
     >
-      <label className="grid gap-1 text-sm">
-        New campaign name
-        <input
-          className="min-h-11 rounded-lg border border-border bg-background px-3"
-          value={forkName}
-          onChange={(event) => setForkName(event.target.value)}
-          required
-          autoFocus
-        />
-      </label>
-      <p className="text-sm text-muted">
-        Copies the story up to this message into a new campaign.{" "}
-        {props.activeSession
-          ? "Characters, stats, notes, and relationships are copied as they are now."
-          : "Characters, stats, notes, and relationships are restored as they were when this session closed."}
-      </p>
+      <p className="text-sm text-muted">Starts a new chat in this world with the story up to this message. This chat stays as it is.</p>
       <div className="flex flex-wrap gap-2">
         <button
-          type="submit"
+          type="button"
           className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
-          disabled={forking}
+          onClick={runBranch}
+          disabled={branching}
         >
-          {forking ? "Forking…" : "Fork"}
+          {branching ? "Branching…" : "Branch"}
         </button>
         <button
           type="button"
           className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
-          onClick={() => setConfirmFork(false)}
-          disabled={forking}
+          onClick={() => setConfirmBranch(false)}
+          disabled={branching}
         >
           Cancel
         </button>
       </div>
-    </form>
+    </div>
   );
 
   const directForm = directing && (
@@ -421,7 +399,7 @@ function MessageRow(props: {
     </form>
   );
 
-  const hasActions = canAct || canFork;
+  const hasActions = canAct || canBranch;
   const menu = props.controls === "menu" && hasActions && (
     <DropdownMenu.Root onOpenChange={resetMenuFocus}>
       <DropdownMenu.Trigger asChild>
@@ -465,9 +443,9 @@ function MessageRow(props: {
               </DropdownMenu.Portal>
             </DropdownMenu.Sub>
           )}
-          {canFork && (
-            <DropdownMenu.Item className="message-menu-item" onSelect={startFork}>
-              Fork from here
+          {canBranch && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={startBranch}>
+              Branch from here
             </DropdownMenu.Item>
           )}
         </DropdownMenu.Content>
@@ -484,7 +462,7 @@ function MessageRow(props: {
     <>
       {canDirect && iconButton("Regenerate with direction", MessageSquareQuote, startDirect)}
       {canEdit && iconButton("Edit", Pencil, startEdit)}
-      {canFork && iconButton("Fork from here", GitBranch, startFork)}
+      {canBranch && iconButton("Branch from here", GitBranch, startBranch)}
       {canDeleteSwipe && iconButton("Delete swipe", Rewind, () => runDelete("variant"))}
       {canAct && (
         <DropdownMenu.Root onOpenChange={resetMenuFocus}>
@@ -535,7 +513,7 @@ function MessageRow(props: {
           )}
           {editDialog}
           {deleteConfirm}
-          {forkConfirm}
+          {branchConfirm}
           {directForm}
         </div>
         <Avatar name={message.speaker_name} imageId={props.protagonistAvatarId} className="size-8 text-xs" />
@@ -558,7 +536,7 @@ function MessageRow(props: {
       {message.lore && <ContextNote lore={message.lore} />}
       {editing && !editExpanded ? editForm : (
         content
-          ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
+          ? <Narration content={content} streaming={props.streaming} characters={props.characters} protagonistId={props.protagonistId} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
           : message.status === "pending" ? <PendingDots /> : null
       )}
       {(showSwipes || canRegenerate || canRetry || inlineControls) && (
@@ -618,7 +596,7 @@ function MessageRow(props: {
       )}
       {editDialog}
       {deleteConfirm}
-      {forkConfirm}
+      {branchConfirm}
       {directForm}
     </article>
   );
@@ -645,30 +623,29 @@ function ContextNote(props: { lore: MessageLore }) {
   );
 }
 
-export function CampaignPlay(props: {
-  sessionId: string;
-  campaign: Campaign | null;
-  session: Session | null;
-  sessionLoading: boolean;
-  sessionError: string;
+export function ChatPlay(props: {
+  chatId: string;
+  chat: Chat | null;
+  world: World | null;
+  chatLoading: boolean;
+  chatError: string;
   messages: TranscriptMessage[] | undefined;
   messagesLoading: boolean;
   messagesError: string;
   generation: Generation | null;
   draft: string;
   onOpenSidebar: () => void;
-  onDraftChange: (sessionId: string, value: string) => void;
-  onSend: (sessionId: string, value: string, direction?: string, model?: ModelSelection) => void;
-  onOpen: (sessionId: string, direction?: string, model?: ModelSelection) => boolean;
-  onRegenerate: (sessionId: string, direction?: string, model?: ModelSelection) => boolean;
-  onSelectVariant: (sessionId: string, messageId: string) => Promise<void>;
-  onEditMessage: (sessionId: string, messageId: string, content: string) => Promise<void>;
-  onDeleteMessage: (sessionId: string, messageId: string, scope?: "variant" | "after") => Promise<void>;
-  onStop: (sessionId: string) => void | Promise<void>;
-  onRefreshMessages: (sessionId: string) => void | Promise<void>;
-  onRetrySession: (sessionId: string) => void | Promise<void>;
+  onDraftChange: (chatId: string, value: string) => void;
+  onSend: (chatId: string, value: string, direction?: string, model?: ModelSelection) => void;
+  onOpen: (chatId: string, direction?: string, model?: ModelSelection) => boolean;
+  onRegenerate: (chatId: string, direction?: string, model?: ModelSelection) => boolean;
+  onSelectVariant: (chatId: string, messageId: string) => Promise<void>;
+  onEditMessage: (chatId: string, messageId: string, content: string) => Promise<void>;
+  onDeleteMessage: (chatId: string, messageId: string, scope?: "variant" | "after") => Promise<void>;
+  onStop: (chatId: string) => void | Promise<void>;
+  onRefreshMessages: (chatId: string) => void | Promise<void>;
+  onRetryChat: (chatId: string) => void | Promise<void>;
   onDismissGeneration: () => void;
-  onSyncSession: (sessionId: string) => Promise<void>;
 }) {
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -679,73 +656,70 @@ export function CampaignPlay(props: {
   const [messageControls] = useState(storedMessageControls);
   const [following, setFollowing] = useState(true);
   const [actionError, setActionError] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   // null: the composer's direction field is closed.
   const [direction, setDirection] = useState<string | null>(null);
   const [openingDirection, setOpeningDirection] = useState("");
   const picker = useModelSelection();
   const selection = picker.selection ?? undefined;
   const messages = props.messages ?? [];
-  const characters = props.campaign?.characters ?? [];
-  const protagonistAvatarId = props.campaign ? protagonistOf(props.campaign).avatar_id : null;
-  const live = props.generation?.sessionId === props.sessionId ? props.generation : null;
-  const otherGeneration = props.generation && props.generation.sessionId !== props.sessionId && props.generation.phase !== "error"
+  const worldId = props.world?.id;
+  const charactersLibrary = useWorldCharacters(worldId ?? "");
+  const characters = charactersLibrary.items ?? [];
+  const protagonist = characters.find((character) => character.id === props.chat?.protagonist_id);
+  const protagonistAvatarId = protagonist?.avatar_id ?? null;
+  const live = props.generation?.chatId === props.chatId ? props.generation : null;
+  const otherGeneration = props.generation && props.generation.chatId !== props.chatId && props.generation.phase !== "error"
     ? props.generation
     : null;
   const otherGenerationError = props.generation
-    && props.generation.sessionId !== props.sessionId
+    && props.generation.chatId !== props.chatId
     && props.generation.phase === "error"
     ? props.generation
     : null;
-  const isActiveSession = Boolean(
-    props.campaign
-    && props.session
-    && isActiveCampaignSession(props.campaign, props.session),
-  );
   const hasPending = messages.some((message) => message.role === "assistant" && message.status === "pending")
     || Boolean(live?.pendingMessageId && live.phase !== "error");
   const transcriptReady = props.messages !== undefined && !props.messagesError;
   const busy = !transcriptReady || hasPending || live?.phase === "streaming" || live?.phase === "stopping" || Boolean(otherGeneration) || picker.status === "loading";
   const hasCompletedNarration = messages.some((message) => message.role === "assistant" && message.status === "complete");
-  // Row actions match what the server accepts for this session; only sends need
+  // Row actions match what the server accepts for this chat; only sends need
   // the app-wide exclusivity that `busy` tracks.
-  const sessionBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
-  const actionsAllowed = isActiveSession && transcriptReady && !sessionBusy;
+  const chatBusy = hasPending || live?.phase === "streaming" || live?.phase === "stopping";
+  const actionsAllowed = transcriptReady && !chatBusy;
   // Without a usable choice the server would fall back to the saved one, which
   // may be a model the player has since switched off.
   const noModel = picker.status === "ready" && !selection;
   const canGenerate = actionsAllowed && !busy && !noModel;
-  // Forking is allowed in the active session and in closed (read-only) ones,
-  // but the server refuses it while this campaign's active session generates.
-  const campaignGenerating = otherGeneration?.sessionId === props.campaign?.active_session_id;
-  const canFork = transcriptReady && !sessionBusy && !campaignGenerating;
+  const canBranch = transcriptReady && !chatBusy;
   const lastUserMessageId = messages.filter((message) => message.role === "user").at(-1)?.id;
-  const addToCast = isActiveSession && !sessionBusy ? setWalkOnName : undefined;
+  const addToCast = chatBusy ? undefined : setWalkOnName;
   const showCharacter = (id: string) => {
     setRevealedCharacter((current) => ({ id, key: (current?.key ?? 0) + 1 }));
     if (!docked) setDetailsOpen(true);
   };
-  const showEmptyOpening = isActiveSession && messages.length === 0 && !busy && (!live || live.phase === "error");
+  const showEmptyOpening = messages.length === 0 && !busy && (!live || live.phase === "error");
 
   useEffect(() => {
     setFollowing(true);
-  }, [props.sessionId]);
+  }, [props.chatId]);
 
   useEffect(() => {
     setActionError("");
     setDirection(null);
     setOpeningDirection("");
-  }, [props.sessionId]);
+  }, [props.chatId]);
 
   useEffect(() => {
     if (!hasPending) return;
-    const refresh = () => { void props.onRefreshMessages(props.sessionId); };
+    const refresh = () => { void props.onRefreshMessages(props.chatId); };
     const interval = window.setInterval(refresh, 3000);
     return () => window.clearInterval(interval);
-  }, [hasPending, props.onRefreshMessages, props.sessionId]);
+  }, [hasPending, props.onRefreshMessages, props.chatId]);
 
   const handleSend = (value: string) => {
     setFollowing(true);
-    props.onSend(props.sessionId, value, direction ?? undefined, selection);
+    props.onSend(props.chatId, value, direction ?? undefined, selection);
   };
   // The direction belongs to the accepted turn; a refused send keeps it for the retry.
   const acceptedTurnId = live?.kind === "message" ? live.pendingMessageId : undefined;
@@ -758,34 +732,49 @@ export function CampaignPlay(props: {
   const handleRegenerate = (direction?: string) => {
     setActionError("");
     setFollowing(true);
-    props.onRegenerate(props.sessionId, direction, selection);
+    props.onRegenerate(props.chatId, direction, selection);
   };
   const handleSelectVariant = (messageId: string) => {
     setActionError("");
-    props.onSelectVariant(props.sessionId, messageId).catch(surfaceActionError);
+    props.onSelectVariant(props.chatId, messageId).catch(surfaceActionError);
   };
   const handleEditMessage = (messageId: string, content: string, andRegenerate: boolean) => {
     setActionError("");
-    const saved = props.onEditMessage(props.sessionId, messageId, content);
+    const saved = props.onEditMessage(props.chatId, messageId, content);
     saved.catch(surfaceActionError);
     if (!andRegenerate) return saved;
-    return saved.then(() => { props.onRegenerate(props.sessionId, undefined, selection); });
+    return saved.then(() => { props.onRegenerate(props.chatId, undefined, selection); });
   };
   const handleDeleteMessage = (messageId: string, scope?: "variant" | "after") => {
     setActionError("");
-    const removed = props.onDeleteMessage(props.sessionId, messageId, scope);
+    const removed = props.onDeleteMessage(props.chatId, messageId, scope);
     removed.catch(surfaceActionError);
     return removed;
   };
-  const handleForkFromMessage = (messageId: string, name: string) => {
+  const handleBranchFromMessage = (messageId: string) => {
     setActionError("");
-    const forked = forkFromMessage(props.sessionId, messageId, name).then(async (result) => {
-      // The fork exists now; a failed list refresh must not invite a duplicate retry.
-      await props.onSyncSession(result.session.id).catch(() => {});
-      navigate(`/sessions/${encodeURIComponent(result.session.id)}`);
+    const branched = branchChat(props.chatId, messageId).then((branch) => {
+      refreshChats();
+      refreshWorldChats(branch.world_id);
+      navigate(`/chats/${encodeURIComponent(branch.id)}`);
     });
-    forked.catch(surfaceActionError);
-    return forked;
+    branched.catch(surfaceActionError);
+    return branched;
+  };
+  const discardChat = async () => {
+    if (!props.chat || discarding) return;
+    setDiscarding(true);
+    setActionError("");
+    try {
+      await deleteChat(props.chat.id);
+      refreshChats();
+      refreshWorldChats(props.chat.world_id);
+      navigate(`/worlds/${encodeURIComponent(props.chat.world_id)}`);
+    } catch (error) {
+      surfaceActionError(error);
+      setDiscarding(false);
+      setConfirmDiscard(false);
+    }
   };
   const trailingMessage = messages.at(-1);
   const liveUnlisted = live
@@ -835,7 +824,7 @@ export function CampaignPlay(props: {
     localStorage.setItem(PANEL_COLLAPSED_KEY, panelCollapsed ? "1" : "0");
   }, [panelCollapsed]);
 
-  const stopTarget = otherGeneration?.sessionId ?? props.sessionId;
+  const stopTarget = otherGeneration?.chatId ?? props.chatId;
   // The run is reserved server-side before acceptance headers arrive, so Stop
   // works from the moment a local generation starts.
   const stopAvailable = hasPending || live?.phase === "streaming" || Boolean(otherGeneration);
@@ -865,12 +854,14 @@ export function CampaignPlay(props: {
     if (docked) setDetailsOpen(false);
   }, [docked]);
 
-  const panelProps = props.campaign && props.session ? {
-    campaign: props.campaign,
-    session: props.session,
-    active: isActiveSession,
-    canEndSession: isActiveSession && !busy,
-    onSyncSession: props.onSyncSession,
+  useEffect(() => {
+    if (worldId) ensureWorldCharacters(worldId);
+  }, [worldId]);
+
+  const chatReady = Boolean(props.chat && props.world && charactersLibrary.items !== undefined);
+  const panelProps = props.chat && props.world ? {
+    chat: props.chat,
+    world: props.world,
     revealCharacter: revealedCharacter,
   } : null;
 
@@ -878,50 +869,101 @@ export function CampaignPlay(props: {
     <div className="flex min-inline-0 flex-1">
     <div className="flex min-inline-size-0 flex-1 flex-col">
       <AppHeader
-        title={props.campaign?.name ?? "Campaign"}
-        subtitle={props.session ? `${props.session.title}${isActiveSession ? "" : " · Read-only"}` : undefined}
+        title={props.chat?.title ?? "Chat"}
+        subtitle={props.world?.name}
         onOpenSidebar={props.onOpenSidebar}
-        actions={panelProps && !docked && <button type="button" className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground" onClick={() => setDetailsOpen(true)}><PanelRightOpen className="size-4" aria-hidden="true" />Campaign</button>}
+        actions={props.chat && (
+          <>
+            <Link
+              to={`/worlds/${encodeURIComponent(props.chat.world_id)}`}
+              className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-muted no-underline [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+            >
+              <Globe2 className="size-4" aria-hidden="true" />World
+            </Link>
+            <button
+              type="button"
+              className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              onClick={() => setConfirmDiscard(true)}
+              disabled={chatBusy || discarding}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />Discard
+            </button>
+            {panelProps && !docked && (
+              <button type="button" className="pressable inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground" onClick={() => setDetailsOpen(true)}>
+                <PanelRightOpen className="size-4" aria-hidden="true" />World
+              </button>
+            )}
+          </>
+        )}
       />
 
-      {props.sessionLoading ? (
-        <p className="flex-1 px-4 py-8 text-sm text-muted" role="status">Loading campaign…</p>
-      ) : props.sessionError || !props.campaign || !props.session ? (
+      {confirmDiscard && (
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2 px-4 py-3 text-sm" role="group" aria-label="Confirm discarding this chat">
+          <p className="min-w-0 flex-1 text-muted">Discard this chat? Its transcript is deleted; the world is unchanged.</p>
+          <button
+            type="button"
+            className="pressable min-h-9 rounded-lg border border-border px-3 text-sm disabled:pointer-events-none disabled:opacity-50"
+            onClick={() => { void discardChat(); }}
+            disabled={discarding}
+          >
+            {discarding ? "Discarding…" : "Discard chat"}
+          </button>
+          <button type="button" className="pressable min-h-9 rounded-lg border border-border px-3 text-sm" onClick={() => setConfirmDiscard(false)} disabled={discarding}>Cancel</button>
+        </div>
+      )}
+
+      {props.chatLoading ? (
+        <p className="flex-1 px-4 py-8 text-sm text-muted" role="status">Loading chat…</p>
+      ) : props.chatError || !props.chat || !props.world ? (
         <section className="m-4 grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
-          <p className="text-sm text-muted">{props.sessionError || "This campaign session could not be loaded."}</p>
-          <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onRetrySession(props.sessionId); }}>Try again</button>
+          <p className="text-sm text-muted">{props.chatError || "This chat could not be loaded."}</p>
+          <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onRetryChat(props.chatId); }}>Try again</button>
+        </section>
+      ) : !chatReady ? (
+        charactersLibrary.loadError ? (
+          <section className="m-4 grid justify-items-start gap-3 rounded-xl border border-border p-6" role="alert">
+            <p className="text-sm text-muted">{charactersLibrary.loadError}</p>
+            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => ensureWorldCharacters(props.world!.id)}>Try again</button>
+          </section>
+        ) : <p className="flex-1 px-4 py-8 text-sm text-muted" role="status">Loading the world’s characters…</p>
+      ) : !protagonist ? (
+        <section className="m-4 grid gap-3 rounded-xl border border-border p-6" role="alert">
+          <p className="text-sm text-muted">This chat’s protagonist is no longer part of {props.world.name}.</p>
         </section>
       ) : (
         <>
           {props.messagesError && (
             <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm" role="alert">
               <p className="flex-1 text-muted">{props.messagesError}</p>
-              <button type="button" className="pressable min-h-9 rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onRefreshMessages(props.sessionId); }}>Retry transcript load</button>
+              <button type="button" className="pressable min-h-9 rounded-lg border border-border px-3 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void props.onRefreshMessages(props.chatId); }}>Retry transcript load</button>
             </div>
           )}
           {props.messagesLoading && props.messages === undefined ? (
             <p className="flex-1 px-4 py-8 text-sm text-muted" role="status">Loading transcript…</p>
           ) : (
             <MessageScroller
-              key={props.sessionId}
+              key={props.chatId}
               className="flex-1"
               followOutput={following}
               followThreshold={56}
               onFollowChange={setFollowing}
               contentClassName="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6"
-              label="Session transcript"
+              label="Chat transcript"
             >
               {messages.length === 0 ? (
                 <div className="my-12 grid justify-items-center gap-3 rounded-xl border border-dashed border-border px-5 py-10 text-center">
                   <Sparkles className="size-6 text-accent" aria-hidden="true" />
-                  <h2 className="text-lg font-semibold">{isActiveSession ? "Your session is ready" : "No transcript for this session"}</h2>
-                  <p className="max-w-md text-sm text-muted">{isActiveSession ? "Set up characters, notes, and relationships in the campaign panel, then begin the opening." : "This session is read-only and will not open or accept new actions."}</p>
+                  <h2 className="text-lg font-semibold">Your chat is ready</h2>
+                  <p className="max-w-md text-sm text-muted">The narrator opens from the world as it stands now. Edit characters or the compendium in the world panel, then begin the opening.</p>
+                  {props.chat.opening.trim() && (
+                    <p className="max-h-40 w-full max-w-md overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-start text-sm leading-6 text-muted" aria-label="Opening">{props.chat.opening}</p>
+                  )}
                   {showEmptyOpening && (
                     <form
                       className="grid w-full max-w-md gap-3"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        props.onOpen(props.sessionId, openingDirection, selection);
+                        props.onOpen(props.chatId, openingDirection, selection);
                       }}
                     >
                       <label className="grid gap-1 text-start text-sm">
@@ -954,28 +996,27 @@ export function CampaignPlay(props: {
                   lastUser={message.id === lastUserMessageId}
                   actionsAllowed={actionsAllowed}
                   canGenerate={canGenerate}
-                  canFork={canFork}
-                  activeSession={isActiveSession}
-                  campaignName={props.campaign?.name ?? "Campaign"}
+                  protagonistId={protagonist.id}
+                  canBranch={canBranch}
                   deleteCount={messages.length - index}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
-                  onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  onBranchMessage={handleBranchFromMessage}
                   controls={messageControls}
                 />
                 );
               })}
-              {sending && !sentListed && props.campaign && (
+              {sending && !sentListed && (
                 <MessageRow
                   key="optimistic-player-turn"
                   message={{
                     id: "optimistic-player-turn",
-                    session_id: props.sessionId,
+                    chat_id: props.chatId,
                     position: messages.length + 1,
                     role: "user",
-                    speaker_name: protagonistOf(props.campaign).name,
+                    speaker_name: protagonist.name,
                     content: sending.playerText ?? "",
                     status: "complete",
                     direction: null,
@@ -989,15 +1030,14 @@ export function CampaignPlay(props: {
                   canGenerate={false}
                   characters={characters}
                   protagonistAvatarId={protagonistAvatarId}
-                  canFork={false}
-                  activeSession={isActiveSession}
-                  campaignName={props.campaign?.name ?? "Campaign"}
+                  protagonistId={protagonist.id}
+                  canBranch={false}
                   deleteCount={0}
                   onRegenerate={handleRegenerate}
                   onSelectVariant={handleSelectVariant}
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
-                  onForkMessage={(messageId, name) => handleForkFromMessage(messageId, name)}
+                  onBranchMessage={handleBranchFromMessage}
                   controls={messageControls}
                   onShowCharacter={showCharacter}
                 />
@@ -1032,69 +1072,60 @@ export function CampaignPlay(props: {
 
           {otherGeneration && (
             <p className="mx-auto w-full max-w-3xl px-4 pbe-2 text-sm text-muted" role="status">
-              Another session is generating. <Link className="font-medium text-accent underline underline-offset-2" to={`/sessions/${encodeURIComponent(otherGeneration.sessionId)}`}>Open that session</Link>, or stop its generation here.
+              Another chat is generating. <Link className="font-medium text-accent underline underline-offset-2" to={`/chats/${encodeURIComponent(otherGeneration.chatId)}`}>Open that chat</Link>, or stop its generation here.
             </p>
           )}
 
           {otherGenerationError?.error && (
             <p className="mx-auto w-full max-w-3xl px-4 pbe-2 text-sm text-muted" role="alert">
-              Generation in another session failed: {otherGenerationError.error}{" "}
-              <Link className="font-medium text-accent underline underline-offset-2" to={`/sessions/${encodeURIComponent(otherGenerationError.sessionId)}`}>View that session</Link>.
+              Generation in another chat failed: {otherGenerationError.error}{" "}
+              <Link className="font-medium text-accent underline underline-offset-2" to={`/chats/${encodeURIComponent(otherGenerationError.chatId)}`}>View that chat</Link>.
             </p>
           )}
 
-          {isActiveSession ? (
-            <Composer
-              value={props.draft}
-              onValueChange={(value) => props.onDraftChange(props.sessionId, value)}
-              onSubmit={handleSend}
-              direction={direction}
-              onDirectionChange={setDirection}
-              modelControl={<ModelPicker picker={picker} disabled={busy} />}
-              placeholder={`What does ${protagonistOf(props.campaign).name} do or say?`}
-              inputLabel={`What does ${protagonistOf(props.campaign).name} do or say?`}
-              sendLabel="Send action"
-              busy={busy || noModel || !hasCompletedNarration}
-              showStop={stopAvailable}
-              onStop={() => { void props.onStop(stopTarget); }}
-            />
-          ) : (
-            <div className="flex flex-wrap items-center gap-2 border-bs border-border px-4 py-3 text-sm" role="note">
-              <p className="flex-1 text-muted">Read-only transcript. Only the active session can accept actions.</p>
-              {props.session.id !== props.campaign.active_session_id && (
-                <Link to={`/sessions/${encodeURIComponent(props.campaign.active_session_id)}`} className="font-medium text-accent underline underline-offset-2">Open active session</Link>
-              )}
-            </div>
-          )}
+          <Composer
+            value={props.draft}
+            onValueChange={(value) => props.onDraftChange(props.chatId, value)}
+            onSubmit={handleSend}
+            direction={direction}
+            onDirectionChange={setDirection}
+            modelControl={<ModelPicker picker={picker} disabled={busy} />}
+            placeholder={`What does ${protagonist.name} do or say?`}
+            inputLabel={`What does ${protagonist.name} do or say?`}
+            sendLabel="Send action"
+            busy={busy || noModel || !hasCompletedNarration}
+            showStop={stopAvailable}
+            onStop={() => { void props.onStop(stopTarget); }}
+          />
         </>
       )}
     </div>
       {panelProps && (docked ? (
         <aside
-          aria-label="Campaign panel"
+          aria-label="World panel"
           className={`sidebar-shell flex-none overflow-clip border-s border-border bg-surface ${panelCollapsed ? "w-14" : "w-[24rem]"}`}
         >
           <div className={`h-full ${panelCollapsed ? "" : "w-[calc(24rem_-_1px)]"}`}>
-            <CampaignPanel key={panelProps.campaign.id} {...panelProps} collapsed={panelCollapsed} onCollapsedChange={setPanelCollapsed} />
+            <WorldPanel key={panelProps.world.id} {...panelProps} collapsed={panelCollapsed} onCollapsedChange={setPanelCollapsed} />
           </div>
         </aside>
       ) : (
-        <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} title="Campaign panel" closeLabel="Close campaign panel" className="drawer fixed inset-bs-0 inset-be-0 end-0 start-auto z-40 w-[min(100%,26rem)] border-s border-e-0 border-border bg-surface">
-          <CampaignPanel key={panelProps.campaign.id} {...panelProps} />
+        <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} title="World panel" closeLabel="Close world panel" className="drawer fixed inset-bs-0 inset-be-0 end-0 start-auto z-40 w-[min(100%,26rem)] border-s border-e-0 border-border bg-surface">
+          <WorldPanel key={panelProps.world.id} {...panelProps} />
         </Sheet>
       ))}
-      {walkOnName !== null && props.campaign && (
+      {walkOnName !== null && props.world && (
         <CharacterProfileDialog
           character={null}
           initialName={walkOnName}
           sceneContext
-          title={`Add ${walkOnName} to the cast`}
-          description="Adds a narrator-controlled cast character to this campaign. Paragraphs tagged with this name use their profile."
-          onCreate={(input) => createCampaignCharacter(props.campaign!.id, input)}
-          onUpdate={(id, input) => updateCampaignCharacter(props.campaign!.id, id, input)}
-          onAvatarUpload={(id, file) => uploadCampaignCharacterAvatar(props.campaign!.id, id, file)}
-          onAvatarRemove={(id) => deleteCampaignCharacterAvatar(props.campaign!.id, id)}
-          onSaved={() => { void props.onSyncSession(props.sessionId).catch(() => {}); }}
+          title={`Add ${walkOnName} to the world`}
+          description={`Adds a character to ${props.world.name}. Paragraphs tagged with this name use their profile.`}
+          onCreate={(input) => createWorldCharacter(props.world!.id, input)}
+          onUpdate={updateCharacter}
+          onAvatarUpload={uploadCharacterAvatar}
+          onAvatarRemove={deleteCharacterAvatar}
+          onSaved={(saved, previousId) => applyWorldCharacterSaved(props.world!.id, saved, previousId)}
           onClose={() => setWalkOnName(null)}
         />
       )}

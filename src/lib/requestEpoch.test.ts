@@ -7,27 +7,27 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("an older campaign response cannot replace the latest result", async () => {
+test("an older chat response cannot replace the latest result", async () => {
   const epoch = createRequestEpoch();
-  const campaignA = deferred<string>();
-  const campaignB = deferred<string>();
+  const chatA = deferred<string>();
+  const chatB = deferred<string>();
   let displayed = "";
 
   const requestA = epoch.next();
-  const loadA = campaignA.promise.then((result) => {
+  const loadA = chatA.promise.then((result) => {
     if (epoch.isCurrent(requestA)) displayed = result;
   });
   const requestB = epoch.next();
-  const loadB = campaignB.promise.then((result) => {
+  const loadB = chatB.promise.then((result) => {
     if (epoch.isCurrent(requestB)) displayed = result;
   });
 
-  campaignB.resolve("Campaign B");
+  chatB.resolve("Chat B");
   await loadB;
-  campaignA.resolve("Campaign A");
+  chatA.resolve("Chat A");
   await loadA;
 
-  expect(displayed).toBe("Campaign B");
+  expect(displayed).toBe("Chat B");
 });
 
 test("effect cleanup invalidates a request still in flight", async () => {
@@ -40,7 +40,7 @@ test("effect cleanup invalidates a request still in flight", async () => {
   });
 
   epoch.invalidate();
-  response.resolve("Unmounted campaign");
+  response.resolve("Unmounted chat");
   await load;
 
   expect(displayed).toBe("");

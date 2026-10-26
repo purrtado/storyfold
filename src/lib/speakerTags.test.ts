@@ -1,24 +1,23 @@
 import { expect, test } from "bun:test";
-import type { CampaignCharacter } from "../../shared/domain";
+import type { Character } from "../../shared/domain";
 import { narrationSegments, resolveSpeaker } from "./speakerTags";
 
-function character(id: string, name: string, role: CampaignCharacter["role"] = "cast"): CampaignCharacter {
+function character(id: string, name: string): Character {
   return {
     id,
     name,
-    role,
     description: "",
-    campaign_id: "c",
+    world_id: "w",
     avatar_id: null,
     stats_enabled: false,
     stats: {},
     created_at: "",
     updated_at: "",
-  } as CampaignCharacter;
+  } as Character;
 }
 
 const cast = [
-  character("p", "Sable Reyes", "protagonist"),
+  character("p", "Sable Reyes"),
   character("v", "Vex Calder"),
   character("o1", "Orrin Hale"),
   character("o2", "Orrin Marsh"),

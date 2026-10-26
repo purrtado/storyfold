@@ -1,32 +1,28 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Globe2, Pencil, Plus, Search } from "lucide-react";
-import { STAT_KINDS, type World } from "../../shared/domain";
-import { createWorld, updateWorld, type WorldInput } from "../lib/storyApi";
+import { Link, useNavigate } from "react-router-dom";
+import { Globe2, Plus, Search } from "lucide-react";
+import { STAT_KINDS } from "../../shared/domain";
+import { createWorld, type WorldInput } from "../lib/storyApi";
 import { refreshStats, refreshWorlds, useStats, useWorlds, worldsLibrary } from "../lib/libraryCache";
 import { AppHeader } from "./AppHeader";
 import { STAT_KIND_LABELS } from "./StatDefinitionList";
-import { WorldCompendium } from "./WorldCompendium";
 import { TextEditor } from "./TextEditor";
 
 const emptyWorld: WorldInput = {
   name: "",
   setting_brief: "",
-  suggested_starting_situation: "",
 };
 
-export function WorldsPage(props: {
-  onOpenSidebar: () => void;
-  onSelect: (world: World) => void;
-}) {
+export function WorldsPage(props: { onOpenSidebar: () => void }) {
+  const navigate = useNavigate();
   const library = useWorlds();
   const worlds = library.items;
   const bankLibrary = useStats();
   const bankStats = bankLibrary.items;
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [query, setQuery] = useState("");
-  const [editor, setEditor] = useState<{ id: string | null; value: WorldInput; statIds: string[] } | null>(null);
+  const [editor, setEditor] = useState<{ value: WorldInput; statIds: string[] } | null>(null);
   const [saveError, setSaveError] = useState("");
-  const [compendiumWorldId, setCompendiumWorldId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -49,27 +45,13 @@ export function WorldsPage(props: {
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return current;
     return current.filter((world) =>
-      [world.name, world.setting_brief, world.suggested_starting_situation]
+      [world.name, world.setting_brief]
         .some((value) => value.toLocaleLowerCase().includes(needle)),
     );
   }, [query, worlds]);
-  const compendiumWorld = worlds?.find((item) => item.id === compendiumWorldId);
 
   const openNew = () => {
-    setEditor({ id: null, value: { ...emptyWorld }, statIds: [] });
-    setSaveError("");
-  };
-
-  const openEdit = (world: World) => {
-    setEditor({
-      id: world.id,
-      value: {
-        name: world.name,
-        setting_brief: world.setting_brief,
-        suggested_starting_situation: world.suggested_starting_situation,
-      },
-      statIds: [],
-    });
+    setEditor({ value: { ...emptyWorld }, statIds: [] });
     setSaveError("");
   };
 
@@ -88,7 +70,6 @@ export function WorldsPage(props: {
     const input = {
       name: editor.value.name.trim(),
       setting_brief: editor.value.setting_brief.trim(),
-      suggested_starting_situation: editor.value.suggested_starting_situation.trim(),
     };
     if (!input.setting_brief) {
       setSaveError("Add a setting brief.");
@@ -97,11 +78,10 @@ export function WorldsPage(props: {
     setSaving(true);
     setSaveError("");
     try {
-      const saved = editor.id
-        ? await updateWorld(editor.id, input)
-        : await createWorld({ ...input, ...(editor.statIds.length ? { stat_ids: editor.statIds } : {}) });
-      worldsLibrary.applySaved(saved, editor.id ?? undefined);
+      const saved = await createWorld({ ...input, ...(editor.statIds.length ? { stat_ids: editor.statIds } : {}) });
+      worldsLibrary.applySaved(saved, undefined);
       setEditor(null);
+      navigate(`/worlds/${encodeURIComponent(saved.id)}`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Could not save this world.");
     } finally {
@@ -119,7 +99,7 @@ export function WorldsPage(props: {
               <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">Your library</p>
               <h1 className="mbs-2 text-3xl font-semibold tracking-tight">Worlds</h1>
               <p className="mbs-2 text-sm leading-6 text-muted">
-                Reusable settings for independent stories. Changes here shape new campaigns, not existing ones.
+                Each world is the living save for its stories: its setting, characters and compendium are shared by every chat you start in it.
               </p>
             </div>
             <button
@@ -137,9 +117,9 @@ export function WorldsPage(props: {
               <form className="grid gap-4" onSubmit={submit}>
                 <div>
                   <h2 id="world-editor-title" className="text-lg font-semibold">
-                    {editor.id ? "Edit world" : "Create a world"}
+                    Create a world
                   </h2>
-                  <p className="mbs-1 text-sm text-muted">Define the setting and a possible first scene.</p>
+                  <p className="mbs-1 text-sm text-muted">Define the setting. Add characters, places and opening scenes from the world once it exists.</p>
                 </div>
                 <div className="grid gap-4">
                   <label className="grid gap-1.5 text-sm font-medium">
@@ -161,64 +141,53 @@ export function WorldsPage(props: {
                       className="min-h-28 rounded-lg border border-border bg-raised font-normal"
                     />
                   </div>
-                  <div className="grid gap-1.5 text-sm font-medium">
-                    <span id="world-starting-situation">Suggested starting situation <span className="font-normal text-muted">Optional</span></span>
-                    <TextEditor
-                      labelledBy="world-starting-situation"
-                      value={editor.value.suggested_starting_situation}
-                      onChange={(suggested_starting_situation) => setEditor({ ...editor, value: { ...editor.value, suggested_starting_situation } })}
-                      className="min-h-24 rounded-lg border border-border bg-raised font-normal"
-                    />
-                  </div>
-                  {!editor.id && (
-                    <fieldset className="grid gap-2 text-sm font-medium">
-                      <legend>
-                        Import stats from the bank <span className="font-normal text-muted">Optional</span>
-                      </legend>
-                      {bankStats === undefined ? (
-                        bankLibrary.loadError ? (
-                          <div className="grid justify-items-start gap-2" role="alert">
-                            <p className="font-normal text-muted">{bankLibrary.loadError}</p>
-                            <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshStats()}>Try again</button>
+                  <fieldset className="grid gap-2 text-sm font-medium">
+                    <legend>
+                      Import stats from the bank <span className="font-normal text-muted">Optional</span>
+                    </legend>
+                    {bankStats === undefined ? (
+                      bankLibrary.loadError ? (
+                        <div className="grid justify-items-start gap-2" role="alert">
+                          <p className="font-normal text-muted">{bankLibrary.loadError}</p>
+                          <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => refreshStats()}>Try again</button>
+                        </div>
+                      ) : <p className="font-normal text-muted" role="status">Loading stats…</p>
+                    ) : bankStats.length === 0 ? (
+                      <p className="font-normal text-muted">The bank has no stats yet. Add them under Settings → Stats.</p>
+                    ) : (
+                      STAT_KINDS.map((kind) => {
+                        const group = bankStats.filter((stat) => stat.applies_to === kind);
+                        if (group.length === 0) return null;
+                        return (
+                          <div key={kind} className="grid gap-1.5">
+                            <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">{STAT_KIND_LABELS[kind]}</p>
+                            <ul className="grid list-none gap-1 p-0 sm:grid-cols-2">
+                              {group.map((stat) => (
+                                <li key={stat.id}>
+                                  <label className="flex cursor-pointer items-center gap-2 text-sm font-normal">
+                                    <input
+                                      type="checkbox"
+                                      className="size-4 flex-none accent-accent"
+                                      checked={editor.statIds.includes(stat.id)}
+                                      onChange={() => toggleBankStat(stat.id)}
+                                    />
+                                    <span className="size-3 flex-none rounded-full" style={{ background: `var(--stat-${stat.color})` }} aria-hidden="true" />
+                                    <span className="min-w-0 truncate">{stat.label}</span>
+                                  </label>
+                                </li>
+                              ))}
+                            </ul>
                           </div>
-                        ) : <p className="font-normal text-muted" role="status">Loading stats…</p>
-                      ) : bankStats.length === 0 ? (
-                        <p className="font-normal text-muted">The bank has no stats yet. Add them under Settings → Stats.</p>
-                      ) : (
-                        STAT_KINDS.map((kind) => {
-                          const group = bankStats.filter((stat) => stat.applies_to === kind);
-                          if (group.length === 0) return null;
-                          return (
-                            <div key={kind} className="grid gap-1.5">
-                              <p className="text-xs font-semibold tracking-[0.12em] text-muted uppercase">{STAT_KIND_LABELS[kind]}</p>
-                              <ul className="grid list-none gap-1 p-0 sm:grid-cols-2">
-                                {group.map((stat) => (
-                                  <li key={stat.id}>
-                                    <label className="flex cursor-pointer items-center gap-2 text-sm font-normal">
-                                      <input
-                                        type="checkbox"
-                                        className="size-4 flex-none accent-accent"
-                                        checked={editor.statIds.includes(stat.id)}
-                                        onChange={() => toggleBankStat(stat.id)}
-                                      />
-                                      <span className="size-3 flex-none rounded-full" style={{ background: `var(--stat-${stat.color})` }} aria-hidden="true" />
-                                      <span className="min-w-0 truncate">{stat.label}</span>
-                                    </label>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          );
-                        })
-                      )}
-                    </fieldset>
-                  )}
+                        );
+                      })
+                    )}
+                  </fieldset>
                 </div>
                 {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
                 <div className="flex flex-wrap justify-end gap-2">
                   <button type="button" className="pressable min-h-11 rounded-lg border border-border px-4 py-2 text-sm text-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor(null)} disabled={saving}>Cancel</button>
                   <button type="submit" className="pressable min-h-11 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:cursor-wait disabled:opacity-60 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" disabled={saving}>
-                    {saving ? "Saving…" : editor.id ? "Save changes" : "Create world"}
+                    {saving ? "Saving…" : "Create world"}
                   </button>
                 </div>
               </form>
@@ -304,37 +273,17 @@ export function WorldsPage(props: {
                         <p className="mbs-2 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-muted">{world.setting_brief}</p>
                       </div>
                     </div>
-                    {world.suggested_starting_situation && (
-                      <div className="border-s border-border ps-3">
-                        <p className="text-xs font-medium text-muted">Suggested starting situation</p>
-                        <p className="mbs-1 line-clamp-3 whitespace-pre-wrap text-sm leading-6">{world.suggested_starting_situation}</p>
-                      </div>
-                    )}
-                    <div className="grid gap-2 border-bs border-border pbs-3">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button type="button" className="pressable inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface" onClick={() => openEdit(world)}>
-                          <Pencil className="size-4" aria-hidden="true" />Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="pressable inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-3 text-sm whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface"
-                          aria-expanded={compendiumWorldId === world.id}
-                          aria-controls={compendiumWorldId === world.id ? `world-compendium-${world.id}` : undefined}
-                          onClick={() => setCompendiumWorldId((current) => current === world.id ? null : world.id)}
-                        >
-                          Compendium
-                        </button>
-                      </div>
-                      <button type="button" className="pressable inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90" onClick={() => props.onSelect(world)}>
-                        Use in a campaign
-                      </button>
-                    </div>
+                    <Link
+                      to={`/worlds/${encodeURIComponent(world.id)}`}
+                      className="pressable [margin-block-start:auto] inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg no-underline whitespace-nowrap [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90"
+                    >
+                      Open world
+                    </Link>
                   </article>
                 </li>
               ))}
             </ul>
           )}
-          {compendiumWorld && <WorldCompendium key={compendiumWorld.id} world={compendiumWorld} onClose={() => setCompendiumWorldId(null)} />}
         </main>
       </div>
     </div>

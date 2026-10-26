@@ -2,28 +2,37 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import {
   CHARACTER_PROFILE_FIELDS,
-  type Campaign,
-  type CampaignCharacter,
-  type CampaignStat,
+  type Character,
   type Relationship,
+  type StatDefinition,
   type StatValues,
-  protagonistOf,
+  type World,
 } from "../../shared/domain";
 import { Avatar, imageUrl } from "./Avatar";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
 import { StatBar, StatBars } from "./StatBar";
-import { createRequestEpoch } from "../lib/requestEpoch";
 import {
-  createCampaignCharacter,
-  createCampaignRelationship,
-  deleteCampaignCharacter,
-  deleteCampaignCharacterAvatar,
-  deleteCampaignRelationship,
-  fetchCampaignRelationships,
-  saveCampaignCharacterToWorld,
-  updateCampaignCharacter,
-  updateCampaignRelationship,
-  uploadCampaignCharacterAvatar,
+  applyWorldCharacterRemoved,
+  applyWorldCharacterSaved,
+  applyWorldRelationshipRemoved,
+  applyWorldRelationshipSaved,
+  ensureWorldCharacters,
+  ensureWorldRelationships,
+  ensureWorldStats,
+  refreshWorldRelationships,
+  useWorldCharacters,
+  useWorldRelationships,
+  useWorldStats,
+} from "../lib/libraryCache";
+import {
+  createWorldCharacter,
+  createWorldRelationship,
+  deleteCharacter,
+  deleteCharacterAvatar,
+  deleteWorldRelationship,
+  updateCharacter,
+  updateWorldRelationship,
+  uploadCharacterAvatar,
 } from "../lib/storyApi";
 
 type RelationshipDraft = {
@@ -44,12 +53,12 @@ function formatDate(value: string) {
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function statEntries(stats: CampaignStat[], values: StatValues) {
+function statEntries(stats: StatDefinition[], values: StatValues) {
   return stats.map((stat) => ({ stat, value: values[stat.id] ?? stat.default_value }));
 }
 
 /** Number input that commits the integer on blur or Enter; empty or invalid edits are discarded. */
-function StatValueInput(props: { stat: CampaignStat; value: number; disabled: boolean; onCommit: (value: number) => void }) {
+function StatValueInput(props: { stat: StatDefinition; value: number; disabled: boolean; onCommit: (value: number) => void }) {
   const [text, setText] = useState(() => String(props.value));
   useEffect(() => { setText(String(props.value)); }, [props.value]);
   const commit = () => {
@@ -83,8 +92,8 @@ function StatValueInput(props: { stat: CampaignStat; value: number; disabled: bo
 }
 
 function CharacterStatsSection(props: {
-  character: CampaignCharacter;
-  stats: CampaignStat[];
+  character: Character;
+  stats: StatDefinition[];
   busy: boolean;
   onToggle: () => void;
   onValueChange: (statId: string, value: number) => void;
@@ -103,7 +112,7 @@ function CharacterStatsSection(props: {
       </label>
       {props.character.stats_enabled && (
         props.stats.length === 0 ? (
-          <p className="text-sm text-muted">No character stats are defined in the Campaign tab yet.</p>
+          <p className="text-sm text-muted">No character stats are defined for this world yet.</p>
         ) : (
           <div className="grid gap-1.5">
             {statEntries(props.stats, props.character.stats).map(({ stat, value }) => (
@@ -126,7 +135,7 @@ function CharacterStatsSection(props: {
   );
 }
 
-function RelationshipDetails(props: { relationship: Relationship; stats: CampaignStat[] }) {
+function RelationshipDetails(props: { relationship: Relationship; stats: StatDefinition[] }) {
   const relationship = props.relationship;
   const hasContent = relationship.how_met.trim() || relationship.status.trim()
     || props.stats.length > 0 || relationship.known_facts.length > 0;
@@ -156,7 +165,7 @@ function RelationshipRow(props: {
   relationship: Relationship;
   sourceLabel: string;
   targetLabel: string;
-  stats: CampaignStat[];
+  stats: StatDefinition[];
   editing: boolean;
   editor?: ReactNode;
   onEdit: () => void;
@@ -228,7 +237,7 @@ function RelationshipRow(props: {
   );
 }
 
-function Profile({ character }: { character: CampaignCharacter }) {
+function Profile({ character }: { character: Character }) {
   const fields = CHARACTER_PROFILE_FIELDS.filter((field) => !field.required && character[field.key]);
   return (
     <section className="grid gap-2 text-sm" aria-label={`${character.name} profile`}>
@@ -248,12 +257,14 @@ function Profile({ character }: { character: CampaignCharacter }) {
 }
 
 function CharacterCard(props: {
-  character: CampaignCharacter;
+  character: Character;
   you: boolean;
+  /** Labels the card "You" or "Cast"; only meaningful where a protagonist exists. */
+  showRole: boolean;
   open: boolean;
   onToggle: () => void;
   status: string;
-  stats: { label: string; stats: CampaignStat[]; values: StatValues }[];
+  stats: { label: string; stats: StatDefinition[]; values: StatValues }[];
   toggleRef: (element: HTMLButtonElement | null) => void;
   children: ReactNode;
 }) {
@@ -272,7 +283,7 @@ function CharacterCard(props: {
         <span className="grid min-w-0 flex-1 gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
             <span className={`truncate font-semibold ${props.you ? "text-base" : "text-sm"}`}>{props.character.name}</span>
-            <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.you ? "You" : "Cast"}</span>
+            {props.showRole && <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.you ? "You" : "Cast"}</span>}
             {!props.you && props.character.context_mode !== "always" && (
               <span className="flex-none text-xs text-muted">{props.character.context_mode === "in_scene" ? "In scene" : "When mentioned"}</span>
             )}
@@ -299,20 +310,33 @@ function CharacterCard(props: {
 }
 
 export function CharacterRoster(props: {
-  campaign: Campaign;
-  sessionId: string;
+  world: World;
+  /** The chat's player character; the hub has none. */
+  protagonistId?: string;
   openId: string | null;
   onOpenChange: (id: string | null) => void;
   /** Changes when play asks to reveal the open card; it then scrolls to the card's top. */
   revealKey?: number;
   /** The reveal waits until the roster's tab panel is shown. */
   visible?: boolean;
-  onSyncSession: (sessionId: string) => Promise<void>;
 }) {
-  const [requestEpoch] = useState(createRequestEpoch);
-  const [relationships, setRelationships] = useState<Relationship[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
+  const worldId = props.world.id;
+  const charactersLibrary = useWorldCharacters(worldId);
+  const statsLibrary = useWorldStats(worldId);
+  const relationshipsLibrary = useWorldRelationships(worldId);
+  const characters = useMemo(
+    () => [...(charactersLibrary.items ?? [])].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
+    [charactersLibrary.items],
+  );
+  const relationships = useMemo(
+    () => [...(relationshipsLibrary.items ?? [])].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
+    [relationshipsLibrary.items],
+  );
+  const stats = statsLibrary.items ?? [];
+  const loading = relationshipsLibrary.items === undefined && relationshipsLibrary.loadError === undefined;
+  const loadError = relationshipsLibrary.loadError ?? "";
   const [creatingRelationship, setCreatingRelationship] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [sourceId, setSourceId] = useState("");
@@ -325,58 +349,32 @@ export function CharacterRoster(props: {
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const [createCardId, setCreateCardId] = useState<string | null>(null);
-  const [editor, setEditor] = useState<{ character: CampaignCharacter | null } | null>(null);
-  const [saveConfirmId, setSaveConfirmId] = useState<string | null>(null);
-  const [savedId, setSavedId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<{ character: Character | null } | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [characterBusyId, setCharacterBusyId] = useState<string | null>(null);
   const [characterAction, setCharacterAction] = useState<{ id: string; message: string } | null>(null);
   const summaryRefs = useRef(new Map<string, HTMLElement>());
   const cardRefs = useRef(new Map<string, HTMLButtonElement>());
 
-  const loadRelationships = useCallback(async () => {
-    const requestId = requestEpoch.next();
-    setLoading(true);
-    setLoadError("");
-    try {
-      const loaded = await fetchCampaignRelationships(props.campaign.id);
-      if (requestEpoch.isCurrent(requestId)) setRelationships(loaded);
-    } catch (error) {
-      if (requestEpoch.isCurrent(requestId)) setLoadError(errorMessage(error, "Could not load campaign relationships."));
-    } finally {
-      if (requestEpoch.isCurrent(requestId)) setLoading(false);
-    }
-  }, [props.campaign.id, requestEpoch]);
+  const protagonistId = props.protagonistId ?? null;
 
   const characterLabels = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const character of props.campaign.characters) {
+    for (const character of characters) {
       counts.set(character.name, (counts.get(character.name) ?? 0) + 1);
     }
-    return new Map(props.campaign.characters.map((character): [string, string] => {
-      if (character.role === "protagonist") return [character.id, "You"];
+    return new Map(characters.map((character): [string, string] => {
+      if (character.id === protagonistId) return [character.id, "You"];
       const duplicate = (counts.get(character.name) ?? 0) > 1;
       return [character.id, duplicate ? `${character.name} · ${character.id.slice(0, 8)}` : character.name];
     }));
-  }, [props.campaign.characters]);
+  }, [characters, protagonistId]);
 
-  const characterStats = useMemo(
-    () => props.campaign.stats.filter((stat) => stat.applies_to === "character"),
-    [props.campaign],
-  );
-  const relationshipStats = useMemo(
-    () => props.campaign.stats.filter((stat) => stat.applies_to === "relationship"),
-    [props.campaign],
-  );
+  const characterStats = useMemo(() => stats.filter((stat) => stat.applies_to === "character"), [stats]);
+  const relationshipStats = useMemo(() => stats.filter((stat) => stat.applies_to === "relationship"), [stats]);
 
-  // The write already succeeded; a failed refresh is recovered by the next focus/session load.
-  const syncCampaign = useCallback(() => {
-    void props.onSyncSession(props.sessionId).catch(() => {});
-  }, [props.onSyncSession, props.sessionId]);
-
-  const protagonistId = protagonistOf(props.campaign).id;
-  const worldName = props.campaign.world_snapshot.name;
   const relationshipLabel = (id: string) => characterLabels.get(id) ?? `Unavailable reference (${id})`;
+  // Cards group a relationship under the non-protagonist end; without a protagonist, under its source.
   const cardOwner = (relationship: Relationship) =>
     relationship.source_id === protagonistId ? relationship.target_id : relationship.source_id;
 
@@ -390,31 +388,28 @@ export function CharacterRoster(props: {
     setEditorError("");
   }, []);
   useEffect(() => {
-    setRelationships([]);
-    setLoadError("");
+    ensureWorldCharacters(worldId);
+    ensureWorldStats(worldId);
+    ensureWorldRelationships(worldId);
     setConfirmDeleteId(null);
     setDeleteBusyId(null);
     setDeleteErrors({});
     setSaving(false);
     setPendingFocusId(null);
     setEditor(null);
-    setSaveConfirmId(null);
-    setSavedId(null);
     setDeleteConfirmId(null);
     setCharacterBusyId(null);
     setCharacterAction(null);
     summaryRefs.current.clear();
     resetEditor();
-    void loadRelationships();
-    return () => requestEpoch.invalidate();
-  }, [loadRelationships, requestEpoch, resetEditor]);
+  }, [worldId, resetEditor]);
 
   const openCreate = (cardId: string) => {
     setCreatingRelationship(true);
     setCreateCardId(cardId);
     setEditingId(null);
     setSourceId(cardId);
-    setTargetId(cardId === protagonistId ? "" : protagonistId);
+    setTargetId(protagonistId && cardId !== protagonistId ? protagonistId : "");
     setDraft({
       how_met: "",
       status: "",
@@ -459,16 +454,16 @@ export function CharacterRoster(props: {
     };
     try {
       if (creatingRelationship) {
-        const created = await createCampaignRelationship(props.campaign.id, {
+        const created = await createWorldRelationship(worldId, {
           source_id: sourceId,
           target_id: targetId,
           ...fields,
         });
-        setRelationships((current) => [...current, created]);
+        applyWorldRelationshipSaved(worldId, created);
         setPendingFocusId(created.id);
       } else if (editingId) {
-        const updated = await updateCampaignRelationship(props.campaign.id, editingId, fields);
-        setRelationships((current) => current.map((relationship) => relationship.id === updated.id ? updated : relationship));
+        const updated = await updateWorldRelationship(worldId, editingId, fields);
+        applyWorldRelationshipSaved(worldId, updated, editingId);
         setPendingFocusId(editingId);
       }
       resetEditor();
@@ -485,13 +480,13 @@ export function CharacterRoster(props: {
     const deleted = relationships.find((relationship) => relationship.id === relationshipId);
     const remaining = relationships.filter((relationship) => relationship.id !== relationshipId);
     try {
-      await deleteCampaignRelationship(props.campaign.id, relationshipId);
-      setRelationships(remaining);
+      await deleteWorldRelationship(worldId, relationshipId);
+      applyWorldRelationshipRemoved(worldId, relationshipId);
       setConfirmDeleteId(null);
       if (editingId === relationshipId) resetEditor();
       const owner = deleted ? cardOwner(deleted) : protagonistId;
       const sibling = remaining.find((relationship) => cardOwner(relationship) === owner);
-      setPendingFocusId(sibling ? sibling.id : `card:${owner}`);
+      setPendingFocusId(sibling ? sibling.id : owner ? `card:${owner}` : null);
     } catch (error) {
       setDeleteErrors((current) => ({ ...current, [relationshipId]: errorMessage(error, "Could not delete relationship."), }));
     } finally {
@@ -499,62 +494,33 @@ export function CharacterRoster(props: {
     }
   };
 
-  const changeStatTracking = async (character: CampaignCharacter) => {
+  const patchCharacter = async (character: Character, patch: { stats_enabled?: boolean; stats?: StatValues }, failure: string) => {
     setCharacterBusyId(character.id);
     setCharacterAction(null);
     try {
-      await updateCampaignCharacter(props.campaign.id, character.id, { stats_enabled: !character.stats_enabled });
-      syncCampaign();
+      applyWorldCharacterSaved(worldId, await updateCharacter(character.id, patch), character.id);
     } catch (error) {
-      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not update stat tracking.") });
+      setCharacterAction({ id: character.id, message: errorMessage(error, failure) });
     } finally {
       setCharacterBusyId(null);
     }
   };
 
-  const setCharacterStat = async (character: CampaignCharacter, statId: string, value: number) => {
-    setCharacterBusyId(character.id);
-    setCharacterAction(null);
-    try {
-      await updateCampaignCharacter(props.campaign.id, character.id, { stats: { [statId]: value } });
-      syncCampaign();
-    } catch (error) {
-      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not save this stat value.") });
-    } finally {
-      setCharacterBusyId(null);
-    }
-  };
-
-  const profileSaved = (saved: CampaignCharacter, previousId: string | undefined) => {
+  const profileSaved = (saved: Character, previousId: string | undefined) => {
+    applyWorldCharacterSaved(worldId, saved, previousId);
     if (!previousId) props.onOpenChange(saved.id);
-    syncCampaign();
   };
 
-  const saveToWorld = async (character: CampaignCharacter) => {
+  const removeCharacter = async (character: Character) => {
     setCharacterBusyId(character.id);
     setCharacterAction(null);
     try {
-      await saveCampaignCharacterToWorld(props.campaign.id, character.id);
-      setSaveConfirmId(null);
-      setSavedId(character.id);
-      syncCampaign();
-    } catch (error) {
-      setCharacterAction({ id: character.id, message: errorMessage(error, "Could not save this character to the world.") });
-    } finally {
-      setCharacterBusyId(null);
-    }
-  };
-
-  const removeCharacter = async (character: CampaignCharacter) => {
-    setCharacterBusyId(character.id);
-    setCharacterAction(null);
-    try {
-      await deleteCampaignCharacter(props.campaign.id, character.id);
+      await deleteCharacter(character.id);
+      applyWorldCharacterRemoved(worldId, character.id);
+      refreshWorldRelationships(worldId);
       setDeleteConfirmId(null);
       if (props.openId === character.id) props.onOpenChange(null);
       if (editor?.character?.id === character.id) setEditor(null);
-      void loadRelationships();
-      syncCampaign();
     } catch (error) {
       setCharacterAction({ id: character.id, message: errorMessage(error, "Could not delete this character.") });
     } finally {
@@ -571,7 +537,7 @@ export function CharacterRoster(props: {
     <form className="grid min-w-0 gap-3 rounded-2xl border border-border bg-surface p-3" onSubmit={(event) => { void saveRelationship(event); }}>
       <div>
         <h4 className="font-semibold">{creatingRelationship ? "Create directed relationship" : "Edit relationship"}</h4>
-        <p className="text-xs text-muted">The direction is explicit; changes apply to this campaign only.</p>
+        <p className="text-xs text-muted">The direction is explicit; changes apply to this world.</p>
       </div>
       {creatingRelationship ? (
         <div className="grid gap-3">
@@ -579,7 +545,7 @@ export function CharacterRoster(props: {
             Source
             <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setEditorError(""); }} required>
               <option value="">Choose source character</option>
-              {props.campaign.characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
+              {characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
             </select>
           </label>
           <p className="text-center text-sm font-medium text-muted" aria-label="points to">→</p>
@@ -587,7 +553,7 @@ export function CharacterRoster(props: {
             Target
             <select className="min-h-11 min-w-0 rounded-lg border border-border bg-background px-3" value={targetId} onChange={(event) => { setTargetId(event.target.value); setEditorError(""); }} required>
               <option value="">Choose target character</option>
-              {props.campaign.characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
+              {characters.map((character) => <option key={character.id} value={character.id}>{characterLabels.get(character.id)}</option>)}
             </select>
           </label>
         </div>
@@ -695,13 +661,13 @@ export function CharacterRoster(props: {
       {loadError && (
         <div className="grid gap-2 rounded-lg border border-border p-3 text-sm" role="alert">
           <p className="text-muted">{loadError}</p>
-          <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { void loadRelationships(); }} disabled={loading}>Retry relationships</button>
+          <button type="button" className="pressable min-h-10 w-fit rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => refreshWorldRelationships(worldId)} disabled={loading}>Retry relationships</button>
         </div>
       )}
       {loading && <p className="text-sm text-muted" role="status">Loading relationships…</p>}
 
-      {props.campaign.characters.map((character) => {
-        const you = character.role === "protagonist";
+      {characters.map((character) => {
+        const you = character.id === protagonistId;
         const owned = relationships.filter((relationship) => cardOwner(relationship) === character.id);
         const towardYou = you ? undefined : owned.find((relationship) => relationship.target_id === protagonistId);
         const fromYou = you ? undefined : owned.find((relationship) => relationship.source_id === protagonistId);
@@ -715,6 +681,7 @@ export function CharacterRoster(props: {
             key={character.id}
             character={character}
             you={you}
+            showRole={protagonistId !== null}
             open={open}
             onToggle={() => props.onOpenChange(open ? null : character.id)}
             status={towardYou?.status.trim() || fromYou?.status.trim() || ""}
@@ -734,30 +701,19 @@ export function CharacterRoster(props: {
                 character={character}
                 stats={characterStats}
                 busy={characterBusyId === character.id}
-                onToggle={() => { void changeStatTracking(character); }}
-                onValueChange={(statId, value) => { void setCharacterStat(character, statId, value); }}
+                onToggle={() => { void patchCharacter(character, { stats_enabled: !character.stats_enabled }, "Could not update stat tracking."); }}
+                onValueChange={(statId, value) => { void patchCharacter(character, { stats: { [statId]: value } }, "Could not save this stat value."); }}
               />
               {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor({ character })} disabled={characterBusyId !== null}>Edit</button>
-                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setSaveConfirmId(character.id); setSavedId(null); setCharacterAction(null); }} disabled={characterBusyId !== null}>Save to world</button>
                 {!you && (
                   <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setDeleteConfirmId(character.id); setCharacterAction(null); }} disabled={characterBusyId !== null}>Delete</button>
                 )}
               </div>
-              {saveConfirmId === character.id && (
-                <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm saving ${character.name} to the world`}>
-                  <p className="text-sm">Save “{character.name}” to the world “{worldName}”? The world gets its own copy of the current profile and picture.</p>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void saveToWorld(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Saving…" : "Save to world"}</button>
-                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setSaveConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
-                  </div>
-                </div>
-              )}
-              {savedId === character.id && <p className="text-sm text-muted" role="status">Saved to “{worldName}”. The world now has its own copy.</p>}
               {deleteConfirmId === character.id && (
                 <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${character.name}`}>
-                  <p className="text-sm">Delete “{character.name}” from this campaign? Their relationships are deleted too.</p>
+                  <p className="text-sm">Delete “{character.name}” from {props.world.name}? Their relationships are deleted too.</p>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void removeCharacter(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Deleting…" : "Delete character"}</button>
                     <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setDeleteConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
@@ -800,15 +756,15 @@ export function CharacterRoster(props: {
       {editor && (
         <CharacterProfileDialog
           character={editor.character}
-          sceneContext={editor.character?.role !== "protagonist"}
+          sceneContext={editor.character === null || editor.character.id !== protagonistId}
           title={editor.character ? `Edit ${editor.character.name}` : "New character"}
           description={editor.character
-            ? "Edits change this campaign's own copy of the character."
-            : "Adds a narrator-controlled cast character to this campaign."}
-          onCreate={(input) => createCampaignCharacter(props.campaign.id, input)}
-          onUpdate={(id, input) => updateCampaignCharacter(props.campaign.id, id, input)}
-          onAvatarUpload={(id, file) => uploadCampaignCharacterAvatar(props.campaign.id, id, file)}
-          onAvatarRemove={(id) => deleteCampaignCharacterAvatar(props.campaign.id, id)}
+            ? `Edits apply to ${props.world.name} and every chat in it.`
+            : `Adds a character to ${props.world.name}.`}
+          onCreate={(input) => createWorldCharacter(worldId, input)}
+          onUpdate={updateCharacter}
+          onAvatarUpload={uploadCharacterAvatar}
+          onAvatarRemove={deleteCharacterAvatar}
           onSaved={profileSaved}
           onClose={() => setEditor(null)}
         />

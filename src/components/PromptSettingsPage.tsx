@@ -269,7 +269,7 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
             <div className="theme-body">
               <div className="theme-copy">
                 <p id="prompt-cards-title" className="theme-label">Prompt cards</p>
-                <p className="theme-desc">Only enabled card bodies are sent, from top to bottom. Titles are labels only. A card that uses a placeholder with no data for the campaign is skipped.</p>
+                <p className="theme-desc">Only enabled card bodies are sent, from top to bottom. Titles are labels only. A card that uses a placeholder with no data for the chat is skipped.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={buttonClass} disabled={cards === undefined || ordering} onClick={() => void add()}><Plus className="size-4" aria-hidden="true" />Add card</button>
