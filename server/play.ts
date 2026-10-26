@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import type { Message } from "../shared/domain";
+import type { Message, MessageLore } from "../shared/domain";
 import { protagonistOf } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
+import { selectLore, type LoreSelection } from "./lore";
 import {
   SessionClosedError,
   UnknownEntityError,
@@ -60,13 +61,20 @@ export interface TranscriptMessage extends Message {
   variant_index: number;
 }
 
+/** Storage shape of a message: lore is JSON text until parsed. */
+type MessageRecord = Omit<Message, "lore"> & { lore: string | null };
+
 /** Storage row including the selection flag; never sent to the client. */
-interface MessageRow extends Message {
+interface MessageRow extends MessageRecord {
   selected: number;
 }
 
 const MESSAGE_COLUMNS =
-  "id, session_id, position, role, speaker_name, content, status, direction, created_at, updated_at";
+  "id, session_id, position, role, speaker_name, content, status, direction, lore, created_at, updated_at";
+
+function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
+  return { ...row, lore: row.lore === null ? null : (JSON.parse(row.lore) as MessageLore) };
+}
 
 export interface PlaySettings {
   baseUrl: string;
@@ -96,11 +104,11 @@ export class PlayService {
   /** Selected rows in position order; the trailing narration carries its alternates. */
   transcript(sessionId: string): TranscriptMessage[] {
     const rows = this.db
-      .query<Message, [string]>(
+      .query<MessageRecord, [string]>(
         `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE session_id = ? AND selected = 1 ORDER BY position`,
       )
       .all(sessionId);
-    const plain = rows.map((row) => ({ ...row, variant_ids: [], variant_index: 0 }));
+    const plain = rows.map((row) => ({ ...messageFromRow(row), variant_ids: [], variant_index: 0 }));
     const trailing = plain.at(-1);
     if (!trailing || trailing.role !== "assistant") return plain;
     const variants = this.db
@@ -116,9 +124,8 @@ export class PlayService {
   }
 
   getMessage(messageId: string): Message | null {
-    return (
-      this.db.query<Message, [string]>(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`).get(messageId) ?? null
-    );
+    const row = this.db.query<MessageRecord, [string]>(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`).get(messageId);
+    return row ? messageFromRow(row) : null;
   }
 
   /**
@@ -326,8 +333,7 @@ export class PlayService {
       }
       const now = nowIso();
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
-      const { selected: _selected, ...edited } = { ...message, content: text, updated_at: now };
-      return edited;
+      return messageFromRow({ ...message, content: text, updated_at: now });
     });
     return edit.immediate(sessionId, messageId, content);
   }
@@ -378,22 +384,48 @@ export class PlayService {
     );
   }
 
+  /** What the model is sent before any one-reply notes: system prompt, history, and the opening stand-in. */
+  private narrationTokens(systemPrompt: string, history: NarrationMessage[]): number {
+    const messages = history.reduce((sum, message) => sum + countTokens(message.content), 0);
+    const opening = history.length === 0 ? countTokens(OPENING_REQUEST) : 0;
+    return countTokens(systemPrompt) + messages + opening;
+  }
+
   /**
    * The one size rule: the system prompt plus the completed history the model
    * would see, grown by `extra` tokens, must fit the narration budget.
-   * Nothing is truncated; the request is refused instead.
+   * Nothing is truncated; the request is refused instead. Keyword lore is
+   * not counted: it only ever takes the room left over.
    */
   private assertWithinBudget(sessionId: string, extra: number): void {
-    const messages = this.modelHistory(sessionId);
-    const history = messages.reduce((sum, message) => sum + countTokens(message.content), 0);
-    const opening = messages.length === 0 ? countTokens(OPENING_REQUEST) : 0;
-    const total = countTokens(this.systemPrompt(sessionId)) + history + opening + extra;
+    const total = this.narrationTokens(this.systemPrompt(sessionId), this.modelHistory(sessionId)) + extra;
     if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
         `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
           "Shorten the campaign's notes or relationships, or begin the next session with a handoff.",
       );
     }
+  }
+
+  /**
+   * Keyword lore for one reply, scanned from the recent history — or, before
+   * any, the situation the opening grows from — with the direction counted
+   * as part of the latest input. It gets only the room the budget leaves.
+   */
+  private replyLore(
+    sessionId: string,
+    systemPrompt: string,
+    history: NarrationMessage[],
+    direction: string | null,
+  ): LoreSelection {
+    const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
+    const recent =
+      history.length > 0
+        ? history.map((message) => message.content)
+        : [sessionGroundingHandoff(this.db, campaign.id, sessionId) ?? campaign.starting_situation];
+    if (direction !== null) recent[recent.length - 1] += `\n${direction}`;
+    const room = NARRATION_TOKEN_BUDGET - this.narrationTokens(systemPrompt, history) - directionTokens(direction);
+    return selectLore(campaign.world_snapshot.entries, recent, room);
   }
 
   /** Alternates share a position; the next turn still goes past the highest. */
@@ -510,20 +542,25 @@ export class PlayService {
 
     // An opening request carries no player row; whether the story starts
     // fresh depends on the history, not on the protocol kind.
+    const systemPrompt = this.systemPrompt(sessionId);
     const history = this.modelHistory(sessionId);
-    if (history.length === 0) history.push({ role: "user", content: OPENING_REQUEST });
     const direction = this.getMessage(options.pendingId)?.direction ?? null;
-    if (direction !== null) {
+    const lore = this.replyLore(sessionId, systemPrompt, history, direction);
+    this.db.query("UPDATE messages SET lore = ? WHERE id = ?").run(lore.lore && JSON.stringify(lore.lore), options.pendingId);
+    if (history.length === 0) history.push({ role: "user", content: OPENING_REQUEST });
+    // Lore first, so an OOC note still ends the player's latest message.
+    const notes = lore.note + (direction === null ? "" : directionNote(direction));
+    if (notes !== "") {
       const last = history.at(-1)!;
-      if (last.role === "user") last.content += directionNote(direction);
-      else history.push({ role: "user", content: directionNote(direction).trimStart() });
+      if (last.role === "user") last.content += notes;
+      else history.push({ role: "user", content: notes.trimStart() });
     }
 
     const { stream: upstream } = startNarrationRun({
       baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,
-      systemPrompt: this.systemPrompt(sessionId),
+      systemPrompt,
       messages: history,
       abortController: run.controller,
       upstreamFetch: options.upstreamFetch,

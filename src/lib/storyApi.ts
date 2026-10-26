@@ -255,7 +255,7 @@ export type CampaignCharacterPatch = CharacterPatch & {
   stats?: StatValues;
 };
 
-export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description">;
+export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description"> & Partial<Pick<WorldEntry, "keywords" | "priority" | "sticky">>;
 export type WorldEntryPatch = Partial<WorldEntryInput>;
 
 type ApiErrorBody = {

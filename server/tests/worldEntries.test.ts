@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
-import type { Campaign, Character, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { Campaign, Character, Message, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
 import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import { countTokens } from "../../shared/tokens";
@@ -198,7 +198,14 @@ describe("campaign entry capture", () => {
     const character = (await createEntry(world.id, { kind: "location", name: "Maera", description: "Lighthouse keeper." })).entry!;
     const location = (await createEntry(world.id, { kind: "location", name: "Drowned Pier", description: "Sagging boards." })).entry!;
     await createEntry(world.id, { kind: "scene", name: "Dawn docking", description: "The ferry scrapes ashore." });
-    const lore = (await createEntry(world.id, { kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." })).entry!;
+    const lore = (await createEntry(world.id, {
+      kind: "lore",
+      name: "The Bell Pact",
+      description: "Bells bind the tides.",
+      keywords: [" bells ", "Bells", "tide"],
+      priority: 5,
+      sticky: 2,
+    })).entry!;
     await createEntry(other.id, { kind: "lore", name: "Foreign", description: "Another world's lore." });
 
     const created = await createCampaign({
@@ -208,9 +215,9 @@ describe("campaign entry capture", () => {
     });
     expect(created.status).toBe(201);
     expect(created.campaign?.world_snapshot.entries).toEqual([
-      { id: character.id, kind: "location", name: "Maera", description: "Lighthouse keeper." },
-      { id: location.id, kind: "location", name: "Drowned Pier", description: "Sagging boards." },
-      { id: lore.id, kind: "lore", name: "The Bell Pact", description: "Bells bind the tides." },
+      { id: character.id, kind: "location", name: "Maera", description: "Lighthouse keeper.", keywords: [], priority: 0, sticky: 0 },
+      { id: location.id, kind: "location", name: "Drowned Pier", description: "Sagging boards.", keywords: [], priority: 0, sticky: 0 },
+      { id: lore.id, kind: "lore", name: "The Bell Pact", description: "Bells bind the tides.", keywords: ["bells", "tide"], priority: 5, sticky: 2 },
     ]);
     expect(await getCampaign(created.campaign!.id)).toEqual(created.campaign!);
   });
@@ -225,7 +232,7 @@ describe("opening prompt budget", () => {
       baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
-      world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000) }] },
+      world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000), keywords: [] }] },
       starting_situation: "s",
       stats: [],
       protagonist: snapshot("d".repeat(descriptionLength)),
@@ -295,7 +302,7 @@ describe("captured grounding is immutable and drives narration", () => {
     expect((await post("DELETE", `/api/worlds/${world.id}/entries/${character.id}`)).status).toBe(200);
 
     const captured: WorldEntrySnapshot[] = [
-      { id: character.id, kind: "lore", name: "Maera the Lighthouse Keeper", description: "Keeps the drowned light burning." },
+      { id: character.id, kind: "lore", name: "Maera the Lighthouse Keeper", description: "Keeps the drowned light burning.", keywords: [], priority: 0, sticky: 0 },
     ];
     const detailResponse = await post("GET", `/api/campaigns/${created.id}`);
     const detail = (await detailResponse.json()) as { campaign: Campaign };
@@ -359,6 +366,63 @@ describe("captured grounding is immutable and drives narration", () => {
       await patchEntry(world.id, kept.id, { name: "Renamed after capture" });
       const snapshot = await getCampaign(created.campaign!.id);
       expect(snapshot.world_snapshot.entries[0]?.name).toBe("Maera");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a keyword entry joins only replies whose recent messages mention it, after the player's input", async () => {
+    await configureProvider(base.url, "test-key-world-entries");
+
+    const world = await createWorld({ name: "Widow's Bay", setting_brief: "A fog-bound fishing town.", suggested_starting_situation: "" });
+    const protagonist = await createCharacter({ name: "Sable", description: "A new student." });
+    await createEntry(world.id, { kind: "location", name: "Harbor", description: "Always-known docks." });
+    await createEntry(world.id, { kind: "location", name: "Widow High", description: "The town's only high school.", keywords: ["school"] });
+    const created = await createCampaign({ world_id: world.id, protagonist_id: protagonist.id, starting_situation: "Sable arrives in town." });
+    const sessionId = created.session!.id;
+
+    const calls: Array<Array<{ role: string; content: string }>> = [];
+    const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }).messages);
+      return new Response(openAiChatCompletionSse("glm-5.3", ["Fog rolls in."]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    const play = async (path: string, body: Record<string, unknown>) => {
+      const response = await fetch(`${server.url}/api/sessions/${sessionId}/${path}`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      expect(parseSseEvents(await response.text()).at(-1)?.type).toBe(EventType.RUN_FINISHED);
+    };
+    try {
+      await play("opening", {});
+      await play("messages", { content: "I walk to school.", direction: "Keep it short." });
+      await play("messages", { content: "I wait." });
+
+      const [opening, school, later] = calls;
+      for (const messages of calls) {
+        expect(messages[0]!.content).toContain("Always-known docks.");
+        expect(messages[0]!.content).not.toContain("The town's only high school.");
+      }
+      expect(opening!.at(-1)!.content).not.toContain("Widow High");
+      expect(school!.at(-1)!.content).toBe(
+        "I walk to school.\n\n(World lore relevant to this reply, not part of the player's message:\n" +
+          "- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
+      );
+      expect(later!.map((message) => message.content).join("\n")).not.toContain("The town's only high school.");
+
+      const response = await fetch(`${server.url}/api/sessions/${sessionId}/messages`, { headers: headersWith() });
+      const { messages } = (await response.json()) as { messages: Message[] };
+      expect(messages.filter((message) => message.role === "assistant").map((message) => message.lore)).toEqual([
+        null,
+        { used: ["Widow High"], dropped: [] },
+        null,
+      ]);
     } finally {
       await server.stop();
     }

@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCampaign, createCharacter, createWorld, parseCharacterInput } from "../library";
+import { createCampaign, createCharacter, createWorld, createWorldEntry, getCampaign, listWorldEntries, parseCharacterInput } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
 import { listPromptCards } from "../promptCards";
 import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
@@ -50,6 +50,12 @@ function campaignRows(): Array<Record<string, unknown>> {
   return db.query<Record<string, unknown>, []>("SELECT * FROM campaigns").all();
 }
 
+/** Removes what schema version 6 added, leaving a version 5 shape. */
+function dropLoreColumns(target: Database): void {
+  for (const column of ["keywords", "priority", "sticky"]) target.exec(`ALTER TABLE world_entries DROP COLUMN ${column}`);
+  target.exec("ALTER TABLE messages DROP COLUMN lore");
+}
+
 describe("schema version", () => {
   test("a workspace from another schema is refused; one this build wrote reopens", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
@@ -78,12 +84,13 @@ describe("schema version", () => {
       const { session } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
       const messageId = insertMessage(session.id, 1, "assistant", "complete", "Kept narration.");
       db.exec("ALTER TABLE messages DROP COLUMN direction");
+      dropLoreColumns(db);
       db.exec("DROP TABLE prompt_cards");
       db.exec("PRAGMA user_version = 3");
       db.close();
 
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(5);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
       expect(db.query("SELECT content, direction FROM messages WHERE id = ?").get(messageId)).toEqual({
         content: "Kept narration.",
         direction: null,
@@ -103,14 +110,47 @@ describe("schema version", () => {
       db.close();
       db = openDatabase(path);
       db.exec("DROP TABLE prompt_cards");
+      dropLoreColumns(db);
       db.exec("PRAGMA user_version = 4");
       db.close();
 
       db = openDatabase(path);
       db.close();
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(5);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
       expect(listPromptCards(db)).toHaveLength(DEFAULT_PROMPT_CARDS.length);
+    } finally {
+      db.close();
+      db = openDatabase(":memory:");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a version 5 workspace keeps its prompt cards and its entries read as always included", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    try {
+      const path = join(directory, "v5.db");
+      db.close();
+      db = openDatabase(path);
+      const { worldId, protagonistId } = seedLibrary();
+      const entry = createWorldEntry(db, worldId, { kind: "lore", name: "Pact", description: "Old lore.", keywords: [], priority: 0, sticky: 0 })!;
+      const { campaign } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
+      db.query("UPDATE campaigns SET world_snapshot = ? WHERE id = ?").run(
+        JSON.stringify({ name: "W", setting_brief: "b", entries: [{ id: entry.id, kind: "lore", name: "Pact", description: "Old lore." }] }),
+        campaign.id,
+      );
+      db.exec("UPDATE prompt_cards SET body = 'Edited.' WHERE position = 1");
+      dropLoreColumns(db);
+      db.exec("PRAGMA user_version = 5");
+      db.close();
+
+      db = openDatabase(path);
+      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
+      expect(listPromptCards(db)[0]!.body).toBe("Edited.");
+      expect(listWorldEntries(db, worldId)[0]).toMatchObject({ keywords: [], priority: 0, sticky: 0 });
+      expect(getCampaign(db, campaign.id)!.world_snapshot.entries).toEqual([
+        { id: entry.id, kind: "lore", name: "Pact", description: "Old lore.", keywords: [], priority: 0, sticky: 0 },
+      ]);
     } finally {
       db.close();
       db = openDatabase(":memory:");

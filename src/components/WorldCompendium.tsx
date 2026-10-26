@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Copy, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Copy, KeyRound, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { Character, StatDefinition, World, WorldEntry, WorldEntryKind } from "../../shared/domain";
 import {
   copyCharacterToLibrary,
@@ -42,7 +42,12 @@ import { CharacterProfileDialog } from "./CharacterProfileDialog";
 import { StatDefinitionEditor } from "./StatDefinitionEditor";
 import { StatDefinitionList } from "./StatDefinitionList";
 
-type EntryEditor = WorldEntryInput & { id: string | null };
+type EntryEditor = Pick<WorldEntryInput, "kind" | "name" | "description"> & {
+  id: string | null;
+  keywords: string;
+  priority: string;
+  sticky: string;
+};
 
 const ENTRY_LABELS: Record<WorldEntryKind, string> = {
   location: "location",
@@ -99,13 +104,21 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
   };
 
   const openNew = (kind: WorldEntryKind) => {
-    setEditor({ id: null, kind, name: "", description: "" });
+    setEditor({ id: null, kind, name: "", description: "", keywords: "", priority: "0", sticky: "0" });
     setSaveError("");
     setActionError("");
   };
 
   const openEdit = (entry: WorldEntry) => {
-    setEditor({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description });
+    setEditor({
+      id: entry.id,
+      kind: entry.kind,
+      name: entry.name,
+      description: entry.description,
+      keywords: entry.keywords.join(", "),
+      priority: String(entry.priority),
+      sticky: String(entry.sticky),
+    });
     setSaveError("");
     setActionError("");
   };
@@ -113,11 +126,16 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
   const submitEntry = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editor || saving) return;
-    const input = {
+    const input: WorldEntryInput = {
       kind: editor.kind,
       name: editor.name.trim(),
       description: editor.description.trim(),
     };
+    if (editor.kind !== "scene") {
+      input.keywords = editor.keywords.split(",").map((keyword) => keyword.trim()).filter(Boolean);
+      input.priority = Number(editor.priority);
+      input.sticky = Number(editor.sticky);
+    }
     if (!input.description) {
       setSaveError("Add a description.");
       return;
@@ -353,6 +371,12 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
                             </div>
                           </div>
                           <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
+                          {entry.kind !== "scene" && (
+                            <p className="flex items-start gap-1.5 text-xs leading-5 text-muted">
+                              <KeyRound className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
+                              <span className="min-w-0 break-words">{entry.keywords.length > 0 ? `Keywords: ${entry.keywords.join(", ")}` : "Always included"}</span>
+                            </p>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -450,6 +474,54 @@ export function WorldCompendium(props: { world: World; onClose: () => void }) {
                       className="min-h-64 rounded-lg border border-border bg-background font-normal"
                     />
                   </div>
+                  {editor.kind !== "scene" && (
+                    <div className="grid gap-4">
+                      <label className="grid gap-2 text-sm font-medium">
+                        Keywords
+                        <input
+                          autoComplete="off"
+                          value={editor.keywords}
+                          onChange={(event) => setEditor({ ...editor, keywords: event.target.value })}
+                          placeholder="Comma-separated"
+                          aria-describedby="compendium-entry-keywords-help"
+                          className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        />
+                        <span id="compendium-entry-keywords-help" className="text-xs font-normal text-muted">No keywords: always included. With keywords: included only when a keyword or the entry name comes up in recent messages.</span>
+                      </label>
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-4">
+                        <label className="grid content-start gap-2 text-sm font-medium">
+                          Priority
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            required
+                            min={0}
+                            max={1000}
+                            step={1}
+                            value={editor.priority}
+                            onChange={(event) => setEditor({ ...editor, priority: event.target.value })}
+                            aria-describedby="compendium-entry-priority-help"
+                            className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          />
+                          <span id="compendium-entry-priority-help" className="text-xs font-normal text-muted">Higher goes first when space runs out.</span>
+                        </label>
+                        <label className="grid content-start gap-2 text-sm font-medium">
+                          Stays active for N more messages
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            required
+                            min={0}
+                            max={50}
+                            step={1}
+                            value={editor.sticky}
+                            onChange={(event) => setEditor({ ...editor, sticky: event.target.value })}
+                            className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
                   {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
                 </div>
               </div>
