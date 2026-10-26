@@ -1236,12 +1236,15 @@ export interface BeginNextSessionResult {
 /**
  * A campaign's changeable state as one JSON value: what a session checkpoint
  * stores and what a fork restores. The world snapshot is not part of it — it
- * never changes after creation.
+ * never changes after creation. Checkpoints written before schema 7 carry no
+ * scene fields; their characters restore as `always`, as they were.
  */
 interface CampaignStateSnapshot {
   stats: Array<StatFields & Pick<CampaignStat, "id" | "created_at">>;
   characters: Array<
-    CharacterProfile & Pick<CampaignCharacter, "id" | "role" | "avatar_id" | "stats_enabled" | "stats" | "created_at">
+    CharacterProfile &
+      Pick<CampaignCharacter, "id" | "role" | "avatar_id" | "stats_enabled" | "stats" | "created_at"> &
+      Partial<CharacterSceneFields>
   >;
   notes: Array<Pick<CampaignStateItem, "category" | "subject" | "content" | "created_at">>;
   relationships: Array<
@@ -1259,6 +1262,10 @@ function serializeCampaignState(db: Database, campaignId: string): CampaignState
       avatar_id: character.avatar_id,
       stats_enabled: character.stats_enabled,
       stats: character.stats,
+      context_mode: character.context_mode,
+      summary: character.summary,
+      aliases: character.aliases,
+      sticky: character.sticky,
       created_at: character.created_at,
     })),
     notes: db
@@ -1289,6 +1296,7 @@ function restoreCampaignState(db: Database, campaignId: string, state: CampaignS
     Object.fromEntries(Object.entries(values).map(([id, value]) => [statIds.get(id)!, value]));
   const characterIds = new Map<string, string>();
   for (const character of state.characters) {
+    const { context_mode, summary, aliases, sticky } = character;
     characterIds.set(
       character.id,
       insertCampaignCharacter(
@@ -1300,6 +1308,7 @@ function restoreCampaignState(db: Database, campaignId: string, state: CampaignS
         character.stats_enabled ? remap(character.stats) : null,
         character.created_at,
         now,
+        context_mode === undefined ? { context_mode: "always" } : { context_mode, summary, aliases, sticky },
       ),
     );
   }
