@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS world_entries (
   kind TEXT NOT NULL CHECK (kind IN ('location', 'lore', 'scene')),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
+  keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords)),
+  priority INTEGER NOT NULL DEFAULT 0,
+  sticky INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -191,6 +194,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   direction TEXT,
+  lore TEXT CHECK (lore IS NULL OR json_valid(lore)),
   CHECK (role != 'user' OR status = 'complete'),
   CHECK (role = 'assistant' OR selected = 1)
 );
@@ -233,8 +237,8 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; versions 3 and 4 upgrade in place. */
-const SCHEMA_VERSION = 5;
+/** Bumped whenever SCHEMA changes; versions 3 to 5 upgrade in place. */
+const SCHEMA_VERSION = 6;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -259,24 +263,29 @@ export function insertDefaultPromptCards(db: Database): void {
 }
 
 /**
- * Opens the workspace database with foreign keys and the schema in place. A
- * version 3 workspace gains the narration direction column, and versions 3
- * and 4 gain the default prompt cards; any other version is refused rather
- * than migrated; a fresh one gets the stat bank and prompt card seeds.
+ * Opens the workspace database with foreign keys and the schema in place.
+ * Older workspaces upgrade in place: version 3 gains the narration direction
+ * column, versions 3 and 4 the default prompt cards, and versions 3 to 5
+ * entry keywords and narration lore. Anything older is refused rather than
+ * migrated; a fresh one gets the stat bank and prompt card seeds.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const populated = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get() !== null;
-  if (populated && version === 3) {
-    db.transaction(() => {
-      db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
-      db.exec("PRAGMA user_version = 4");
-    })();
-  } else if (populated && version !== 4 && version !== SCHEMA_VERSION) {
+  if (populated && (version < 3 || version > SCHEMA_VERSION)) {
     db.close();
     throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
+  }
+  if (populated && version < SCHEMA_VERSION) {
+    db.transaction(() => {
+      if (version === 3) db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
+      db.exec("ALTER TABLE world_entries ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords))");
+      db.exec("ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+      db.exec("ALTER TABLE world_entries ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0");
+      db.exec("ALTER TABLE messages ADD COLUMN lore TEXT CHECK (lore IS NULL OR json_valid(lore))");
+    })();
   }
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
@@ -293,7 +302,7 @@ export function openDatabase(path: string): Database {
         insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
       }
     }
-    if (!populated || version < SCHEMA_VERSION) insertDefaultPromptCards(db);
+    if (!populated || version < 5) insertDefaultPromptCards(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   })();
   return db;
@@ -331,7 +340,7 @@ export interface CampaignRecord {
  * The snapshot column is written only by campaign creation from API-validated
  * fields; on read we re-check the shape so a corrupt workspace can never reach
  * prompts as undefined. name/setting_brief stay non-empty and entries must be
- * present.
+ * present. Entries captured before keywords existed read as always included.
  */
 function parseWorldSnapshot(text: string): WorldSnapshot {
   let value: unknown;
@@ -350,22 +359,35 @@ function parseWorldSnapshot(text: string): WorldSnapshot {
   ) {
     throw new Error("corrupt campaign snapshot");
   }
-  const entries = snapshot.entries;
-  if (!Array.isArray(entries)) throw new Error("corrupt campaign snapshot");
-  for (const entry of entries) {
+  if (!Array.isArray(snapshot.entries)) throw new Error("corrupt campaign snapshot");
+  const entries = snapshot.entries.map((entry: unknown): WorldEntrySnapshot => {
     if (typeof entry !== "object" || entry === null) throw new Error("corrupt campaign snapshot");
     const captured = entry as Record<string, unknown>;
+    const { keywords = [], priority = 0, sticky = 0 } = captured;
     if (
       typeof captured.id !== "string" ||
       typeof captured.name !== "string" ||
       typeof captured.description !== "string" ||
       !WORLD_ENTRY_KINDS.includes(captured.kind as WorldEntryKind) ||
-      captured.name.length === 0
+      captured.name.length === 0 ||
+      !Array.isArray(keywords) ||
+      !keywords.every((keyword) => typeof keyword === "string") ||
+      !Number.isInteger(priority) ||
+      !Number.isInteger(sticky)
     ) {
       throw new Error("corrupt campaign snapshot");
     }
-  }
-  return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries: entries as WorldEntrySnapshot[] };
+    return {
+      id: captured.id,
+      kind: captured.kind as WorldEntryKind,
+      name: captured.name,
+      description: captured.description,
+      keywords: keywords as string[],
+      priority: priority as number,
+      sticky: sticky as number,
+    };
+  });
+  return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries };
 }
 
 export function campaignFromRow(

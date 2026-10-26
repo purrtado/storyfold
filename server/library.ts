@@ -532,11 +532,12 @@ export function clearCharacterAvatar(db: Database, characterId: string): Charact
   return getCharacter(db, characterId);
 }
 
-export interface WorldEntryInput {
-  kind: WorldEntryKind;
-  name: string;
-  description: string;
-}
+export type WorldEntryInput = Pick<WorldEntry, "kind" | "name" | "description" | "keywords" | "priority" | "sticky">;
+
+const KEYWORD_COUNT_LIMIT = 50;
+const KEYWORD_MAX_CHARS = 100;
+const PRIORITY_LIMIT = 1_000;
+const STICKY_LIMIT = 50;
 
 function parseEntryKind(value: unknown): WorldEntryKind {
   if (typeof value !== "string") {
@@ -549,11 +550,41 @@ function parseEntryKind(value: unknown): WorldEntryKind {
   return kind;
 }
 
+/** Trimmed, non-empty, and distinct ignoring case; the first spelling is kept. */
+function parseKeywords(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some((keyword) => typeof keyword !== "string")) {
+    throw new ValidationError("keywords must be an array of strings");
+  }
+  const keywords: string[] = [];
+  for (const raw of value as string[]) {
+    const keyword = raw.trim();
+    if (keyword.length === 0 || keyword.length > KEYWORD_MAX_CHARS) {
+      throw new ValidationError(`each keyword must be 1 to ${KEYWORD_MAX_CHARS} characters`);
+    }
+    if (!keywords.some((kept) => kept.toLowerCase() === keyword.toLowerCase())) keywords.push(keyword);
+  }
+  if (keywords.length > KEYWORD_COUNT_LIMIT) {
+    throw new ValidationError(`an entry may have at most ${KEYWORD_COUNT_LIMIT} keywords`);
+  }
+  return keywords;
+}
+
+function boundedInteger(value: unknown, field: string, max: number): number {
+  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > max) {
+    throw new ValidationError(`${field} must be an integer from 0 to ${max}`);
+  }
+  return value as number;
+}
+
+/** Keywords, priority, and sticky are optional: an entry without keywords is always included. */
 export function parseWorldEntryInput(body: Record<string, unknown>): WorldEntryInput {
   return {
     kind: parseEntryKind(body.kind),
     name: requiredText(body.name, "name"),
     description: requiredText(body.description, "description"),
+    keywords: body.keywords === undefined ? [] : parseKeywords(body.keywords),
+    priority: body.priority === undefined ? 0 : boundedInteger(body.priority, "priority", PRIORITY_LIMIT),
+    sticky: body.sticky === undefined ? 0 : boundedInteger(body.sticky, "sticky", STICKY_LIMIT),
   };
 }
 
@@ -563,16 +594,26 @@ export function parseWorldEntryPatch(body: Record<string, unknown>): Partial<Wor
   if (body.kind !== undefined) patch.kind = parseEntryKind(body.kind);
   if (body.name !== undefined) patch.name = requiredText(body.name, "name");
   if (body.description !== undefined) patch.description = requiredText(body.description, "description");
+  if (body.keywords !== undefined) patch.keywords = parseKeywords(body.keywords);
+  if (body.priority !== undefined) patch.priority = boundedInteger(body.priority, "priority", PRIORITY_LIMIT);
+  if (body.sticky !== undefined) patch.sticky = boundedInteger(body.sticky, "sticky", STICKY_LIMIT);
   if (Object.keys(patch).length === 0) {
-    throw new ValidationError("at least one of kind, name, description is required");
+    throw new ValidationError("at least one of kind, name, description, keywords, priority, sticky is required");
   }
   return patch;
 }
 
+type WorldEntryRow = Omit<WorldEntry, "keywords"> & { keywords: string };
+
+function worldEntryFromRow(row: WorldEntryRow): WorldEntry {
+  return { ...row, keywords: JSON.parse(row.keywords) as string[] };
+}
+
 export function listWorldEntries(db: Database, worldId: string): WorldEntry[] {
   return db
-    .query<WorldEntry, [string]>("SELECT * FROM world_entries WHERE world_id = ? ORDER BY created_at, id")
-    .all(worldId);
+    .query<WorldEntryRow, [string]>("SELECT * FROM world_entries WHERE world_id = ? ORDER BY created_at, id")
+    .all(worldId)
+    .map(worldEntryFromRow);
 }
 
 export function createWorldEntry(db: Database, worldId: string, input: WorldEntryInput): WorldEntry | null {
@@ -580,19 +621,29 @@ export function createWorldEntry(db: Database, worldId: string, input: WorldEntr
   const now = nowIso();
   const entry: WorldEntry = { id: newId(), world_id: worldId, ...input, created_at: now, updated_at: now };
   db.query(
-    `INSERT INTO world_entries (id, world_id, kind, name, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(entry.id, entry.world_id, entry.kind, entry.name, entry.description, entry.created_at, entry.updated_at);
+    `INSERT INTO world_entries (id, world_id, kind, name, description, keywords, priority, sticky, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    entry.id,
+    entry.world_id,
+    entry.kind,
+    entry.name,
+    entry.description,
+    JSON.stringify(entry.keywords),
+    entry.priority,
+    entry.sticky,
+    entry.created_at,
+    entry.updated_at,
+  );
   return entry;
 }
 
 /** Null covers both an unknown world and an entry living in another world. */
 function getWorldEntryScoped(db: Database, worldId: string, entryId: string): WorldEntry | null {
-  return (
-    db
-      .query<WorldEntry, [string, string]>("SELECT * FROM world_entries WHERE id = ? AND world_id = ?")
-      .get(entryId, worldId) ?? null
-  );
+  const row = db
+    .query<WorldEntryRow, [string, string]>("SELECT * FROM world_entries WHERE id = ? AND world_id = ?")
+    .get(entryId, worldId);
+  return row ? worldEntryFromRow(row) : null;
 }
 
 export function updateWorldEntry(
@@ -604,10 +655,16 @@ export function updateWorldEntry(
   const existing = getWorldEntryScoped(db, worldId, entryId);
   if (!existing) return null;
   const next: WorldEntry = { ...existing, ...patch, updated_at: nowIso() };
-  db.query("UPDATE world_entries SET kind = ?, name = ?, description = ?, updated_at = ? WHERE id = ?").run(
+  db.query(
+    `UPDATE world_entries SET kind = ?, name = ?, description = ?, keywords = ?, priority = ?, sticky = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
     next.kind,
     next.name,
     next.description,
+    JSON.stringify(next.keywords),
+    next.priority,
+    next.sticky,
     next.updated_at,
     entryId,
   );
@@ -750,7 +807,7 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
     );
     const captured: WorldEntrySnapshot[] = listWorldEntries(db, world.id)
       .filter((entry) => entry.kind !== "scene")
-      .map((entry) => ({ id: entry.id, kind: entry.kind, name: entry.name, description: entry.description }));
+      .map(({ id, kind, name, description, keywords, priority, sticky }) => ({ id, kind, name, description, keywords, priority, sticky }));
 
     const now = nowIso();
     const campaignId = newId();
@@ -1377,12 +1434,13 @@ export function forkCampaignFromMessage(
             content: string;
             status: string;
             direction: string | null;
+            lore: string | null;
             created_at: string;
             updated_at: string;
           },
           [string, number]
         >(
-          `SELECT role, speaker_name, content, status, direction, created_at, updated_at FROM messages
+          `SELECT role, speaker_name, content, status, direction, lore, created_at, updated_at FROM messages
            WHERE session_id = ? AND selected = 1 AND position <= ?
              AND (role = 'user' OR status = 'complete')
            ORDER BY position`,
@@ -1391,8 +1449,8 @@ export function forkCampaignFromMessage(
       history.forEach((row, index) => {
         db.query(
           `INSERT INTO messages
-             (id, session_id, position, role, speaker_name, content, status, direction, selected, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             (id, session_id, position, role, speaker_name, content, status, direction, lore, selected, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         ).run(
           newId(),
           forkSessionId,
@@ -1402,6 +1460,7 @@ export function forkCampaignFromMessage(
           row.content,
           row.status,
           row.direction,
+          row.lore,
           row.created_at,
           row.updated_at,
         );

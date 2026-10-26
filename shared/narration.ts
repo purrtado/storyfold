@@ -20,7 +20,7 @@ export interface RelationshipPrompt {
 export type CharacterPrompt = CharacterProfile & { stats_enabled: boolean; stats: StatValues };
 
 export interface NarrationContext {
-  world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">> };
+  world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description" | "keywords">> };
   starting_situation: string;
   /** Every stat definition, rendered once as a legend; values elsewhere refer to these ids. */
   stats: ReadonlyArray<StatFields & { id: string }>;
@@ -159,7 +159,10 @@ export function narratorSystemPrompt(
     protagonist_name: protagonist.name,
     protagonist: characterDefinition(protagonist, context.stats),
     cast: context.cast.map((member) => `- ${member.name}: ${characterDefinition(member, context.stats)}`).join("\n"),
-    compendium: world.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`).join("\n"),
+    compendium: world.entries
+      .filter((entry) => entry.keywords.length === 0)
+      .map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)
+      .join("\n"),
     notes: context.notes.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`).join("\n"),
     relationships: context.relationships
       .map((relationship) => {
@@ -198,4 +201,14 @@ export function narratorSystemPrompt(
 /** The out-of-character note appended to the latest player input for one reply. */
 export function directionNote(direction: string): string {
   return `\n\n(OOC: ${direction})`;
+}
+
+/**
+ * Triggered keyword entries, appended to the latest player input for one
+ * reply like a direction note, so the system prompt — and any provider prefix
+ * cache — stays the same from turn to turn.
+ */
+export function loreNote(entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">>): string {
+  const lines = entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`);
+  return `\n\n(World lore relevant to this reply, not part of the player's message:\n${lines.join("\n")})`;
 }

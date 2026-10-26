@@ -7,23 +7,28 @@ export const WORLD_ENTRY_KINDS = ["location", "lore", "scene"] as const;
 
 export type WorldEntryKind = (typeof WORLD_ENTRY_KINDS)[number];
 
+/**
+ * An entry without keywords is always in the narrator's grounding; one with
+ * keywords joins a reply only when a keyword or its name appears in the
+ * recent messages (see shared/narration.ts).
+ */
 export interface WorldEntry {
   id: string;
   world_id: string;
   kind: WorldEntryKind;
   name: string;
   description: string;
+  keywords: string[];
+  /** Higher goes first when triggered entries compete for the lore budget. */
+  priority: number;
+  /** Extra messages a triggered entry stays active after its keyword scrolls out of the scan window. */
+  sticky: number;
   created_at: string;
   updated_at: string;
 }
 
 /** A compendium entry captured into a campaign at creation; never re-resolved. */
-export interface WorldEntrySnapshot {
-  id: string;
-  kind: WorldEntryKind;
-  name: string;
-  description: string;
-}
+export type WorldEntrySnapshot = Pick<WorldEntry, "id" | "kind" | "name" | "description" | "keywords" | "priority" | "sticky">;
 
 export interface WorldSnapshot {
   name: string;
@@ -216,8 +221,18 @@ export interface Message {
   status: MessageStatus;
   /** The out-of-character note that shaped this narration; never part of model history. */
   direction: string | null;
+  /**
+   * Keyword entries this narration was sent, by name in prompt order, and
+   * those that matched but did not fit the lore budget. Null when none matched.
+   */
+  lore: MessageLore | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MessageLore {
+  used: string[];
+  dropped: string[];
 }
 
 /**
