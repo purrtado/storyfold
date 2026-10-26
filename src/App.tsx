@@ -11,6 +11,7 @@ import { Sidebar } from "./components/Sidebar";
 import { WorldHub } from "./components/WorldHub";
 import { WorldsPage } from "./components/WorldsPage";
 import {
+  ApiError,
   deleteChatMessage,
   editChatMessage,
   fetchChat,
@@ -62,6 +63,13 @@ export default function App() {
       const details = await fetchChat(chatId);
       setChats((current) => ({ ...current, [chatId]: details }));
     } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        setChats((current) => {
+          const next = { ...current };
+          delete next[chatId];
+          return next;
+        });
+      }
       setChatErrors((current) => ({
         ...current,
         [chatId]: error instanceof Error ? error.message : "Could not load this chat.",

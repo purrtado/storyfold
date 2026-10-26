@@ -708,6 +708,8 @@ export function ChatPlay(props: {
     setActionError("");
     setDirection(null);
     setOpeningDirection("");
+    setConfirmDiscard(false);
+    setDiscarding(false);
   }, [props.chatId]);
 
   useEffect(() => {
