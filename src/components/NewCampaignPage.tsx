@@ -179,7 +179,7 @@ export function NewCampaignPage(props: {
       starting_situation: draft.startingSituation.trim(),
       stats: worldStats,
       protagonist: { ...protagonist, stats_enabled: true, stats: protagonistStats },
-      cast: selectedCharacters.map((character) => ({ ...character, stats_enabled: false, stats: {} })),
+      cast: selectedCharacters.map((character) => ({ ...character, stats_enabled: false, stats: {}, context_mode: "in_scene" as const, summary: "" })),
       notes: [],
       relationships: [],
       handoff: null,

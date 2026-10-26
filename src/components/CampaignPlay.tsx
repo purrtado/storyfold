@@ -555,7 +555,7 @@ function MessageRow(props: {
       </div>
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {message.direction && <DirectionNote direction={message.direction} />}
-      {message.lore && <LoreNote lore={message.lore} />}
+      {message.lore && <ContextNote lore={message.lore} />}
       {editing && !editExpanded ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
@@ -633,12 +633,12 @@ function DirectionNote(props: { direction: string }) {
   );
 }
 
-function LoreNote(props: { lore: MessageLore }) {
+function ContextNote(props: { lore: MessageLore }) {
   return (
     <p className="mbs-0 mbe-2 flex items-start gap-1.5 text-xs leading-5 text-muted">
       <BookOpen className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
       <span className="min-w-0 break-words">
-        Lore: {props.lore.used.join(", ") || "none"}
+        Context: {props.lore.used.join(", ") || "none"}
         {props.lore.dropped.length > 0 && ` · Over budget: ${props.lore.dropped.join(", ")}`}
       </span>
     </p>
@@ -1087,6 +1087,7 @@ export function CampaignPlay(props: {
         <CharacterProfileDialog
           character={null}
           initialName={walkOnName}
+          sceneContext
           title={`Add ${walkOnName} to the cast`}
           description="Adds a narrator-controlled cast character to this campaign. Paragraphs tagged with this name use their profile."
           onCreate={(input) => createCampaignCharacter(props.campaign!.id, input)}

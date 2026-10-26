@@ -10,7 +10,7 @@ export async function fetchCampaignRelationships(campaignId: string): Promise<Re
 
 export async function createCampaignCharacter(
   campaignId: string,
-  input: CharacterInput,
+  input: CampaignCharacterInput,
 ): Promise<CampaignCharacter> {
   return (
     await request<{ character: CampaignCharacter }>(
@@ -250,7 +250,9 @@ export type WorldInput = Pick<
 export type CharacterInput = Pick<CharacterProfile, "name" | "description">
   & Partial<Omit<CharacterProfile, "name" | "description">>;
 export type CharacterPatch = Partial<CharacterInput>;
-export type CampaignCharacterPatch = CharacterPatch & {
+export type CharacterSceneFields = Partial<Pick<CampaignCharacter, "context_mode" | "summary" | "aliases" | "sticky">>;
+export type CampaignCharacterInput = CharacterInput & CharacterSceneFields;
+export type CampaignCharacterPatch = CharacterPatch & CharacterSceneFields & {
   stats_enabled?: boolean;
   stats?: StatValues;
 };
