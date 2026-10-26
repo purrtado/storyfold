@@ -273,6 +273,9 @@ function CharacterCard(props: {
           <span className="flex min-w-0 items-center gap-2">
             <span className={`truncate font-semibold ${props.you ? "text-base" : "text-sm"}`}>{props.character.name}</span>
             <span className={`flex-none rounded-full px-2 text-xs leading-5 ${props.you ? "bg-accent-soft text-accent" : "bg-surface text-muted"}`}>{props.you ? "You" : "Cast"}</span>
+            {!props.you && props.character.context_mode !== "always" && (
+              <span className="flex-none text-xs text-muted">{props.character.context_mode === "in_scene" ? "In scene" : "When mentioned"}</span>
+            )}
           </span>
           {props.status
             ? <span className="truncate text-sm text-muted">{props.status}</span>
@@ -797,6 +800,7 @@ export function CharacterRoster(props: {
       {editor && (
         <CharacterProfileDialog
           character={editor.character}
+          sceneContext={editor.character?.role !== "protagonist"}
           title={editor.character ? `Edit ${editor.character.name}` : "New character"}
           description={editor.character
             ? "Edits change this campaign's own copy of the character."

@@ -1,4 +1,4 @@
-import type { CampaignStateItem, CharacterProfile, PromptCard, StatFields, StatValues, WorldEntrySnapshot } from "./domain";
+import type { CampaignCharacter, CampaignStateItem, CharacterProfile, PromptCard, StatFields, StatValues, WorldEntrySnapshot } from "./domain";
 import { CHARACTER_PROFILE_FIELDS } from "./domain";
 
 /**
@@ -9,6 +9,8 @@ import { CHARACTER_PROFILE_FIELDS } from "./domain";
 export const NARRATION_TOKEN_BUDGET = 40_000;
 
 export interface RelationshipPrompt {
+  source_id: string;
+  target_id: string;
   source_name: string;
   target_name: string;
   how_met: string;
@@ -17,7 +19,9 @@ export interface RelationshipPrompt {
   stats: StatValues;
 }
 
-export type CharacterPrompt = CharacterProfile & { stats_enabled: boolean; stats: StatValues };
+export type CharacterPrompt = CharacterProfile & { id: string; stats_enabled: boolean; stats: StatValues };
+
+export type CastPrompt = CharacterPrompt & Pick<CampaignCharacter, "context_mode" | "summary">;
 
 export interface NarrationContext {
   world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description" | "keywords">> };
@@ -25,8 +29,9 @@ export interface NarrationContext {
   /** Every stat definition, rendered once as a legend; values elsewhere refer to these ids. */
   stats: ReadonlyArray<StatFields & { id: string }>;
   protagonist: CharacterPrompt;
-  cast: ReadonlyArray<CharacterPrompt>;
+  cast: ReadonlyArray<CastPrompt>;
   notes: ReadonlyArray<Pick<CampaignStateItem, "category" | "subject" | "content">>;
+  /** Every relationship; only those between always-sent characters reach the system prompt. */
   relationships: ReadonlyArray<RelationshipPrompt>;
   /** Handoff grounding this session; replaces the starting situation when set. */
   handoff: string | null;
@@ -57,6 +62,22 @@ function characterDefinition(character: CharacterPrompt, stats: NarrationContext
   return values ? `${definition} [${values}]` : definition;
 }
 
+function relationshipLine(relationship: RelationshipPrompt, stats: NarrationContext["stats"]): string {
+  const values = statValues(stats, relationship.stats);
+  const parts = [
+    ...(relationship.status ? [`status: ${relationship.status}`] : []),
+    ...(relationship.how_met ? [`how met: ${relationship.how_met}`] : []),
+    ...(relationship.known_facts.length > 0 ? [`known facts: ${relationship.known_facts.join("; ")}`] : []),
+    ...(values ? [values] : []),
+  ];
+  return `- ${relationship.source_name} → ${relationship.target_name}: ${parts.join("; ")}`;
+}
+
+/** The protagonist and `always` cast: the characters whose full profiles live in the system prompt. */
+function alwaysSentIds(context: Pick<NarrationContext, "protagonist" | "cast">): Set<string> {
+  return new Set([context.protagonist.id, ...context.cast.filter((member) => member.context_mode === "always").map((member) => member.id)]);
+}
+
 /** Every `{{name}}` a prompt card body may use; anything else is refused on save. */
 export const PROMPT_PLACEHOLDERS = [
   "world_name",
@@ -66,6 +87,7 @@ export const PROMPT_PLACEHOLDERS = [
   "protagonist_name",
   "protagonist",
   "cast",
+  "offstage",
   "compendium",
   "notes",
   "relationships",
@@ -96,6 +118,14 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
     body: "The player controls their character, {{protagonist_name}}: {{protagonist}}\nWhenever the player speaks or acts, it is {{protagonist_name}} acting.",
   },
   { title: "Cast", body: "Narrator-controlled cast:\n{{cast}}\nRespect these definitions as written." },
+  {
+    title: "Elsewhere",
+    body: [
+      "Elsewhere — not in the current scene:",
+      "{{offstage}}",
+      "They exist and the player may mention them. Do not bring them into a scene unless the player calls for them or the story clearly requires it; never just because they are listed.",
+    ].join("\n"),
+  },
   {
     title: "Compendium",
     body: "Captured world compendium (captured at campaign creation):\n{{compendium}}\nRespect these definitions as written.",
@@ -138,6 +168,12 @@ export function narratorSystemPrompt(
   context: NarrationContext,
 ): string {
   const { world, protagonist, handoff } = context;
+  const always = alwaysSentIds(context);
+  const protagonistStatus = new Map(
+    context.relationships
+      .filter((relationship) => relationship.source_id === protagonist.id && relationship.status !== "")
+      .map((relationship) => [relationship.target_id, relationship.status]),
+  );
   const values: Record<PromptPlaceholder, string> = {
     world_name: world.name,
     world_brief: world.setting_brief,
@@ -158,23 +194,26 @@ export function narratorSystemPrompt(
       .join("\n"),
     protagonist_name: protagonist.name,
     protagonist: characterDefinition(protagonist, context.stats),
-    cast: context.cast.map((member) => `- ${member.name}: ${characterDefinition(member, context.stats)}`).join("\n"),
+    cast: context.cast
+      .filter((member) => member.context_mode === "always")
+      .map((member) => `- ${member.name}: ${characterDefinition(member, context.stats)}`)
+      .join("\n"),
+    offstage: context.cast
+      .filter((member) => member.context_mode === "in_scene")
+      .map((member) => {
+        const status = protagonistStatus.get(member.id);
+        const summary = member.summary === "" ? "" : `: ${member.summary}`;
+        return `- ${member.name}${summary}${status === undefined ? "" : ` (${protagonist.name} → ${member.name}: ${status})`}`;
+      })
+      .join("\n"),
     compendium: world.entries
       .filter((entry) => entry.keywords.length === 0)
       .map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)
       .join("\n"),
     notes: context.notes.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`).join("\n"),
     relationships: context.relationships
-      .map((relationship) => {
-        const values = statValues(context.stats, relationship.stats);
-        const parts = [
-          ...(relationship.status ? [`status: ${relationship.status}`] : []),
-          ...(relationship.how_met ? [`how met: ${relationship.how_met}`] : []),
-          ...(relationship.known_facts.length > 0 ? [`known facts: ${relationship.known_facts.join("; ")}`] : []),
-          ...(values ? [values] : []),
-        ];
-        return `- ${relationship.source_name} → ${relationship.target_name}: ${parts.join("; ")}`;
-      })
+      .filter((relationship) => always.has(relationship.source_id) && always.has(relationship.target_id))
+      .map((relationship) => relationshipLine(relationship, context.stats))
       .join("\n"),
     continuation: context.has_history
       ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
@@ -203,12 +242,24 @@ export function directionNote(direction: string): string {
   return `\n\n(OOC: ${direction})`;
 }
 
+export interface ReplyContext {
+  characters: ReadonlyArray<CharacterPrompt>;
+  relationships: ReadonlyArray<RelationshipPrompt>;
+  entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">>;
+}
+
 /**
- * Triggered keyword entries, appended to the latest player input for one
- * reply like a direction note, so the system prompt — and any provider prefix
- * cache — stays the same from turn to turn.
+ * Triggered characters (full profiles and the relationships they bring) and
+ * keyword entries, appended to the latest player input for one reply like a
+ * direction note, so the system prompt — and any provider prefix cache —
+ * stays the same from turn to turn. Empty sections are left out.
  */
-export function loreNote(entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">>): string {
-  const lines = entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`);
-  return `\n\n(World lore relevant to this reply, not part of the player's message:\n${lines.join("\n")})`;
+export function contextNote(context: ReplyContext, stats: NarrationContext["stats"]): string {
+  const sections = [
+    ["Characters present or mentioned:", context.characters.map((character) => `- ${character.name}: ${characterDefinition(character, stats)}`)],
+    ["Their relationships:", context.relationships.map((relationship) => relationshipLine(relationship, stats))],
+    ["World lore:", context.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)],
+  ] as const;
+  const body = sections.filter(([, lines]) => lines.length > 0).map(([heading, lines]) => [heading, ...lines].join("\n"));
+  return `\n\n(Context for this reply, not part of the player's message:\n${body.join("\n")})`;
 }

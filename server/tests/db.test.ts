@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCampaign, createCharacter, createWorld, createWorldEntry, getCampaign, listWorldEntries, parseCharacterInput } from "../library";
+import { createCampaign, createCampaignCharacter, createCharacter, createWorld, createWorldEntry, getCampaign, listWorldEntries, parseCharacterInput } from "../library";
 import { openDatabase, sweepAbandonedPending } from "../db";
 import { listPromptCards } from "../promptCards";
 import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
@@ -50,11 +50,21 @@ function campaignRows(): Array<Record<string, unknown>> {
   return db.query<Record<string, unknown>, []>("SELECT * FROM campaigns").all();
 }
 
-/** Removes what schema version 6 added, leaving a version 5 shape. */
+/** Removes what schema version 7 added, leaving a version 6 shape. */
+function dropCastColumns(target: Database): void {
+  for (const column of ["context_mode", "summary", "aliases", "sticky"]) target.exec(`ALTER TABLE campaign_characters DROP COLUMN ${column}`);
+  target.exec("DELETE FROM prompt_cards WHERE title = 'Elsewhere'");
+}
+
+/** Removes what schema versions 6 and 7 added, leaving a version 5 shape. */
 function dropLoreColumns(target: Database): void {
+  dropCastColumns(target);
   for (const column of ["keywords", "priority", "sticky"]) target.exec(`ALTER TABLE world_entries DROP COLUMN ${column}`);
   target.exec("ALTER TABLE messages DROP COLUMN lore");
 }
+
+const userVersion = () => db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+const cardTitles = () => listPromptCards(db).map((card) => card.title);
 
 describe("schema version", () => {
   test("a workspace from another schema is refused; one this build wrote reopens", () => {
@@ -90,7 +100,7 @@ describe("schema version", () => {
       db.close();
 
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
+      expect(userVersion()).toBe(7);
       expect(db.query("SELECT content, direction FROM messages WHERE id = ?").get(messageId)).toEqual({
         content: "Kept narration.",
         direction: null,
@@ -109,15 +119,15 @@ describe("schema version", () => {
       const path = join(directory, "v4.db");
       db.close();
       db = openDatabase(path);
-      db.exec("DROP TABLE prompt_cards");
       dropLoreColumns(db);
+      db.exec("DROP TABLE prompt_cards");
       db.exec("PRAGMA user_version = 4");
       db.close();
 
       db = openDatabase(path);
       db.close();
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
+      expect(userVersion()).toBe(7);
       expect(listPromptCards(db)).toHaveLength(DEFAULT_PROMPT_CARDS.length);
     } finally {
       db.close();
@@ -145,12 +155,43 @@ describe("schema version", () => {
       db.close();
 
       db = openDatabase(path);
-      expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(6);
+      expect(userVersion()).toBe(7);
       expect(listPromptCards(db)[0]!.body).toBe("Edited.");
+      expect(cardTitles()).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
       expect(listWorldEntries(db, worldId)[0]).toMatchObject({ keywords: [], priority: 0, sticky: 0 });
       expect(getCampaign(db, campaign.id)!.world_snapshot.entries).toEqual([
         { id: entry.id, kind: "lore", name: "Pact", description: "Old lore.", keywords: [], priority: 0, sticky: 0 },
       ]);
+    } finally {
+      db.close();
+      db = openDatabase(":memory:");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a version 6 workspace keeps its cast in full and gains the Elsewhere card after Cast", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    try {
+      const path = join(directory, "v6.db");
+      db.close();
+      db = openDatabase(path);
+      const { worldId, protagonistId } = seedLibrary();
+      const { campaign } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
+      createCampaignCharacter(db, campaign.id, parseCharacterInput({ name: "Ria", description: "Nurse." }));
+      db.exec("UPDATE prompt_cards SET position = position + 100 WHERE title = 'Cast'");
+      dropCastColumns(db);
+      db.exec("PRAGMA user_version = 6");
+      db.close();
+
+      db = openDatabase(path);
+      expect(userVersion()).toBe(7);
+      expect(cardTitles().slice(-2)).toEqual(["Cast", "Elsewhere"]);
+      expect(getCampaign(db, campaign.id)!.characters.map(({ context_mode, summary, aliases, sticky }) => ({ context_mode, summary, aliases, sticky })))
+        .toEqual([
+          { context_mode: "always", summary: "", aliases: [], sticky: 4 },
+          { context_mode: "always", summary: "", aliases: [], sticky: 4 },
+        ]);
+      expect(createCampaignCharacter(db, campaign.id, parseCharacterInput({ name: "New", description: "Later." }))!.context_mode).toBe("in_scene");
     } finally {
       db.close();
       db = openDatabase(":memory:");

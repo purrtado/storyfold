@@ -228,7 +228,7 @@ describe("opening prompt budget", () => {
     const world = await createWorld({ name: "Boundary", setting_brief: "b".repeat(100_000), suggested_starting_situation: "" });
     await createEntry(world.id, { kind: "lore", name: "Compact", description: "l".repeat(40_000) });
     const snapshot = (description: string): CharacterPrompt => ({
-      name: "P", description, appearance: "", personality: "", background: "",
+      id: "p", name: "P", description, appearance: "", personality: "", background: "",
       baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
@@ -371,14 +371,20 @@ describe("captured grounding is immutable and drives narration", () => {
     }
   });
 
-  test("a keyword entry joins only replies whose recent messages mention it, after the player's input", async () => {
+  test("keyword entries and in-scene cast join only replies whose recent messages mention them, after the player's input", async () => {
     await configureProvider(base.url, "test-key-world-entries");
 
     const world = await createWorld({ name: "Widow's Bay", setting_brief: "A fog-bound fishing town.", suggested_starting_situation: "" });
     const protagonist = await createCharacter({ name: "Sable", description: "A new student." });
     await createEntry(world.id, { kind: "location", name: "Harbor", description: "Always-known docks." });
     await createEntry(world.id, { kind: "location", name: "Widow High", description: "The town's only high school.", keywords: ["school"] });
-    const created = await createCampaign({ world_id: world.id, protagonist_id: protagonist.id, starting_situation: "Sable arrives in town." });
+    const ria = await createCharacter({ name: "Ria", description: "Sable's lab partner, always sketching." });
+    const created = await createCampaign({
+      world_id: world.id,
+      protagonist_id: protagonist.id,
+      cast_character_ids: [ria.id],
+      starting_situation: "Sable arrives in town.",
+    });
     const sessionId = created.session!.id;
 
     const calls: Array<Array<{ role: string; content: string }>> = [];
@@ -401,27 +407,33 @@ describe("captured grounding is immutable and drives narration", () => {
     };
     try {
       await play("opening", {});
-      await play("messages", { content: "I walk to school.", direction: "Keep it short." });
+      await play("messages", { content: "I walk to school with Ria.", direction: "Keep it short." });
       await play("messages", { content: "I wait." });
 
       const [opening, school, later] = calls;
       for (const messages of calls) {
         expect(messages[0]!.content).toContain("Always-known docks.");
+        expect(messages[0]!.content).toContain("Elsewhere — not in the current scene:\n- Ria\n");
         expect(messages[0]!.content).not.toContain("The town's only high school.");
+        expect(messages[0]!.content).not.toContain("always sketching");
       }
-      expect(opening!.at(-1)!.content).not.toContain("Widow High");
+      expect(opening!.at(-1)!.content).not.toContain("Context for this reply");
       expect(school!.at(-1)!.content).toBe(
-        "I walk to school.\n\n(World lore relevant to this reply, not part of the player's message:\n" +
-          "- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
+        "I walk to school with Ria.\n\n(Context for this reply, not part of the player's message:\n" +
+          "Characters present or mentioned:\n- Ria: Sable's lab partner, always sketching.\n" +
+          "World lore:\n- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
       );
-      expect(later!.map((message) => message.content).join("\n")).not.toContain("The town's only high school.");
+      // Ria stays for 4 more messages after her mention; the school does not.
+      const laterText = later!.map((message) => message.content).join("\n");
+      expect(laterText).toContain("- Ria: Sable's lab partner, always sketching.");
+      expect(laterText).not.toContain("The town's only high school.");
 
       const response = await fetch(`${server.url}/api/sessions/${sessionId}/messages`, { headers: headersWith() });
       const { messages } = (await response.json()) as { messages: Message[] };
       expect(messages.filter((message) => message.role === "assistant").map((message) => message.lore)).toEqual([
         null,
-        { used: ["Widow High"], dropped: [] },
-        null,
+        { used: ["Ria", "Widow High"], dropped: [] },
+        { used: ["Ria"], dropped: [] },
       ]);
     } finally {
       await server.stop();

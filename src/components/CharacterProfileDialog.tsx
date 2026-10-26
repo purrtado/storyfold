@@ -1,8 +1,8 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { useState, type FormEvent, type RefObject } from "react";
-import type { CharacterProfile } from "../../shared/domain";
+import { useId, useState, type FormEvent, type RefObject } from "react";
+import type { CharacterContextMode, CharacterProfile } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
-import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CharacterInput, type CharacterPatch } from "../lib/storyApi";
+import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CampaignCharacterInput, type CharacterInput, type CharacterPatch, type CharacterSceneFields } from "../lib/storyApi";
 import { Avatar } from "./Avatar";
 
 const optionalFields = CHARACTER_PROFILE_FIELDS.filter(({ required }) => !required);
@@ -15,20 +15,30 @@ function profileInputOf(character: CharacterProfile): CharacterInput {
   return Object.fromEntries(CHARACTER_PROFILE_FIELDS.map(({ key }) => [key, character[key]])) as CharacterInput;
 }
 
+const contextModes: { value: CharacterContextMode; label: string; help: string }[] = [
+  { value: "always", label: "Always", help: "The full profile goes to the narrator every turn." },
+  { value: "in_scene", label: "In scene", help: "Only the summary is sent while offstage; the full profile joins when they're named." },
+  { value: "mentioned", label: "Only when mentioned", help: "Nothing is sent until their name or a nickname comes up." },
+];
+
+const fieldClass = "min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+
 /**
  * The one character form: every profile field plus picture upload. Library,
  * world, and campaign callers supply their own save callbacks; this component
  * only owns the form state and error handling.
  */
-export function CharacterProfileDialog<T extends CharacterProfile & { id: string; avatar_id: string | null }>(props: {
+export function CharacterProfileDialog<T extends CharacterProfile & CharacterSceneFields & { id: string; avatar_id: string | null }>(props: {
   character: T | null;
   /** Prefills the name of a new character. */
   initialName?: string;
+  /** Shows the narrator-context controls; only for campaign cast members other than the protagonist. */
+  sceneContext?: boolean;
   title: string;
   description: string;
   openerRef?: RefObject<HTMLElement | null>;
-  onCreate: (input: CharacterInput) => Promise<T>;
-  onUpdate: (id: string, input: CharacterPatch) => Promise<T>;
+  onCreate: (input: CampaignCharacterInput) => Promise<T>;
+  onUpdate: (id: string, input: CharacterPatch & CharacterSceneFields) => Promise<T>;
   onAvatarUpload: (id: string, file: File) => Promise<T>;
   onAvatarRemove: (id: string) => Promise<T>;
   onSaved: (saved: T, previousId: string | undefined) => void;
@@ -38,6 +48,14 @@ export function CharacterProfileDialog<T extends CharacterProfile & { id: string
     props.character ? profileInputOf(props.character) : { ...emptyProfileInput(), name: props.initialName ?? "" });
   const [avatarId, setAvatarId] = useState(props.character?.avatar_id ?? null);
   const [saving, setSaving] = useState(false);
+  const [contextMode, setContextMode] = useState<CharacterContextMode>(props.character?.context_mode ?? "in_scene");
+  const [summary, setSummary] = useState(props.character?.summary ?? "");
+  const [aliases, setAliases] = useState((props.character?.aliases ?? []).join(", "));
+  const [sticky, setSticky] = useState(String(props.character?.sticky ?? 4));
+  const modeId = useId();
+  const summaryId = useId();
+  const aliasesId = useId();
+  const stickyId = useId();
   const [saveError, setSaveError] = useState("");
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState("");
@@ -84,7 +102,7 @@ export function CharacterProfileDialog<T extends CharacterProfile & { id: string
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saving) return;
-    const input: CharacterInput = {
+    const input: CampaignCharacterInput = {
       name: value.name.trim(),
       description: value.description.trim(),
       appearance: value.appearance?.trim() ?? "",
@@ -92,6 +110,12 @@ export function CharacterProfileDialog<T extends CharacterProfile & { id: string
       background: value.background?.trim() ?? "",
       baseline_motivations: value.baseline_motivations?.trim() ?? "",
       speaking_style: value.speaking_style?.trim() ?? "",
+      ...(props.sceneContext && {
+        context_mode: contextMode,
+        summary: summary.trim(),
+        aliases: aliases.split(",").map((alias) => alias.trim()).filter(Boolean),
+        sticky: Number(sticky),
+      }),
     };
     setSaving(true);
     setSaveError("");
@@ -176,6 +200,38 @@ export function CharacterProfileDialog<T extends CharacterProfile & { id: string
                     <textarea rows={4} value={value[key] ?? ""} onChange={(event) => setValue({ ...value, [key]: event.target.value })} className="min-h-28 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
                   </label>
                 ))}
+                {props.sceneContext && (
+                  <div className="grid gap-5 border-bs border-border pbs-6">
+                    <div className="grid content-start gap-2">
+                      <label htmlFor={modeId} className="text-sm font-medium">Sent to the narrator</label>
+                      <select id={modeId} aria-describedby={`${modeId}-help`} value={contextMode} onChange={(event) => setContextMode(event.target.value as CharacterContextMode)} className={fieldClass}>
+                        {contextModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                      </select>
+                      <p id={`${modeId}-help`} className="text-sm text-muted">{contextModes.find((mode) => mode.value === contextMode)?.help}</p>
+                    </div>
+                    {contextMode === "in_scene" && (
+                      <div className="grid content-start gap-2">
+                        <label htmlFor={summaryId} className="text-sm font-medium">One-line summary</label>
+                        <input id={summaryId} aria-describedby={`${summaryId}-help`} autoComplete="off" maxLength={200} value={summary} onChange={(event) => setSummary(event.target.value)} className={fieldClass} />
+                        <p id={`${summaryId}-help`} className="text-sm text-muted">Sent every turn while they are offstage. Who they are and what you'd notice first.</p>
+                      </div>
+                    )}
+                    {contextMode !== "always" && (
+                      <>
+                        <div className="grid content-start gap-2">
+                          <label htmlFor={aliasesId} className="text-sm font-medium">Nicknames</label>
+                          <input id={aliasesId} aria-describedby={`${aliasesId}-help`} autoComplete="off" value={aliases} onChange={(event) => setAliases(event.target.value)} className={fieldClass} />
+                          <p id={`${aliasesId}-help`} className="text-sm text-muted">Comma-separated. Any of these also brings them into the scene.</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                          <label htmlFor={stickyId}>Stays active for</label>
+                          <input id={stickyId} type="number" required min={0} max={50} step={1} inputMode="numeric" value={sticky} onChange={(event) => setSticky(event.target.value)} className={`${fieldClass} w-24`} />
+                          <span aria-hidden="true">more messages</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
                 {saveError && <p className="text-sm text-muted" role="alert">{saveError}</p>}
               </div>
             </div>

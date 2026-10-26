@@ -85,6 +85,7 @@ import {
   importCampaignStats,
   listStatDefinitions,
   parseCampaignCharacterPatch,
+  parseCharacterSceneFields,
   parseIdList,
   parseStatInput,
   parseStatPatch,
@@ -600,8 +601,9 @@ async function handleCampaignCharacters(
       if (body instanceof Response) return body;
       try {
         const input = parseCharacterInput(body);
+        const scene = parseCharacterSceneFields(body);
         assertCampaignIdle(ctx, campaignId);
-        return jsonResponse({ character: createCampaignCharacter(ctx.db, campaignId, input) }, 201);
+        return jsonResponse({ character: createCampaignCharacter(ctx.db, campaignId, input, scene) }, 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
       }

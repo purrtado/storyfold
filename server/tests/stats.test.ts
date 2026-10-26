@@ -493,6 +493,7 @@ describe("narration prompt", () => {
       const healthStat = campaign.stats.find((stat) => stat.label === "Health")!;
       const trustStat = campaign.stats.find((stat) => stat.label === "Trust")!;
       updateCampaignCharacter(db, campaign.id, protagonistOf(campaign).id, { stats: { [healthStat.id]: 7 } });
+      updateCampaignCharacter(db, campaign.id, campaign.characters[1]!.id, { context_mode: "always" });
       const relationship = createRelationship(
         db,
         campaign,
@@ -556,6 +557,37 @@ describe("fork", () => {
       expect([forkProtagonist.stats_enabled, forkProtagonist.stats]).toEqual([true, { [forkHealth.id]: 7 }]);
       const forkRelationship = listRelationships(db, fork.campaign.id)[0]!;
       expect(forkRelationship.stats).toEqual({ [forkTrust.id]: 4 });
+      db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a fork keeps each character's scene settings; a checkpoint from before them restores everyone as always", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-scene-fork-"));
+    try {
+      const db = openDatabase(join(directory, "storyfold.db"));
+      const { campaign } = seedStatCampaign(db);
+      const cast = campaign.characters[1]!;
+      updateCampaignCharacter(db, campaign.id, cast.id, { context_mode: "mentioned", summary: "Old navigator.", aliases: ["Navigator"], sticky: 2 });
+      const closedId = campaign.active_session_id;
+      const cutId = addMessage(db, closedId, 1, "The storm passes.");
+      beginNextSession(db, campaign.id, { title: "After the storm", handoff: "The crew reached the harbor." });
+      const scene = (campaignId: string) =>
+        listCampaignCharacters(db, campaignId).map(({ context_mode, summary, aliases, sticky }) => ({ context_mode, summary, aliases, sticky }));
+
+      const fork = forkCampaignFromMessage(db, closedId, cutId, { name: "Fork" })!;
+      expect(scene(fork.campaign.id)).toEqual([
+        { context_mode: "always", summary: "", aliases: [], sticky: 4 },
+        { context_mode: "mentioned", summary: "Old navigator.", aliases: ["Navigator"], sticky: 2 },
+      ]);
+
+      const { state } = db.query<{ state: string }, [string]>("SELECT state FROM session_checkpoints WHERE session_id = ?").get(closedId)!;
+      const legacy = JSON.parse(state) as { characters: Array<Record<string, unknown>> };
+      for (const character of legacy.characters) for (const key of ["context_mode", "summary", "aliases", "sticky"]) delete character[key];
+      db.query("UPDATE session_checkpoints SET state = ? WHERE session_id = ?").run(JSON.stringify(legacy), closedId);
+      const legacyFork = forkCampaignFromMessage(db, closedId, cutId, { name: "Legacy fork" })!;
+      expect(scene(legacyFork.campaign.id).map((fields) => fields.context_mode)).toEqual(["always", "always"]);
       db.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
