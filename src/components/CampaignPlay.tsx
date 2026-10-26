@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
-import { protagonistOf, type Campaign, type CampaignCharacter, type Session } from "../../shared/domain";
+import { protagonistOf, type Campaign, type CampaignCharacter, type MessageLore, type Session } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
 import { storedMessageControls, type MessageControls } from "../lib/messageControls";
@@ -555,6 +555,7 @@ function MessageRow(props: {
       </div>
       {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {message.direction && <DirectionNote direction={message.direction} />}
+      {message.lore && <LoreNote lore={message.lore} />}
       {editing && !editExpanded ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
@@ -628,6 +629,18 @@ function DirectionNote(props: { direction: string }) {
     <p className="mbs-0 mbe-2 flex items-start gap-1.5 text-xs leading-5 text-muted">
       <Clapperboard className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
       <span className="min-w-0 break-words">Directed: {props.direction}</span>
+    </p>
+  );
+}
+
+function LoreNote(props: { lore: MessageLore }) {
+  return (
+    <p className="mbs-0 mbe-2 flex items-start gap-1.5 text-xs leading-5 text-muted">
+      <BookOpen className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
+      <span className="min-w-0 break-words">
+        Lore: {props.lore.used.join(", ") || "none"}
+        {props.lore.dropped.length > 0 && ` · Over budget: ${props.lore.dropped.join(", ")}`}
+      </span>
     </p>
   );
 }
@@ -966,6 +979,7 @@ export function CampaignPlay(props: {
                     content: sending.playerText ?? "",
                     status: "complete",
                     direction: null,
+                    lore: null,
                     created_at: "",
                     updated_at: "",
                   }}

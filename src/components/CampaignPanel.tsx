@@ -433,6 +433,7 @@ export function CampaignPanel(props: {
                                   <li key={entry.id} className="grid gap-1 border-bs border-border pbs-3 first:border-0 first:pbs-0">
                                     <p className="font-medium">{entry.name}</p>
                                     <p className="whitespace-pre-wrap text-sm leading-6 text-muted">{entry.description}</p>
+                                    {entry.keywords.length > 0 && <p className="text-xs leading-5 text-muted">Keywords: {entry.keywords.join(", ")}</p>}
                                   </li>
                                 ))}
                               </ul>
