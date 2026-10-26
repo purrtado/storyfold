@@ -242,6 +242,9 @@ describe("Routing", () => {
   test("unknown paths return 404 and wrong methods return 405", async () => {
     expect((await fetch(`${server.url}/api/nope`, { headers: headersWith() })).status).toBe(404);
     expect((await fetch(`${server.url}/`, { headers: headersWith() })).status).toBe(404);
+    for (const removed of ["/api/campaigns", "/api/sessions/any/messages", "/api/characters"]) {
+      expect((await fetch(`${server.url}${removed}`, { headers: headersWith() })).status).toBe(404);
+    }
     const patched = await fetch(`${server.url}/api/providers`, {
       method: "PATCH",
       headers: headersWith({ origin: TRUSTED_ORIGIN }),
@@ -262,7 +265,20 @@ describe("Routing", () => {
 });
 
 describe("Play input validation", () => {
-  test("rejects malformed player payloads before touching the provider or session", async () => {
+  test("rejects malformed player payloads before touching the provider or chat", async () => {
+    const post = (path: string, body: unknown) =>
+      fetch(`${server.url}${path}`, {
+        method: "POST",
+        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+    const { world } = (await (await post("/api/worlds", { name: "W", setting_brief: "b" })).json()) as { world: { id: string } };
+    const { character } = (await (await post(`/api/worlds/${world.id}/characters`, { name: "Hero", description: "d" })).json()) as {
+      character: { id: string };
+    };
+    const { chat } = (await (await post(`/api/worlds/${world.id}/chats`, { protagonist_id: character.id })).json()) as {
+      chat: { id: string };
+    };
     const cases: unknown[] = [
       {},
       { content: "" },
@@ -273,20 +289,18 @@ describe("Play input validation", () => {
       { content: "hi", model: "m" },
     ];
     for (const body of cases) {
-      const response = await fetch(`${server.url}/api/sessions/no-such-id/messages`, {
-        method: "POST",
-        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-        body: JSON.stringify(body),
-      });
+      const response = await post(`/api/chats/${chat.id}/messages`, body);
       expect(response.status).toBe(400);
       const payload = (await response.json()) as { error: string; code: string; accepted: boolean };
       expect(payload.code).toBe("invalid_input");
       expect(payload.accepted).toBe(false);
     }
+    const transcript = await fetch(`${server.url}/api/chats/${chat.id}/messages`, { headers: headersWith() });
+    expect(((await transcript.json()) as { messages: unknown[] }).messages).toEqual([]);
   });
 
-  test("valid player input on an unknown session is a plain 404", async () => {
-    const response = await fetch(`${server.url}/api/sessions/no-such-id/messages`, {
+  test("valid player input on an unknown chat is a plain 404", async () => {
+    const response = await fetch(`${server.url}/api/chats/no-such-id/messages`, {
       method: "POST",
       headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
       body: JSON.stringify({ content: "I look around." }),

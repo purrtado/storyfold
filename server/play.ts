@@ -2,39 +2,30 @@ import type { Database } from "bun:sqlite";
 import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Message, MessageLore } from "../shared/domain";
-import { protagonistOf } from "../shared/domain";
-import { NARRATION_TOKEN_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
+import { NARRATION_TOKEN_BUDGET, directionNote } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
 import { selectReplyContext, type LoreSelection } from "./lore";
-import {
-  SessionClosedError,
-  UnknownEntityError,
-  getCampaign,
-  getSessionRecord,
-  listCampaignState,
-  sessionGroundingHandoff,
-  ValidationError,
-} from "./library";
+import { getChat } from "./chats";
+import { chatGrounding, chatSystemPrompt } from "./grounding";
+import { UnknownEntityError, ValidationError } from "./worlds";
 import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
-import { listPromptCards } from "./promptCards";
-import { relationshipNarrationContext } from "./relationships";
 
 /** Stands in for the player's turn when an opening request has no history. */
 const OPENING_REQUEST = "Begin the opening scene.";
 
 export const NARRATOR_NAME = "Narrator";
 
-/** A reply is already being generated for this session; nothing was saved. */
+/** A reply is already being generated for this chat; nothing was saved. */
 export class BusyError extends Error {}
 
-/** The session already contains completed opening narration. */
+/** The chat already contains completed opening narration. */
 export class AlreadyOpenedError extends Error {}
 
 /** Accepting this request would pass the narration budget. */
 export class ContextLimitError extends Error {}
 
-/** The session has no messages to regenerate. */
+/** The chat has no messages to regenerate. */
 export class NothingToRegenerateError extends Error {}
 
 /** Selection and swipe deletion exist only on the trailing narration. */
@@ -70,7 +61,7 @@ interface MessageRow extends MessageRecord {
 }
 
 const MESSAGE_COLUMNS =
-  "id, session_id, position, role, speaker_name, content, status, direction, lore, created_at, updated_at";
+  "id, chat_id, position, role, speaker_name, content, status, direction, lore, created_at, updated_at";
 
 function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
   return { ...row, lore: row.lore === null ? null : (JSON.parse(row.lore) as MessageLore) };
@@ -102,20 +93,20 @@ export class PlayService {
   constructor(private db: Database) {}
 
   /** Selected rows in position order; the trailing narration carries its alternates. */
-  transcript(sessionId: string): TranscriptMessage[] {
+  transcript(chatId: string): TranscriptMessage[] {
     const rows = this.db
       .query<MessageRecord, [string]>(
-        `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE session_id = ? AND selected = 1 ORDER BY position`,
+        `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND selected = 1 ORDER BY position`,
       )
-      .all(sessionId);
+      .all(chatId);
     const plain = rows.map((row) => ({ ...messageFromRow(row), variant_ids: [], variant_index: 0 }));
     const trailing = plain.at(-1);
     if (!trailing || trailing.role !== "assistant") return plain;
     const variants = this.db
       .query<{ id: string; selected: number }, [string, number]>(
-        "SELECT id, selected FROM messages WHERE session_id = ? AND position = ? ORDER BY created_at, rowid",
+        "SELECT id, selected FROM messages WHERE chat_id = ? AND position = ? ORDER BY created_at, rowid",
       )
-      .all(sessionId, trailing.position);
+      .all(chatId, trailing.position);
     const selectedAt = variants.findIndex((variant) => variant.selected === 1);
     return [
       ...plain.slice(0, -1),
@@ -134,21 +125,20 @@ export class PlayService {
    * other, and late chunks can never alter a settled reply.
    */
   settlePending(messageId: string, status: "complete" | "interrupted" | "failed", content: string): boolean {
-    return (
+    const now = nowIso();
+    const settled =
       this.db
-        .query(
-          "UPDATE messages SET status = ?, content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
-        )
-        .run(status, content, nowIso(), messageId).changes > 0
-    );
+        .query("UPDATE messages SET status = ?, content = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
+        .run(status, content, now, messageId).changes > 0;
+    if (settled) this.db.query("UPDATE chats SET updated_at = ? WHERE id = (SELECT chat_id FROM messages WHERE id = ?)").run(now, messageId);
+    return settled;
   }
 
   /** Accepted player input plus the reserved pending narration, one transaction. */
-  reservePlayerTurn(sessionId: string, content: string, speakerName: string, direction: string | null = null): ReservedTurn {
+  reservePlayerTurn(chatId: string, content: string, speakerName: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction(
       (id: string, text: string, speaker: string): ReservedTurn => {
-        this.requireOpenSession(id);
-        if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
+        if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this chat");
         const position = this.nextPosition(id);
         const playerId = newId();
         const pendingId = newId();
@@ -160,24 +150,23 @@ export class PlayService {
         return { playerId, pendingId };
       },
     );
-    return reserve.immediate(sessionId, content, speakerName);
+    return reserve.immediate(chatId, content, speakerName);
   }
 
   /**
    * Opening narration reserves only the pending row; no player input exists.
-   * Every active session may open exactly once, and only from emptiness: once
+   * Every chat may open exactly once, and only from emptiness: once
    * any message exists — a settled opening, a draft, or accepted player input
    * — retries go through regeneration. All guards sit inside the reservation
    * transaction: a second /opening that raced the first can never reserve
    * after the first settled complete.
    */
-  reserveOpening(sessionId: string, direction: string | null = null): ReservedTurn {
+  reserveOpening(chatId: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
-      this.requireOpenSession(id);
       const existing = this.db
-        .query<unknown, [string]>("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1")
+        .query<unknown, [string]>("SELECT 1 FROM messages WHERE chat_id = ? LIMIT 1")
         .get(id);
-      if (existing) throw new AlreadyOpenedError("This session has already opened");
+      if (existing) throw new AlreadyOpenedError("This chat has already opened");
       this.assertWithinBudget(id, directionTokens(direction));
       const pendingId = newId();
       this.insertMessage(
@@ -193,49 +182,48 @@ export class PlayService {
       );
       return { playerId: null, pendingId };
     });
-    return reserve.immediate(sessionId);
+    return reserve.immediate(chatId);
   }
 
   /**
    * Regeneration adds a selected pending alternate at the trailing narration's
    * position: complete alternates stay as swipes, failed or interrupted drafts
-   * are discarded. A session ending on a player turn reserves a fresh reply;
-   * an empty session has nothing to regenerate.
+   * are discarded. A chat ending on a player turn reserves a fresh reply;
+   * an empty chat has nothing to regenerate.
    */
-  reserveRegeneration(sessionId: string, direction: string | null = null): ReservedTurn {
+  reserveRegeneration(chatId: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
-      this.requireOpenSession(id);
-      if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this session");
+      if (this.hasPending(id)) throw new BusyError("A reply is already being generated for this chat");
       const lastUser = this.db
         .query<Pick<Message, "id">, [string]>(
-          "SELECT id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY position DESC LIMIT 1",
+          "SELECT id FROM messages WHERE chat_id = ? AND role = 'user' ORDER BY position DESC LIMIT 1",
         )
         .get(id);
       const trailing = this.db
         .query<MessageRow, [string]>(
           `SELECT ${MESSAGE_COLUMNS}, selected FROM messages
-           WHERE session_id = ? AND selected = 1 ORDER BY position DESC LIMIT 1`,
+           WHERE chat_id = ? AND selected = 1 ORDER BY position DESC LIMIT 1`,
         )
         .get(id);
-      if (!lastUser && !trailing) throw new NothingToRegenerateError("This session has nothing to regenerate");
+      if (!lastUser && !trailing) throw new NothingToRegenerateError("This chat has nothing to regenerate");
       let position: number;
       if (trailing && trailing.role === "assistant") {
         position = trailing.position;
         this.db
-          .query("DELETE FROM messages WHERE session_id = ? AND position = ? AND status IN ('failed', 'interrupted')")
+          .query("DELETE FROM messages WHERE chat_id = ? AND position = ? AND status IN ('failed', 'interrupted')")
           .run(id, position);
       } else {
         position = this.nextPosition(id);
       }
       this.db
-        .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
+        .query("UPDATE messages SET selected = 0 WHERE chat_id = ? AND position = ?")
         .run(id, position);
       this.assertWithinBudget(id, directionTokens(direction));
       const pendingId = newId();
       this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId, direction);
       return { playerId: lastUser?.id ?? null, pendingId };
     });
-    return reserve.immediate(sessionId);
+    return reserve.immediate(chatId);
   }
 
   /**
@@ -243,27 +231,26 @@ export class PlayService {
    * deleted. Anything else — a player message, older narration — is a
    * conflict; a foreign or unknown id is missing.
    */
-  selectVariant(sessionId: string, messageId: string): TranscriptMessage[] {
+  selectVariant(chatId: string, messageId: string): TranscriptMessage[] {
     const select = this.db.transaction((sid: string, id: string): TranscriptMessage[] => {
-      this.requireOpenSession(sid);
-      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
-      const message = this.getSessionMessage(sid, id);
+      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this chat");
+      const message = this.getChatMessage(sid, id);
       if (!message) throw new UnknownEntityError("Unknown message");
       if (message.role !== "assistant" || message.position !== this.maxPosition(sid)) {
         throw new NotTrailingError("Only the latest narration can be switched");
       }
       this.db
-        .query("UPDATE messages SET selected = 0 WHERE session_id = ? AND position = ?")
+        .query("UPDATE messages SET selected = 0 WHERE chat_id = ? AND position = ?")
         .run(sid, message.position);
       this.db
         .query(
-          "DELETE FROM messages WHERE session_id = ? AND position = ? AND status IN ('failed', 'interrupted') AND id != ?",
+          "DELETE FROM messages WHERE chat_id = ? AND position = ? AND status IN ('failed', 'interrupted') AND id != ?",
         )
         .run(sid, message.position, id);
       this.db.query("UPDATE messages SET selected = 1, updated_at = ? WHERE id = ?").run(nowIso(), id);
       return this.transcript(sid);
     });
-    return select.immediate(sessionId, messageId);
+    return select.immediate(chatId, messageId);
   }
 
   /**
@@ -273,12 +260,11 @@ export class PlayService {
    * (default), or the message and everything after it (scope "after").
    * Positions never shift: the next turn continues after the highest survivor.
    */
-  deleteMessage(sessionId: string, messageId: string, scope: "variant" | "after" | null): TranscriptMessage[] {
+  deleteMessage(chatId: string, messageId: string, scope: "variant" | "after" | null): TranscriptMessage[] {
     const remove = this.db.transaction(
       (sid: string, id: string, cut: "variant" | "after" | null): TranscriptMessage[] => {
-        this.requireOpenSession(sid);
-        if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
-        const message = this.getSessionMessage(sid, id);
+        if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this chat");
+        const message = this.getChatMessage(sid, id);
         if (!message) throw new UnknownEntityError("Unknown message");
         if (cut === "variant") {
           if (message.role !== "assistant" || message.position !== this.maxPosition(sid)) {
@@ -286,7 +272,7 @@ export class PlayService {
           }
           const siblings = this.db
             .query<{ total: number }, [string, number]>(
-              "SELECT COUNT(*) AS total FROM messages WHERE session_id = ? AND position = ?",
+              "SELECT COUNT(*) AS total FROM messages WHERE chat_id = ? AND position = ?",
             )
             .get(sid, message.position)!.total;
           if (siblings < 2) {
@@ -297,21 +283,21 @@ export class PlayService {
             this.db
               .query(
                 `UPDATE messages SET selected = 1, updated_at = ? WHERE id = (
-                   SELECT id FROM messages WHERE session_id = ? AND position = ?
+                   SELECT id FROM messages WHERE chat_id = ? AND position = ?
                    ORDER BY created_at DESC, rowid DESC LIMIT 1
                  )`,
               )
               .run(nowIso(), sid, message.position);
           }
         } else if (cut === "after") {
-          this.db.query("DELETE FROM messages WHERE session_id = ? AND position >= ?").run(sid, message.position);
+          this.db.query("DELETE FROM messages WHERE chat_id = ? AND position >= ?").run(sid, message.position);
         } else {
-          this.db.query("DELETE FROM messages WHERE session_id = ? AND position = ?").run(sid, message.position);
+          this.db.query("DELETE FROM messages WHERE chat_id = ? AND position = ?").run(sid, message.position);
         }
         return this.transcript(sid);
       },
     );
-    return remove.immediate(sessionId, messageId, scope);
+    return remove.immediate(chatId, messageId, scope);
   }
 
   /**
@@ -319,11 +305,10 @@ export class PlayService {
    * alternate. Role, speaker, and position never move; only growth past the
    * narration budget is refused.
    */
-  editMessage(sessionId: string, messageId: string, content: string): Message {
+  editMessage(chatId: string, messageId: string, content: string): Message {
     const edit = this.db.transaction((sid: string, id: string, text: string): Message => {
-      this.requireOpenSession(sid);
-      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this session");
-      const message = this.getSessionMessage(sid, id);
+      if (this.hasPending(sid)) throw new BusyError("A reply is already being generated for this chat");
+      const message = this.getChatMessage(sid, id);
       if (!message) throw new UnknownEntityError("Unknown message");
       if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
       // Only the selected row feeds the model, so only its growth is checked.
@@ -335,52 +320,38 @@ export class PlayService {
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
       return messageFromRow({ ...message, content: text, updated_at: now });
     });
-    return edit.immediate(sessionId, messageId, content);
+    return edit.immediate(chatId, messageId, content);
   }
 
-  /**
-   * Write-side half of the read-only closed-session invariant, checked inside
-   * the reservation transaction: a close that raced an in-flight play request
-   * (between the route's early check and the provider-settings await) loses.
-   */
-  private requireOpenSession(sessionId: string): void {
-    const session = this.db
-      .query<{ closed_at: string | null }, [string]>("SELECT closed_at FROM sessions WHERE id = ?")
-      .get(sessionId);
-    if (!session || session.closed_at !== null) {
-      throw new SessionClosedError("This session is closed; play continues in the campaign's active session");
-    }
-  }
-
-  /** Session-scoped message lookup: another session's id is missing. */
-  private getSessionMessage(sessionId: string, messageId: string): MessageRow | null {
+  /** Chat-scoped message lookup: another chat's id is missing. */
+  private getChatMessage(chatId: string, messageId: string): MessageRow | null {
     return (
       this.db
         .query<MessageRow, [string, string]>(
-          `SELECT ${MESSAGE_COLUMNS}, selected FROM messages WHERE id = ? AND session_id = ?`,
+          `SELECT ${MESSAGE_COLUMNS}, selected FROM messages WHERE id = ? AND chat_id = ?`,
         )
-        .get(messageId, sessionId) ?? null
+        .get(messageId, chatId) ?? null
     );
   }
 
-  /** True while a narration run is being generated for this session. */
-  hasPending(sessionId: string): boolean {
+  /** True while a narration run is being generated for this chat. */
+  hasPending(chatId: string): boolean {
     return (
       this.db
         .query<unknown, [string]>(
-          "SELECT 1 FROM messages WHERE session_id = ? AND role = 'assistant' AND status = 'pending' LIMIT 1",
+          "SELECT 1 FROM messages WHERE chat_id = ? AND role = 'assistant' AND status = 'pending' LIMIT 1",
         )
-        .get(sessionId) !== null
+        .get(chatId) !== null
     );
   }
 
-  private hasCompletedHistory(sessionId: string): boolean {
+  private hasCompletedHistory(chatId: string): boolean {
     return (
       this.db
         .query<unknown, [string]>(
-          "SELECT 1 FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') AND length(content) > 0 LIMIT 1",
+          "SELECT 1 FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') AND length(content) > 0 LIMIT 1",
         )
-        .get(sessionId) !== null
+        .get(chatId) !== null
     );
   }
 
@@ -397,41 +368,39 @@ export class PlayService {
    * Nothing is truncated; the request is refused instead. Keyword lore is
    * not counted: it only ever takes the room left over.
    */
-  private assertWithinBudget(sessionId: string, extra: number): void {
-    const total = this.narrationTokens(this.systemPrompt(sessionId), this.modelHistory(sessionId)) + extra;
+  private assertWithinBudget(chatId: string, extra: number): void {
+    const total = this.narrationTokens(this.systemPrompt(chatId), this.modelHistory(chatId)) + extra;
     if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
         `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
-          "Shorten the campaign's notes or relationships, or begin the next session with a handoff.",
+          "Shorten the world's characters, entries or relationships, or start a new chat.",
       );
     }
   }
 
   /**
    * Triggered characters and keyword lore for one reply, scanned from the
-   * recent history — or, before any, the situation the opening grows from —
-   * with the direction counted as part of the latest input. It gets only the
-   * room the budget leaves.
+   * recent history — or, before any, the chat's opening — with the direction
+   * counted as part of the latest input. It gets only the room the budget
+   * leaves.
    */
   private replyLore(
-    sessionId: string,
+    chatId: string,
     systemPrompt: string,
     history: NarrationMessage[],
     direction: string | null,
   ): LoreSelection {
-    const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
-    const recent =
-      history.length > 0
-        ? history.map((message) => message.content)
-        : [sessionGroundingHandoff(this.db, campaign.id, sessionId) ?? campaign.starting_situation];
+    const chat = getChat(this.db, chatId)!;
+    const grounding = chatGrounding(this.db, chat);
+    const recent = history.length > 0 ? history.map((message) => message.content) : [chat.opening];
     if (direction !== null) recent[recent.length - 1] += `\n${direction}`;
     const room = NARRATION_TOKEN_BUDGET - this.narrationTokens(systemPrompt, history) - directionTokens(direction);
     return selectReplyContext(
       {
-        cast: campaign.characters.filter((character) => character.role === "cast"),
-        relationships: relationshipNarrationContext(this.db, campaign),
-        entries: campaign.world_snapshot.entries,
-        stats: campaign.stats,
+        cast: grounding.cast,
+        relationships: grounding.relationships,
+        entries: grounding.entries,
+        stats: grounding.stats,
       },
       recent,
       room,
@@ -439,20 +408,20 @@ export class PlayService {
   }
 
   /** Alternates share a position; the next turn still goes past the highest. */
-  private maxPosition(sessionId: string): number {
+  private maxPosition(chatId: string): number {
     return this.db
       .query<{ max: number }, [string]>(
-        "SELECT COALESCE(MAX(position), 0) AS max FROM messages WHERE session_id = ?",
+        "SELECT COALESCE(MAX(position), 0) AS max FROM messages WHERE chat_id = ?",
       )
-      .get(sessionId)!.max;
+      .get(chatId)!.max;
   }
 
-  private nextPosition(sessionId: string): number {
-    return this.maxPosition(sessionId) + 1;
+  private nextPosition(chatId: string): number {
+    return this.maxPosition(chatId) + 1;
   }
 
   private insertMessage(
-    sessionId: string,
+    chatId: string,
     position: number,
     role: "user" | "assistant",
     speakerName: string,
@@ -464,40 +433,29 @@ export class PlayService {
   ): void {
     this.db
       .query(
-        `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, direction, selected, created_at, updated_at)
+        `INSERT INTO messages (id, chat_id, position, role, speaker_name, content, status, direction, selected, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
-      .run(id, sessionId, position, role, speakerName, content, status, direction, now, now);
+      .run(id, chatId, position, role, speakerName, content, status, direction, now, now);
+    this.db.query("UPDATE chats SET updated_at = ? WHERE id = ?").run(now, chatId);
   }
 
   /**
-   * Narrator grounding for this session: the saved prompt cards filled from
-   * what its campaign owns — the world snapshot, its characters, current notes
-   * and relationships, and the handoff that grounds the session. The library
-   * and worlds are never consulted.
+   * Narrator grounding for this chat: the saved prompt cards filled from the
+   * world as it is now, read on every call, so any edit applies from the next
+   * reply.
    */
-  systemPrompt(sessionId: string): string {
-    const campaign = getCampaign(this.db, getSessionRecord(this.db, sessionId)!.campaign_id)!;
-    return narratorSystemPrompt(listPromptCards(this.db), {
-      world: campaign.world_snapshot,
-      starting_situation: campaign.starting_situation,
-      stats: campaign.stats,
-      protagonist: protagonistOf(campaign),
-      cast: campaign.characters.filter((character) => character.role === "cast"),
-      notes: listCampaignState(this.db, campaign.id),
-      relationships: relationshipNarrationContext(this.db, campaign),
-      handoff: sessionGroundingHandoff(this.db, campaign.id, sessionId),
-      has_history: this.hasCompletedHistory(sessionId),
-    });
+  systemPrompt(chatId: string): string {
+    return chatSystemPrompt(this.db, getChat(this.db, chatId)!, this.hasCompletedHistory(chatId));
   }
 
   /** Completed narration and accepted player input only, in position order. */
-  modelHistory(sessionId: string): NarrationMessage[] {
+  modelHistory(chatId: string): NarrationMessage[] {
     return this.db
       .query<{ role: "user" | "assistant"; content: string }, [string]>(
-        "SELECT role, content FROM messages WHERE session_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') ORDER BY position",
+        "SELECT role, content FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') ORDER BY position",
       )
-      .all(sessionId);
+      .all(chatId);
   }
 
   /**
@@ -508,7 +466,7 @@ export class PlayService {
    * acceptance headers the browser needs before the first byte of narration.
    */
   streamNarration(options: {
-    sessionId: string;
+    chatId: string;
     pendingId: string;
     playerId: string | null;
     settings: PlaySettings;
@@ -516,10 +474,10 @@ export class PlayService {
     upstreamFetch?: typeof fetch;
   }): Response {
     const service = this;
-    const sessionId = options.sessionId;
+    const chatId = options.chatId;
 
     // First terminal settlement wins and releases the exclusivity slot, so a
-    // stalled upstream can never hold a session hostage.
+    // stalled upstream can never hold a chat hostage.
     function onDisconnect(): void {
       run.settle("interrupted");
       run.controller.abort(options.disconnectSignal?.reason);
@@ -537,10 +495,10 @@ export class PlayService {
         run.settled = true;
         service.settlePending(run.messageId, status, run.partial);
         detachDisconnect();
-        service.unregister(sessionId, run);
+        service.unregister(chatId, run);
       },
     };
-    this.runs.set(sessionId, run);
+    this.runs.set(chatId, run);
 
     // Disconnect must settle synchronously and abort the shared controller:
     // it cannot depend on a stalled upstream noticing the abort.
@@ -552,10 +510,10 @@ export class PlayService {
 
     // An opening request carries no player row; whether the story starts
     // fresh depends on the history, not on the protocol kind.
-    const systemPrompt = this.systemPrompt(sessionId);
-    const history = this.modelHistory(sessionId);
+    const systemPrompt = this.systemPrompt(chatId);
+    const history = this.modelHistory(chatId);
     const direction = this.getMessage(options.pendingId)?.direction ?? null;
-    const lore = this.replyLore(sessionId, systemPrompt, history, direction);
+    const lore = this.replyLore(chatId, systemPrompt, history, direction);
     this.db.query("UPDATE messages SET lore = ? WHERE id = ?").run(lore.lore && JSON.stringify(lore.lore), options.pendingId);
     if (history.length === 0) history.push({ role: "user", content: OPENING_REQUEST });
     // Lore first, so an OOC note still ends the player's latest message.
@@ -650,9 +608,9 @@ export class PlayService {
     return generate();
   }
 
-  /** Only the run still registered for this session may remove itself. */
-  private unregister(sessionId: string, run: ActiveRun): void {
-    if (this.runs.get(sessionId) === run) this.runs.delete(sessionId);
+  /** Only the run still registered for this chat may remove itself. */
+  private unregister(chatId: string, run: ActiveRun): void {
+    if (this.runs.get(chatId) === run) this.runs.delete(chatId);
   }
 
   /**
@@ -661,8 +619,8 @@ export class PlayService {
    * abort), unregisters, then cancels the shared controller — aborting the
    * real provider call. Late chunks land on a settled run and are dropped.
    */
-  stop(sessionId: string): { pending: boolean; message: Message | null } {
-    const run = this.runs.get(sessionId);
+  stop(chatId: string): { pending: boolean; message: Message | null } {
+    const run = this.runs.get(chatId);
     if (!run) return { pending: false, message: null };
     run.settle("interrupted");
     run.controller.abort();

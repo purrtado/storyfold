@@ -19,12 +19,6 @@ export const PanelIcon = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-export const PlusIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...props}>
-    <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-
 export const MenuIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg {...base} {...props}>
     <path d="M4 6h16M4 12h16M4 18h16" />

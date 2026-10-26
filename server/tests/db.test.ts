@@ -3,10 +3,11 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCampaign, createCampaignCharacter, createCharacter, createWorld, createWorldEntry, getCampaign, listWorldEntries, parseCharacterInput } from "../library";
+import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
+import { createChat } from "../chats";
 import { openDatabase, sweepAbandonedPending } from "../db";
 import { listPromptCards } from "../promptCards";
-import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
+import { createCharacter, createWorld, listStatDefinitions, parseCharacterInput } from "../worlds";
 
 const NOW = "2026-01-01T00:00:00Z";
 
@@ -20,18 +21,15 @@ afterEach(() => {
   db.close();
 });
 
-function seedLibrary(): { worldId: string; protagonistId: string } {
-  const world = createWorld(db, {
-    name: "Invariant World",
-    setting_brief: "Brief.",
-    suggested_starting_situation: "",
-  });
-  const protagonist = createCharacter(db, parseCharacterInput({ name: "Invariant Hero", description: "Desc." }));
-  return { worldId: world.id, protagonistId: protagonist.id };
+function seedChat(): { worldId: string; chatId: string; protagonistId: string } {
+  const world = createWorld(db, { name: "Invariant World", setting_brief: "Brief." });
+  const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Invariant Hero", description: "Desc." }))!;
+  const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "" })!;
+  return { worldId: world.id, chatId: chat.id, protagonistId: hero.id };
 }
 
 function insertMessage(
-  sessionId: string,
+  chatId: string,
   position: number,
   role: string,
   status: string,
@@ -40,214 +38,101 @@ function insertMessage(
 ): string {
   const id = crypto.randomUUID();
   db.query(
-    `INSERT INTO messages (id, session_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
+    `INSERT INTO messages (id, chat_id, position, role, speaker_name, content, status, selected, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'Narrator', ?, ?, ?, ?, ?)`,
-  ).run(id, sessionId, position, role, content, status, selected, NOW, NOW);
+  ).run(id, chatId, position, role, content, status, selected, NOW, NOW);
   return id;
 }
 
-function campaignRows(): Array<Record<string, unknown>> {
-  return db.query<Record<string, unknown>, []>("SELECT * FROM campaigns").all();
-}
-
-/** Removes what schema version 7 added, leaving a version 6 shape. */
-function dropCastColumns(target: Database): void {
-  for (const column of ["context_mode", "summary", "aliases", "sticky"]) target.exec(`ALTER TABLE campaign_characters DROP COLUMN ${column}`);
-  target.exec("DELETE FROM prompt_cards WHERE title = 'Elsewhere'");
-}
-
-/** Removes what schema versions 6 and 7 added, leaving a version 5 shape. */
-function dropLoreColumns(target: Database): void {
-  dropCastColumns(target);
-  for (const column of ["keywords", "priority", "sticky"]) target.exec(`ALTER TABLE world_entries DROP COLUMN ${column}`);
-  target.exec("ALTER TABLE messages DROP COLUMN lore");
-}
-
-const userVersion = () => db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
-const cardTitles = () => listPromptCards(db).map((card) => card.title);
-
 describe("schema version", () => {
-  test("a workspace from another schema is refused; one this build wrote reopens", () => {
+  test("a fresh workspace is seeded with the stat bank and prompt cards; reopening keeps them", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
-      const stalePath = join(directory, "stale.db");
-      const stale = new Database(stalePath, { create: true });
-      stale.exec("CREATE TABLE worlds (id TEXT PRIMARY KEY)");
-      stale.close();
-      expect(() => openDatabase(stalePath)).toThrow("delete it to start fresh");
+      const path = join(directory, "fresh.db");
+      const first = openDatabase(path);
+      first.exec("UPDATE prompt_cards SET body = 'Edited.' WHERE position = 1");
+      first.close();
 
-      const currentPath = join(directory, "current.db");
-      openDatabase(currentPath).close();
-      openDatabase(currentPath).close();
+      const reopened = openDatabase(path);
+      try {
+        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(8);
+        expect(listStatDefinitions(reopened, null)).toHaveLength(8);
+        const cards = listPromptCards(reopened);
+        expect(cards.map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
+        expect(cards[0]!.body).toBe("Edited.");
+      } finally {
+        reopened.close();
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  test("a version 3 workspace keeps its transcript and gains narration directions and prompt cards", () => {
+  test("a workspace from an older schema is refused with its path and left untouched", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
-      const path = join(directory, "v3.db");
-      db.close();
-      db = openDatabase(path);
-      const { worldId, protagonistId } = seedLibrary();
-      const { session } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
-      const messageId = insertMessage(session.id, 1, "assistant", "complete", "Kept narration.");
-      db.exec("ALTER TABLE messages DROP COLUMN direction");
-      dropLoreColumns(db);
-      db.exec("DROP TABLE prompt_cards");
-      db.exec("PRAGMA user_version = 3");
-      db.close();
+      for (const version of [1, 3, 7]) {
+        const path = join(directory, `v${version}.db`);
+        const stale = new Database(path, { create: true });
+        stale.exec("CREATE TABLE campaigns (id TEXT PRIMARY KEY)");
+        stale.exec(`PRAGMA user_version = ${version}`);
+        stale.close();
 
-      db = openDatabase(path);
-      expect(userVersion()).toBe(7);
-      expect(db.query("SELECT content, direction FROM messages WHERE id = ?").get(messageId)).toEqual({
-        content: "Kept narration.",
-        direction: null,
-      });
-      expect(listPromptCards(db).map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
+        expect(() => openDatabase(path)).toThrow(path);
+        expect(() => openDatabase(path)).toThrow("predates the world-as-save model");
+
+        const after = new Database(path);
+        expect(after.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(version);
+        expect(after.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([{ name: "campaigns" }]);
+        after.close();
+      }
     } finally {
-      db.close();
-      db = openDatabase(":memory:");
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("a version 4 workspace gains the default prompt cards once", () => {
-    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
-    try {
-      const path = join(directory, "v4.db");
-      db.close();
-      db = openDatabase(path);
-      dropLoreColumns(db);
-      db.exec("DROP TABLE prompt_cards");
-      db.exec("PRAGMA user_version = 4");
-      db.close();
-
-      db = openDatabase(path);
-      db.close();
-      db = openDatabase(path);
-      expect(userVersion()).toBe(7);
-      expect(listPromptCards(db)).toHaveLength(DEFAULT_PROMPT_CARDS.length);
-    } finally {
-      db.close();
-      db = openDatabase(":memory:");
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("a version 5 workspace keeps its prompt cards and its entries read as always included", () => {
-    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
-    try {
-      const path = join(directory, "v5.db");
-      db.close();
-      db = openDatabase(path);
-      const { worldId, protagonistId } = seedLibrary();
-      const entry = createWorldEntry(db, worldId, { kind: "lore", name: "Pact", description: "Old lore.", keywords: [], priority: 0, sticky: 0 })!;
-      const { campaign } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
-      db.query("UPDATE campaigns SET world_snapshot = ? WHERE id = ?").run(
-        JSON.stringify({ name: "W", setting_brief: "b", entries: [{ id: entry.id, kind: "lore", name: "Pact", description: "Old lore." }] }),
-        campaign.id,
-      );
-      db.exec("UPDATE prompt_cards SET body = 'Edited.' WHERE position = 1");
-      dropLoreColumns(db);
-      db.exec("PRAGMA user_version = 5");
-      db.close();
-
-      db = openDatabase(path);
-      expect(userVersion()).toBe(7);
-      expect(listPromptCards(db)[0]!.body).toBe("Edited.");
-      expect(cardTitles()).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
-      expect(listWorldEntries(db, worldId)[0]).toMatchObject({ keywords: [], priority: 0, sticky: 0 });
-      expect(getCampaign(db, campaign.id)!.world_snapshot.entries).toEqual([
-        { id: entry.id, kind: "lore", name: "Pact", description: "Old lore.", keywords: [], priority: 0, sticky: 0 },
-      ]);
-    } finally {
-      db.close();
-      db = openDatabase(":memory:");
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("a version 6 workspace keeps its cast in full and gains the Elsewhere card after Cast", () => {
-    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
-    try {
-      const path = join(directory, "v6.db");
-      db.close();
-      db = openDatabase(path);
-      const { worldId, protagonistId } = seedLibrary();
-      const { campaign } = createCampaign(db, { world_id: worldId, protagonist_id: protagonistId, starting_situation: "" });
-      createCampaignCharacter(db, campaign.id, parseCharacterInput({ name: "Ria", description: "Nurse." }));
-      db.exec("UPDATE prompt_cards SET position = position + 100 WHERE title = 'Cast'");
-      dropCastColumns(db);
-      db.exec("PRAGMA user_version = 6");
-      db.close();
-
-      db = openDatabase(path);
-      expect(userVersion()).toBe(7);
-      expect(cardTitles().slice(-2)).toEqual(["Cast", "Elsewhere"]);
-      expect(getCampaign(db, campaign.id)!.characters.map(({ context_mode, summary, aliases, sticky }) => ({ context_mode, summary, aliases, sticky })))
-        .toEqual([
-          { context_mode: "always", summary: "", aliases: [], sticky: 4 },
-          { context_mode: "always", summary: "", aliases: [], sticky: 4 },
-        ]);
-      expect(createCampaignCharacter(db, campaign.id, parseCharacterInput({ name: "New", description: "Later." }))!.context_mode).toBe("in_scene");
-    } finally {
-      db.close();
-      db = openDatabase(":memory:");
       rmSync(directory, { recursive: true, force: true });
     }
   });
 });
 
 describe("schema invariants", () => {
-  test("active session must belong to its own campaign at commit", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { campaign, session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "One.",
-      name: "Owner",
-    });
-    expect(campaign.active_session_id).toBe(session.id);
-
-    // A second campaign pointing at the first campaign's session violates the
-    // deferred composite key exactly at COMMIT, even though both rows exist.
-    const steal = db.transaction(() => {
-      db.query(
-        `INSERT INTO campaigns
-           (id, name, world_id, world_snapshot, starting_situation, active_session_id, created_at, updated_at)
-         VALUES ('c2', 'Thief', ?, '{"name":"W","setting_brief":"b","entries":[]}', 'Two.', ?, ?, ?)`,
-      ).run(worldId, session.id, NOW, NOW);
-    });
-    expect(() => steal.immediate()).toThrow(/FOREIGN KEY/);
-    expect(campaignRows().map((row) => row.id)).toEqual([campaign.id]);
-    const survived = db
-      .query<{ id: string; active_session_id: string }, [string]>(
-        "SELECT id, active_session_id FROM campaigns WHERE id = ?",
-      )
-      .get(campaign.id)!;
-    expect(survived.active_session_id).toBe(session.id);
+  test("a chat's protagonist must be a character of the chat's world", () => {
+    const { worldId } = seedChat();
+    const other = createWorld(db, { name: "Other", setting_brief: "Elsewhere." });
+    const stranger = createCharacter(db, other.id, parseCharacterInput({ name: "Stranger", description: "Foreign." }))!;
+    const insert = () =>
+      db
+        .query(
+          "INSERT INTO chats (id, world_id, protagonist_id, title, opening, created_at, updated_at) VALUES (?, ?, ?, 'T', '', ?, ?)",
+        )
+        .run(crypto.randomUUID(), worldId, stranger.id, NOW, NOW);
+    expect(insert).toThrow(/FOREIGN KEY/);
   });
 
-  test("message positions are unique per session and persist in order", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Order.",
-    });
-    const first = insertMessage(session.id, 1, "user", "complete");
-    const second = insertMessage(session.id, 2, "user", "complete");
+  test("a relationship cannot join characters of different worlds", () => {
+    const { worldId, protagonistId } = seedChat();
+    const other = createWorld(db, { name: "Other", setting_brief: "Elsewhere." });
+    const stranger = createCharacter(db, other.id, parseCharacterInput({ name: "Stranger", description: "Foreign." }))!;
+    const insert = () =>
+      db
+        .query(
+          `INSERT INTO relationships (id, world_id, source_id, target_id, how_met, status, known_facts, stats, created_at, updated_at)
+           VALUES (?, ?, ?, ?, '', '', '[]', '{}', ?, ?)`,
+        )
+        .run(crypto.randomUUID(), worldId, protagonistId, stranger.id, NOW, NOW);
+    expect(insert).toThrow(/FOREIGN KEY/);
+  });
+
+  test("message positions are unique per chat and persist in order", () => {
+    const { chatId } = seedChat();
+    const first = insertMessage(chatId, 1, "user", "complete");
+    const second = insertMessage(chatId, 2, "user", "complete");
     // A second selected row at one position violates the partial unique index.
-    expect(() => insertMessage(session.id, 2, "user", "complete")).toThrow(/UNIQUE/);
+    expect(() => insertMessage(chatId, 2, "user", "complete")).toThrow(/UNIQUE/);
     // An unselected alternate may share the position with the selected row.
-    const alternate = insertMessage(session.id, 2, "assistant", "complete", "x", 0);
+    const alternate = insertMessage(chatId, 2, "assistant", "complete", "x", 0);
     const rows = db
       .query<{ id: string; position: number }, [string]>(
-        "SELECT id, position FROM messages WHERE session_id = ? ORDER BY position, selected",
+        "SELECT id, position FROM messages WHERE chat_id = ? ORDER BY position, selected",
       )
-      .all(session.id);
+      .all(chatId);
     expect(rows).toEqual([
       { id: first, position: 1 },
       { id: alternate, position: 2 },
@@ -256,130 +141,78 @@ describe("schema invariants", () => {
   });
 
   test("only narration has alternates and exactly one row per position is selected", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Swipe.",
-    });
-    expect(() => insertMessage(session.id, 1, "user", "complete", "x", 0)).toThrow();
-    expect(() => insertMessage(session.id, 1, "assistant", "complete", "x", 2)).toThrow();
-    const swipe = insertMessage(session.id, 1, "assistant", "complete", "older", 0);
-    const chosen = insertMessage(session.id, 1, "assistant", "complete", "newer");
+    const { chatId } = seedChat();
+    expect(() => insertMessage(chatId, 1, "user", "complete", "x", 0)).toThrow();
+    expect(() => insertMessage(chatId, 1, "assistant", "complete", "x", 2)).toThrow();
+    const swipe = insertMessage(chatId, 1, "assistant", "complete", "older", 0);
+    const chosen = insertMessage(chatId, 1, "assistant", "complete", "newer");
     const rows = db
       .query<{ id: string; content: string; selected: number }, [string]>(
-        "SELECT id, content, selected FROM messages WHERE session_id = ? ORDER BY selected, rowid",
+        "SELECT id, content, selected FROM messages WHERE chat_id = ? ORDER BY selected, rowid",
       )
-      .all(session.id);
+      .all(chatId);
     expect(rows).toEqual([
       { id: swipe, content: "older", selected: 0 },
       { id: chosen, content: "newer", selected: 1 },
     ]);
   });
 
-  test("only one pending assistant reply may exist per session, and settlement frees the slot", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Excl.",
-    });
-    const first = insertMessage(session.id, 1, "assistant", "pending");
-    expect(() => insertMessage(session.id, 2, "assistant", "pending")).toThrow();
-    // Settling the first reply releases the exclusivity slot.
-    db.query(
-      "UPDATE messages SET status = 'interrupted' WHERE id = ? AND status = 'pending'",
-    ).run(first);
-    const second = insertMessage(session.id, 2, "assistant", "pending");
+  test("only one pending assistant reply may exist per chat, and settlement frees the slot", () => {
+    const { chatId } = seedChat();
+    const first = insertMessage(chatId, 1, "assistant", "pending");
+    expect(() => insertMessage(chatId, 2, "assistant", "pending")).toThrow();
+    db.query("UPDATE messages SET status = 'interrupted' WHERE id = ? AND status = 'pending'").run(first);
+    const second = insertMessage(chatId, 2, "assistant", "pending");
     const rows = db
-      .query<{ id: string; status: string }, [string]>(
-        "SELECT id, status FROM messages WHERE session_id = ? ORDER BY position",
-      )
-      .all(session.id);
+      .query<{ id: string; status: string }, [string]>("SELECT id, status FROM messages WHERE chat_id = ? ORDER BY position")
+      .all(chatId);
     expect(rows).toEqual([
       { id: first, status: "interrupted" },
       { id: second, status: "pending" },
     ]);
   });
 
-  test("multiple sessions may share one campaign", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { campaign } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Multi.",
-    });
-    const extra = crypto.randomUUID();
-    db.query(
-      "INSERT INTO sessions (id, campaign_id, ordinal, title, created_at, updated_at) VALUES (?, ?, 2, 'Second', ?, ?)",
-    ).run(extra, campaign.id, NOW, NOW);
-    const sessions = db
-      .query<{ id: string }, [string]>("SELECT id FROM sessions WHERE campaign_id = ?")
-      .all(campaign.id);
-    expect(sessions.map((row) => row.id).sort()).toEqual([campaign.active_session_id, extra].sort());
-  });
-
   test("roles, statuses and user completion are constrained and persisted", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Check.",
-    });
-    expect(() => insertMessage(session.id, 1, "narrator", "complete")).toThrow();
-    expect(() => insertMessage(session.id, 2, "user", "pending")).toThrow();
-    const kept = insertMessage(session.id, 3, "assistant", "complete");
+    const { chatId } = seedChat();
+    expect(() => insertMessage(chatId, 1, "narrator", "complete")).toThrow();
+    expect(() => insertMessage(chatId, 2, "user", "pending")).toThrow();
+    const kept = insertMessage(chatId, 3, "assistant", "complete");
     const row = db
-      .query<{ id: string; role: string; status: string }, [string]>(
-        "SELECT id, role, status FROM messages WHERE id = ?",
-      )
+      .query<{ id: string; role: string; status: string }, [string]>("SELECT id, role, status FROM messages WHERE id = ?")
       .get(kept)!;
     expect(row).toEqual({ id: kept, role: "assistant", status: "complete" });
   });
 
-  test("snapshot columns refuse non-JSON text", () => {
-    const { worldId } = seedLibrary();
-    const sessionId = crypto.randomUUID();
-    const broken = db.transaction(() => {
-      db.query(
-        `INSERT INTO campaigns
-           (id, name, world_id, world_snapshot, starting_situation, active_session_id, created_at, updated_at)
-         VALUES (?, 'Broken', ?, 'not json', 'x', ?, ?, ?)`,
-      ).run(crypto.randomUUID(), worldId, sessionId, NOW, NOW);
-      db.query(
-        "INSERT INTO sessions (id, campaign_id, title, created_at, updated_at) VALUES (?, ?, 'T', ?, ?)",
-      ).run(sessionId, db.query<{ id: string }, []>("SELECT id FROM campaigns WHERE name = 'Broken'").get()!.id, NOW, NOW);
-    });
-    expect(() => broken.immediate()).toThrow();
-    expect(campaignRows()).toEqual([]);
+  test("deleting a character removes its relationships but a protagonist is protected by the key", () => {
+    const { worldId, protagonistId } = seedChat();
+    expect(() => db.query("DELETE FROM characters WHERE id = ?").run(protagonistId)).toThrow(/FOREIGN KEY/);
+    const friend = createCharacter(db, worldId, parseCharacterInput({ name: "Friend", description: "Pal." }))!;
+    db.query(
+      `INSERT INTO relationships (id, world_id, source_id, target_id, how_met, status, known_facts, stats, created_at, updated_at)
+       VALUES ('r1', ?, ?, ?, '', '', '[]', '{}', ?, ?)`,
+    ).run(worldId, protagonistId, friend.id, NOW, NOW);
+    db.query("DELETE FROM characters WHERE id = ?").run(friend.id);
+    expect(db.query("SELECT 1 FROM relationships").all()).toEqual([]);
   });
 });
 
 describe("startup sweep", () => {
   test("settles only the pending draft interrupted and preserves partial, input and identity", () => {
-    const { worldId, protagonistId } = seedLibrary();
-    const { session } = createCampaign(db, {
-      world_id: worldId,
-      protagonist_id: protagonistId,
-      starting_situation: "Crash.",
-    });
-    const draftId = insertMessage(session.id, 1, "assistant", "pending", "partial text");
-    const inputId = insertMessage(session.id, 2, "user", "complete", "accepted input");
+    const { chatId } = seedChat();
+    const draftId = insertMessage(chatId, 1, "assistant", "pending", "partial text");
+    const inputId = insertMessage(chatId, 2, "user", "complete", "accepted input");
 
     expect(sweepAbandonedPending(db)).toBe(1);
     const rows = db
       .query<
         { id: string; position: number; role: string; speaker_name: string; content: string; status: string },
         [string]
-      >(
-        "SELECT id, position, role, speaker_name, content, status FROM messages WHERE session_id = ? ORDER BY position",
-      )
-      .all(session.id);
+      >("SELECT id, position, role, speaker_name, content, status FROM messages WHERE chat_id = ? ORDER BY position")
+      .all(chatId);
     expect(rows).toEqual([
       { id: draftId, position: 1, role: "assistant", speaker_name: "Narrator", content: "partial text", status: "interrupted" },
       { id: inputId, position: 2, role: "user", speaker_name: "Narrator", content: "accepted input", status: "complete" },
     ]);
-    // Sweeping again is a no-op.
     expect(sweepAbandonedPending(db)).toBe(0);
   });
 });

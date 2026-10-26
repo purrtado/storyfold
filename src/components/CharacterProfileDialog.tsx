@@ -2,7 +2,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useId, useState, type FormEvent, type RefObject } from "react";
 import type { CharacterContextMode, CharacterProfile } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
-import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CampaignCharacterInput, type CharacterInput, type CharacterPatch, type CharacterSceneFields } from "../lib/storyApi";
+import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CharacterCreateInput, type CharacterInput, type CharacterPatch, type CharacterSceneFields } from "../lib/storyApi";
 import { Avatar } from "./Avatar";
 
 const optionalFields = CHARACTER_PROFILE_FIELDS.filter(({ required }) => !required);
@@ -24,21 +24,21 @@ const contextModes: { value: CharacterContextMode; label: string; help: string }
 const fieldClass = "min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 /**
- * The one character form: every profile field plus picture upload. Library,
- * world, and campaign callers supply their own save callbacks; this component
- * only owns the form state and error handling.
+ * The one character form: every profile field plus picture upload. Callers
+ * supply their own save callbacks; this component only owns the form state
+ * and error handling.
  */
 export function CharacterProfileDialog<T extends CharacterProfile & CharacterSceneFields & { id: string; avatar_id: string | null }>(props: {
   character: T | null;
   /** Prefills the name of a new character. */
   initialName?: string;
-  /** Shows the narrator-context controls; only for campaign cast members other than the protagonist. */
+  /** Shows the narrator-context controls; hidden for the player's own character. */
   sceneContext?: boolean;
   title: string;
   description: string;
   openerRef?: RefObject<HTMLElement | null>;
-  onCreate: (input: CampaignCharacterInput) => Promise<T>;
-  onUpdate: (id: string, input: CharacterPatch & CharacterSceneFields) => Promise<T>;
+  onCreate: (input: CharacterCreateInput) => Promise<T>;
+  onUpdate: (id: string, input: CharacterPatch) => Promise<T>;
   onAvatarUpload: (id: string, file: File) => Promise<T>;
   onAvatarRemove: (id: string) => Promise<T>;
   onSaved: (saved: T, previousId: string | undefined) => void;
@@ -102,7 +102,7 @@ export function CharacterProfileDialog<T extends CharacterProfile & CharacterSce
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saving) return;
-    const input: CampaignCharacterInput = {
+    const input: CharacterCreateInput = {
       name: value.name.trim(),
       description: value.description.trim(),
       appearance: value.appearance?.trim() ?? "",
@@ -110,6 +110,7 @@ export function CharacterProfileDialog<T extends CharacterProfile & CharacterSce
       background: value.background?.trim() ?? "",
       baseline_motivations: value.baseline_motivations?.trim() ?? "",
       speaking_style: value.speaking_style?.trim() ?? "",
+      knowledge: value.knowledge?.trim() ?? "",
       ...(props.sceneContext && {
         context_mode: contextMode,
         summary: summary.trim(),

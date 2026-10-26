@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { Character, StatDefinition, World, WorldEntry } from "../../shared/domain";
-import { fetchCharacters, fetchStats, fetchWorlds, fetchWorldStats, listWorldCharacters, listWorldEntries } from "./storyApi";
+import type { Chat, Character, Relationship, StatDefinition, World, WorldEntry } from "../../shared/domain";
+import { fetchChats, fetchStats, fetchWorlds, fetchWorldChats, fetchWorldRelationships, fetchWorldStats, listWorldCharacters, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
   /** undefined until the first read completes; an empty array is a real, loaded library */
@@ -110,12 +110,14 @@ export function createLibrary<T>(
 }
 
 export const worldsLibrary = createLibrary<World>(fetchWorlds, "Could not load worlds.");
-export const charactersLibrary = createLibrary<Character>(fetchCharacters, "Could not load characters.");
+export const chatsLibrary = createLibrary<Chat>(fetchChats, "Could not load chats.");
 export const statsLibrary = createLibrary<StatDefinition>(fetchStats, "Could not load stats.");
 
 const worldEntryLibraries = new Map<string, Library<WorldEntry>>();
 const worldCharacterLibraries = new Map<string, Library<Character>>();
 const worldStatLibraries = new Map<string, Library<StatDefinition>>();
+const worldRelationshipLibraries = new Map<string, Library<Relationship>>();
+const worldChatLibraries = new Map<string, Library<Chat>>();
 
 function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
   let library = worldEntryLibraries.get(worldId);
@@ -149,6 +151,30 @@ function getWorldStatsLibrary(worldId: string): Library<StatDefinition> {
       "Could not load this world's stats.",
     );
     worldStatLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+function getWorldRelationshipsLibrary(worldId: string): Library<Relationship> {
+  let library = worldRelationshipLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => fetchWorldRelationships(worldId),
+      "Could not load this world's relationships.",
+    );
+    worldRelationshipLibraries.set(worldId, library);
+  }
+  return library;
+}
+
+function getWorldChatsLibrary(worldId: string): Library<Chat> {
+  let library = worldChatLibraries.get(worldId);
+  if (!library) {
+    library = createLibrary(
+      () => fetchWorldChats(worldId),
+      "Could not load this world's chats.",
+    );
+    worldChatLibraries.set(worldId, library);
   }
   return library;
 }
@@ -238,16 +264,61 @@ export function useWorlds(): LibrarySnapshot<World> {
   return useSyncExternalStore(worldsLibrary.subscribe, worldsLibrary.getSnapshot);
 }
 
-export function useCharacters(): LibrarySnapshot<Character> {
-  return useSyncExternalStore(charactersLibrary.subscribe, charactersLibrary.getSnapshot);
+export function useWorldRelationships(worldId: string): LibrarySnapshot<Relationship> {
+  const library = getWorldRelationshipsLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function ensureWorldRelationships(worldId: string): void {
+  const library = getWorldRelationshipsLibrary(worldId);
+  const snapshot = library.getSnapshot();
+  if (snapshot.items === undefined && !snapshot.loading) void library.load();
+}
+
+export function refreshWorldRelationships(worldId: string): void {
+  void getWorldRelationshipsLibrary(worldId).load();
+}
+
+export function applyWorldRelationshipSaved(worldId: string, saved: Relationship, previousId?: string): void {
+  getWorldRelationshipsLibrary(worldId).applySaved(saved, previousId);
+}
+
+export function applyWorldRelationshipRemoved(worldId: string, relationshipId: string): void {
+  getWorldRelationshipsLibrary(worldId).applyRemoved(relationshipId);
+}
+
+export function useWorldChats(worldId: string): LibrarySnapshot<Chat> {
+  const library = getWorldChatsLibrary(worldId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function refreshWorldChats(worldId: string): void {
+  void getWorldChatsLibrary(worldId).load();
+}
+
+export function useChats(): LibrarySnapshot<Chat> {
+  return useSyncExternalStore(chatsLibrary.subscribe, chatsLibrary.getSnapshot);
+}
+
+export function refreshChats(): void {
+  void chatsLibrary.load();
+}
+
+/** A stat change reaches every character and relationship of the world. */
+export function refreshWorldStatDependents(worldId: string): void {
+  refreshWorldStats(worldId);
+  refreshWorldCharacters(worldId);
+  refreshWorldRelationships(worldId);
+}
+
+/** Re-reads everything a world-editing surface shows; used when the window regains focus. */
+export function refreshWorldData(worldId: string): void {
+  refreshWorldEntries(worldId);
+  refreshWorldStatDependents(worldId);
 }
 
 export function refreshWorlds(): void {
   void worldsLibrary.load();
-}
-
-export function refreshCharacters(): void {
-  void charactersLibrary.load();
 }
 
 export function useStats(): LibrarySnapshot<StatDefinition> {
@@ -270,11 +341,11 @@ export function applyStatRemoved(statId: string): void {
 export function warmLibraries(): void {
   const worlds = worldsLibrary.getSnapshot();
   if (worlds.items === undefined && !worlds.loading) refreshWorlds();
-  const characters = charactersLibrary.getSnapshot();
-  if (characters.items === undefined && !characters.loading) refreshCharacters();
+  const chats = chatsLibrary.getSnapshot();
+  if (chats.items === undefined && !chats.loading) refreshChats();
 }
 
 export function refreshLibraries(): void {
   refreshWorlds();
-  refreshCharacters();
+  refreshChats();
 }

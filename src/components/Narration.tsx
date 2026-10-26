@@ -1,18 +1,20 @@
 import { TriangleAlert, UserPlus } from "lucide-react";
-import type { CampaignCharacter } from "../../shared/domain";
+import type { Character } from "../../shared/domain";
 import { narrationSegments } from "../lib/speakerTags";
 import { Avatar } from "./Avatar";
 import { Markdown } from "./Markdown";
 
 /**
  * Narration with `[Name]`-tagged paragraphs attributed to their speaker.
- * Campaign characters open in the campaign panel; walk-ons (labels matching
- * no campaign character) can be added to the cast.
+ * World characters open in the world panel; walk-ons (labels matching no
+ * world character) can be added to the world.
  */
 export function Narration(props: {
   content: string;
   streaming?: boolean;
-  characters: CampaignCharacter[];
+  characters: Character[];
+  /** The player-controlled character; narration written as them is flagged. */
+  protagonistId?: string;
   onAddToCast?: (name: string) => void;
   onShowCharacter?: (characterId: string) => void;
 }) {
@@ -51,7 +53,7 @@ export function Narration(props: {
                     {label}
                   </button>
                 ) : <span>{label}</span>}
-                {character?.role === "protagonist" && (
+                {character && character.id === props.protagonistId && (
                   <span className="inline-flex items-center gap-1 text-xs font-normal text-muted">
                     <TriangleAlert className="size-3.5 flex-none" aria-hidden="true" />
                     Narrator wrote your character
@@ -65,7 +67,7 @@ export function Narration(props: {
                     onClick={() => props.onAddToCast?.(label)}
                   >
                     <UserPlus className="size-3.5 flex-none" aria-hidden="true" />
-                    Add to cast
+                    Add to world
                   </button>
                 )}
               </p>

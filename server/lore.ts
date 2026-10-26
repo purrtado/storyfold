@@ -1,4 +1,4 @@
-import type { CampaignCharacter, MessageLore, WorldEntrySnapshot } from "../shared/domain";
+import type { Character, MessageLore, WorldEntry } from "../shared/domain";
 import { contextNote, type NarrationContext, type RelationshipPrompt, type ReplyContext } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 
@@ -32,23 +32,23 @@ export interface LoreSelection {
 }
 
 export interface ReplyContextSource {
-  /** The campaign's cast; `always` members are already in the system prompt. */
-  cast: ReadonlyArray<CampaignCharacter>;
+  /** The world's characters but the protagonist; `always` members are already in the system prompt. */
+  cast: ReadonlyArray<Character>;
   relationships: ReadonlyArray<RelationshipPrompt>;
-  entries: ReadonlyArray<WorldEntrySnapshot>;
+  entries: ReadonlyArray<WorldEntry>;
   stats: NarrationContext["stats"];
 }
 
 type Item =
-  | { kind: "character"; character: CampaignCharacter }
-  | { kind: "entry"; entry: WorldEntrySnapshot };
+  | { kind: "character"; character: Character }
+  | { kind: "entry"; entry: WorldEntry };
 
 /**
  * What one reply gets beyond the system prompt, from the recent messages
  * (oldest first). Cast members who are not `always` join when their name or
  * an alias appears — in cast order, each with the relationships that tie it
  * to a character the narrator knows of — then keyword entries whose name or
- * a keyword appears, highest priority first and otherwise in capture order.
+ * a keyword appears, highest priority first and otherwise in creation order.
  * Items are added while the note fits `room` tokens, capped at the lore
  * budget; once one does not fit, it and every item after it are dropped, so
  * nothing later displaces something earlier.

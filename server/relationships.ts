@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
-import type { Campaign, Relationship, StatValues } from "../shared/domain";
+import type { Character, Relationship, StatDefinition, StatValues } from "../shared/domain";
 import type { RelationshipPrompt } from "../shared/narration";
 import { newId, nowIso } from "./db";
-import { parseStatValues, statDefaults } from "./library";
+import { listStatDefinitions, listWorldCharacters, parseStatValues, statDefaults } from "./worlds";
 
 const TEXT_LIMIT = 2_000;
 const KNOWN_FACTS_LIMIT = 100;
@@ -24,7 +24,7 @@ function knownFacts(value: unknown): string[] {
   return value.map((fact) => text(fact, "known fact")).filter((fact) => fact.length > 0);
 }
 
-/** The fixed relationship template; any provided field is validated, stats against the campaign's relationship stats. */
+/** The fixed relationship template; any provided field is validated, stats against the world's relationship stats. */
 export interface RelationshipPatch {
   how_met?: string;
   status?: string;
@@ -32,12 +32,12 @@ export interface RelationshipPatch {
   stats?: StatValues;
 }
 
-export function parseRelationshipPatch(body: Record<string, unknown>, campaign: Campaign): RelationshipPatch {
+export function parseRelationshipPatch(body: Record<string, unknown>, stats: ReadonlyArray<StatDefinition>): RelationshipPatch {
   return {
     ...(body.how_met !== undefined ? { how_met: text(body.how_met, "how_met") } : {}),
     ...(body.status !== undefined ? { status: text(body.status, "status") } : {}),
     ...(body.known_facts !== undefined ? { known_facts: knownFacts(body.known_facts) } : {}),
-    ...(body.stats !== undefined ? { stats: parseStatValues(body.stats, campaign.stats, "relationship") } : {}),
+    ...(body.stats !== undefined ? { stats: parseStatValues(body.stats, stats, "relationship") } : {}),
   };
 }
 
@@ -50,15 +50,15 @@ function relationshipFromRow(row: RelationshipRow): Relationship {
   return { ...row, known_facts: JSON.parse(row.known_facts) as string[], stats: JSON.parse(row.stats) as StatValues };
 }
 
-export function listRelationships(db: Database, campaignId: string): Relationship[] {
+export function listRelationships(db: Database, worldId: string): Relationship[] {
   return db.query<RelationshipRow, [string]>(
-    "SELECT * FROM relationships WHERE campaign_id = ? ORDER BY created_at,id",
-  ).all(campaignId).map(relationshipFromRow);
+    "SELECT * FROM relationships WHERE world_id = ? ORDER BY created_at,id",
+  ).all(worldId).map(relationshipFromRow);
 }
 
-export function relationshipNarrationContext(db: Database, campaign: Campaign): RelationshipPrompt[] {
-  const names = new Map(campaign.characters.map((character) => [character.id, character.name]));
-  return listRelationships(db, campaign.id).map((relationship) => ({
+export function relationshipNarrationContext(db: Database, worldId: string, characters: ReadonlyArray<Pick<Character, "id" | "name">>): RelationshipPrompt[] {
+  const names = new Map(characters.map((character) => [character.id, character.name]));
+  return listRelationships(db, worldId).map((relationship) => ({
     source_id: relationship.source_id,
     target_id: relationship.target_id,
     source_name: names.get(relationship.source_id)!,
@@ -71,39 +71,39 @@ export function relationshipNarrationContext(db: Database, campaign: Campaign): 
 }
 
 /** A new relationship carries every relationship stat, at its default unless given. */
-export function createRelationship(db: Database, campaign: Campaign, sourceId: unknown, targetId: unknown, input: RelationshipPatch): Relationship {
-  const ids = campaign.characters.map((character) => character.id);
+export function createRelationship(db: Database, worldId: string, sourceId: unknown, targetId: unknown, input: RelationshipPatch): Relationship {
+  const ids = listWorldCharacters(db, worldId).map((character) => character.id);
   if (typeof sourceId !== "string" || typeof targetId !== "string" || !ids.includes(sourceId) || !ids.includes(targetId)) {
-    throw new RelationshipValidationError("source_id and target_id must identify characters of this campaign");
+    throw new RelationshipValidationError("source_id and target_id must identify characters of this world");
   }
   if (sourceId === targetId) throw new RelationshipValidationError("source_id and target_id must differ");
-  if (db.query("SELECT 1 FROM relationships WHERE campaign_id=? AND source_id=? AND target_id=?")
-    .get(campaign.id, sourceId, targetId)) {
+  if (db.query("SELECT 1 FROM relationships WHERE world_id=? AND source_id=? AND target_id=?")
+    .get(worldId, sourceId, targetId)) {
     throw new RelationshipValidationError("a relationship already exists for this directional pair");
   }
-  const count = db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM relationships WHERE campaign_id=?")
-    .get(campaign.id)!.count;
+  const count = db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM relationships WHERE world_id=?")
+    .get(worldId)!.count;
   if (count >= RELATIONSHIP_COUNT_LIMIT) {
-    throw new RelationshipValidationError(`campaigns support at most ${RELATIONSHIP_COUNT_LIMIT} directional relationships`);
+    throw new RelationshipValidationError(`worlds support at most ${RELATIONSHIP_COUNT_LIMIT} directional relationships`);
   }
   const now = nowIso();
   const relationship: Relationship = {
     id: newId(),
-    campaign_id: campaign.id,
+    world_id: worldId,
     source_id: sourceId,
     target_id: targetId,
     how_met: input.how_met ?? "",
     status: input.status ?? "",
     known_facts: input.known_facts ?? [],
-    stats: { ...statDefaults(campaign.stats, "relationship"), ...input.stats },
+    stats: { ...statDefaults(listStatDefinitions(db, worldId), "relationship"), ...input.stats },
     created_at: now,
     updated_at: now,
   };
   db.query(
-    "INSERT INTO relationships (id,campaign_id,source_id,target_id,how_met,status,known_facts,stats,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO relationships (id,world_id,source_id,target_id,how_met,status,known_facts,stats,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
   ).run(
     relationship.id,
-    campaign.id,
+    worldId,
     sourceId,
     targetId,
     relationship.how_met,
@@ -117,8 +117,8 @@ export function createRelationship(db: Database, campaign: Campaign, sourceId: u
 }
 
 /** Last save wins; stats merge into the existing values. */
-export function updateRelationship(db: Database, campaign: Campaign, id: string, patch: RelationshipPatch): Relationship | null {
-  const row = db.query<RelationshipRow, [string, string]>("SELECT * FROM relationships WHERE id=? AND campaign_id=?").get(id, campaign.id);
+export function updateRelationship(db: Database, worldId: string, id: string, patch: RelationshipPatch): Relationship | null {
+  const row = db.query<RelationshipRow, [string, string]>("SELECT * FROM relationships WHERE id=? AND world_id=?").get(id, worldId);
   if (!row) return null;
   const existing = relationshipFromRow(row);
   const next: Relationship = { ...existing, ...patch, stats: { ...existing.stats, ...patch.stats }, updated_at: nowIso() };
@@ -133,6 +133,6 @@ export function updateRelationship(db: Database, campaign: Campaign, id: string,
   return next;
 }
 
-export function deleteRelationship(db: Database, campaignId: string, id: string): boolean {
-  return db.query("DELETE FROM relationships WHERE id=? AND campaign_id=?").run(id, campaignId).changes > 0;
+export function deleteRelationship(db: Database, worldId: string, id: string): boolean {
+  return db.query("DELETE FROM relationships WHERE id=? AND world_id=?").run(id, worldId).changes > 0;
 }

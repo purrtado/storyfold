@@ -2,31 +2,28 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type {
-  Campaign,
-  CampaignCharacter,
-  CampaignStat,
-  StatFields,
-  WorldEntryKind,
-  WorldEntrySnapshot,
-  WorldSnapshot,
-} from "../shared/domain";
-import { WORLD_ENTRY_KINDS } from "../shared/domain";
+import type { StatFields } from "../shared/domain";
 import { DEFAULT_PROMPT_CARDS } from "../shared/narration";
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS worlds (
+CREATE TABLE worlds (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   setting_brief TEXT NOT NULL,
-  suggested_starting_situation TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS characters (
+CREATE TABLE images (
   id TEXT PRIMARY KEY,
-  world_id TEXT REFERENCES worlds(id),
+  mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')),
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE characters (
+  id TEXT PRIMARY KEY,
+  world_id TEXT NOT NULL REFERENCES worlds(id),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   appearance TEXT NOT NULL,
@@ -34,13 +31,22 @@ CREATE TABLE IF NOT EXISTS characters (
   background TEXT NOT NULL,
   baseline_motivations TEXT NOT NULL,
   speaking_style TEXT NOT NULL,
+  knowledge TEXT NOT NULL,
+  avatar_id TEXT REFERENCES images(id),
+  stats_enabled INTEGER NOT NULL CHECK (stats_enabled IN (0, 1)),
+  stats TEXT NOT NULL CHECK (json_valid(stats)),
+  context_mode TEXT NOT NULL CHECK (context_mode IN ('always', 'in_scene', 'mentioned')),
+  summary TEXT NOT NULL,
+  aliases TEXT NOT NULL CHECK (json_valid(aliases)),
+  sticky INTEGER NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE (id, world_id)
 );
 
-CREATE INDEX IF NOT EXISTS characters_world ON characters(world_id);
+CREATE INDEX characters_world ON characters(world_id);
 
-CREATE TABLE IF NOT EXISTS world_entries (
+CREATE TABLE world_entries (
   id TEXT PRIMARY KEY,
   world_id TEXT NOT NULL REFERENCES worlds(id),
   kind TEXT NOT NULL CHECK (kind IN ('location', 'lore', 'scene')),
@@ -53,50 +59,9 @@ CREATE TABLE IF NOT EXISTS world_entries (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS world_entries_world ON world_entries(world_id);
+CREATE INDEX world_entries_world ON world_entries(world_id);
 
-CREATE TABLE IF NOT EXISTS campaigns (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  world_id TEXT NOT NULL REFERENCES worlds(id),
-  world_snapshot TEXT NOT NULL CHECK (json_valid(world_snapshot)),
-  starting_situation TEXT NOT NULL,
-  active_session_id TEXT NOT NULL,
-  forked_from_campaign_id TEXT REFERENCES campaigns(id),
-  forked_from_session_id TEXT REFERENCES sessions(id),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (active_session_id, id) REFERENCES sessions(id, campaign_id)
-    DEFERRABLE INITIALLY DEFERRED
-);
-
-CREATE TABLE IF NOT EXISTS campaign_characters (
-  id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  role TEXT NOT NULL CHECK (role IN ('protagonist', 'cast')),
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  appearance TEXT NOT NULL,
-  personality TEXT NOT NULL,
-  background TEXT NOT NULL,
-  baseline_motivations TEXT NOT NULL,
-  speaking_style TEXT NOT NULL,
-  avatar_id TEXT REFERENCES images(id),
-  stats_enabled INTEGER NOT NULL CHECK (stats_enabled IN (0, 1)),
-  stats TEXT NOT NULL CHECK (json_valid(stats)),
-  context_mode TEXT NOT NULL DEFAULT 'always' CHECK (context_mode IN ('always', 'in_scene', 'mentioned')),
-  summary TEXT NOT NULL DEFAULT '',
-  aliases TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(aliases)),
-  sticky INTEGER NOT NULL DEFAULT 4,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE (id, campaign_id)
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS campaign_characters_one_protagonist
-  ON campaign_characters(campaign_id) WHERE role = 'protagonist';
-
-CREATE TABLE IF NOT EXISTS stat_definitions (
+CREATE TABLE stat_definitions (
   id TEXT PRIMARY KEY,
   world_id TEXT REFERENCES worlds(id),
   applies_to TEXT NOT NULL CHECK (applies_to IN ('character', 'relationship')),
@@ -113,63 +78,11 @@ CREATE TABLE IF NOT EXISTS stat_definitions (
   CHECK (min < max AND default_value BETWEEN min AND max)
 );
 
-CREATE INDEX IF NOT EXISTS stat_definitions_world ON stat_definitions(world_id);
+CREATE INDEX stat_definitions_world ON stat_definitions(world_id);
 
-CREATE TABLE IF NOT EXISTS campaign_stats (
+CREATE TABLE relationships (
   id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  applies_to TEXT NOT NULL CHECK (applies_to IN ('character', 'relationship')),
-  label TEXT NOT NULL,
-  description TEXT NOT NULL,
-  low_label TEXT NOT NULL,
-  high_label TEXT NOT NULL,
-  min INTEGER NOT NULL,
-  max INTEGER NOT NULL,
-  default_value INTEGER NOT NULL,
-  color TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  CHECK (min < max AND default_value BETWEEN min AND max)
-);
-
-CREATE INDEX IF NOT EXISTS campaign_stats_campaign ON campaign_stats(campaign_id);
-
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  ordinal INTEGER NOT NULL,
-  title TEXT NOT NULL,
-  handoff TEXT,
-  closed_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE (campaign_id, ordinal)
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS sessions_id_campaign ON sessions(id, campaign_id);
-
-CREATE TABLE IF NOT EXISTS campaign_state_items (
-  id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  category TEXT NOT NULL CHECK (category IN ('goal', 'knowledge', 'internal', 'journal')),
-  subject TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS campaign_state_items_campaign ON campaign_state_items(campaign_id);
-
-CREATE TABLE IF NOT EXISTS session_checkpoints (
-  session_id TEXT PRIMARY KEY REFERENCES sessions(id),
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-  state TEXT NOT NULL CHECK (json_valid(state)),
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS relationships (
-  id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+  world_id TEXT NOT NULL REFERENCES worlds(id),
   source_id TEXT NOT NULL,
   target_id TEXT NOT NULL,
   how_met TEXT NOT NULL,
@@ -179,16 +92,30 @@ CREATE TABLE IF NOT EXISTS relationships (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (source_id != target_id),
-  UNIQUE (campaign_id, source_id, target_id),
-  FOREIGN KEY (source_id, campaign_id) REFERENCES campaign_characters(id, campaign_id) ON DELETE CASCADE,
-  FOREIGN KEY (target_id, campaign_id) REFERENCES campaign_characters(id, campaign_id) ON DELETE CASCADE
+  UNIQUE (world_id, source_id, target_id),
+  FOREIGN KEY (source_id, world_id) REFERENCES characters(id, world_id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id, world_id) REFERENCES characters(id, world_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS relationships_campaign ON relationships(campaign_id);
+CREATE INDEX relationships_world ON relationships(world_id);
 
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE chats (
   id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id),
+  world_id TEXT NOT NULL REFERENCES worlds(id),
+  protagonist_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  opening TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (protagonist_id, world_id) REFERENCES characters(id, world_id)
+);
+
+CREATE INDEX chats_world ON chats(world_id);
+CREATE INDEX chats_protagonist ON chats(protagonist_id);
+
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL REFERENCES chats(id),
   position INTEGER NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   speaker_name TEXT NOT NULL,
@@ -203,26 +130,13 @@ CREATE TABLE IF NOT EXISTS messages (
   CHECK (role = 'assistant' OR selected = 1)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS messages_one_pending
-  ON messages(session_id) WHERE role = 'assistant' AND status = 'pending';
+CREATE UNIQUE INDEX messages_one_pending
+  ON messages(chat_id) WHERE role = 'assistant' AND status = 'pending';
 
-CREATE UNIQUE INDEX IF NOT EXISTS messages_one_selected
-  ON messages(session_id, position) WHERE selected = 1;
+CREATE UNIQUE INDEX messages_one_selected
+  ON messages(chat_id, position) WHERE selected = 1;
 
-CREATE TABLE IF NOT EXISTS images (
-  id TEXT PRIMARY KEY,
-  mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')),
-  data BLOB NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS character_avatars (
-  character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
-  image_id TEXT NOT NULL REFERENCES images(id),
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS prompt_cards (
+CREATE TABLE prompt_cards (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
@@ -241,8 +155,8 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; versions 3 to 6 upgrade in place. */
-const SCHEMA_VERSION = 7;
+/** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
+const SCHEMA_VERSION = 8;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -266,71 +180,37 @@ export function insertDefaultPromptCards(db: Database): void {
   DEFAULT_PROMPT_CARDS.forEach((card, index) => insert.run(newId(), card.title, card.body, index + 1, now, now));
 }
 
-/** Version 7's Elsewhere card, placed right after the Cast card, or last when there is none. */
-function insertElsewhereCard(db: Database): void {
-  const card = DEFAULT_PROMPT_CARDS.find((candidate) => candidate.title === "Elsewhere")!;
-  const cast = db.query<{ position: number }, []>("SELECT position FROM prompt_cards WHERE title = 'Cast' ORDER BY position LIMIT 1").get();
-  const position = cast
-    ? cast.position + 1
-    : db.query<{ next: number }, []>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM prompt_cards").get()!.next;
-  db.query("UPDATE prompt_cards SET position = position + 1 WHERE position >= ?").run(position);
-  const now = nowIso();
-  db.query(
-    "INSERT INTO prompt_cards (id, title, body, enabled, position, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
-  ).run(newId(), card.title, card.body, position, now, now);
-}
-
 /**
- * Opens the workspace database with foreign keys and the schema in place.
- * Older workspaces upgrade in place: version 3 gains the narration direction
- * column, versions 3 and 4 the default prompt cards, versions 3 to 5 entry
- * keywords and narration lore, and versions 3 to 6 cast context modes —
- * existing characters keep `always` — and, from version 5 on, the Elsewhere
- * card. Anything older is refused rather than migrated; a fresh one gets the
- * stat bank and prompt card seeds.
+ * Opens the workspace database with foreign keys and the schema in place. A
+ * fresh one gets the stat bank and prompt card seeds. Any other version is
+ * refused: there are no migrations.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const populated = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get() !== null;
-  if (populated && (version < 3 || version > SCHEMA_VERSION)) {
+  if (populated && version !== SCHEMA_VERSION) {
     db.close();
-    throw new Error(`${path} uses an older Storyfold schema; delete it to start fresh (there are no migrations)`);
+    throw new Error(
+      `${path} predates the world-as-save model (schema ${version}, expected ${SCHEMA_VERSION}); delete it to start fresh (there are no migrations)`,
+    );
   }
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
-  // One transaction, so an interrupted upgrade leaves the old version to retry from.
+  if (populated) return db;
   db.transaction(() => {
-    if (populated && version < SCHEMA_VERSION) {
-      if (version === 3) db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
-      if (version < 6) {
-        db.exec("ALTER TABLE world_entries ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords))");
-        db.exec("ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
-        db.exec("ALTER TABLE world_entries ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0");
-        db.exec("ALTER TABLE messages ADD COLUMN lore TEXT CHECK (lore IS NULL OR json_valid(lore))");
-      }
-      db.exec(
-        "ALTER TABLE campaign_characters ADD COLUMN context_mode TEXT NOT NULL DEFAULT 'always' CHECK (context_mode IN ('always', 'in_scene', 'mentioned'))",
-      );
-      db.exec("ALTER TABLE campaign_characters ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
-      db.exec("ALTER TABLE campaign_characters ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(aliases))");
-      db.exec("ALTER TABLE campaign_characters ADD COLUMN sticky INTEGER NOT NULL DEFAULT 4");
-      if (version >= 5) insertElsewhereCard(db);
-    }
     db.exec(SCHEMA);
-    if (!populated) {
-      const now = nowIso();
-      const insert = db.query(
-        `INSERT INTO stat_definitions
-           (id, world_id, applies_to, label, description, low_label, high_label, min, max, default_value, color, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      for (const stat of STAT_BANK_SEED) {
-        insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
-      }
+    const now = nowIso();
+    const insert = db.query(
+      `INSERT INTO stat_definitions
+         (id, world_id, applies_to, label, description, low_label, high_label, min, max, default_value, color, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const stat of STAT_BANK_SEED) {
+      insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
     }
-    if (!populated || version < 5) insertDefaultPromptCards(db);
+    insertDefaultPromptCards(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   })();
   return db;
@@ -348,90 +228,4 @@ export function sweepAbandonedPending(db: Database): number {
        WHERE role = 'assistant' AND status = 'pending'`,
     )
     .run(nowIso()).changes;
-}
-
-/** Storage shape of a campaign row: the world snapshot is JSON text until parsed. */
-export interface CampaignRecord {
-  id: string;
-  name: string;
-  world_id: string;
-  world_snapshot: string;
-  starting_situation: string;
-  active_session_id: string;
-  forked_from_campaign_id: string | null;
-  forked_from_session_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/**
- * The snapshot column is written only by campaign creation from API-validated
- * fields; on read we re-check the shape so a corrupt workspace can never reach
- * prompts as undefined. name/setting_brief stay non-empty and entries must be
- * present. Entries captured before keywords existed read as always included.
- */
-function parseWorldSnapshot(text: string): WorldSnapshot {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("corrupt campaign snapshot");
-  }
-  if (typeof value !== "object" || value === null) throw new Error("corrupt campaign snapshot");
-  const snapshot = value as Record<string, unknown>;
-  if (
-    typeof snapshot.name !== "string" ||
-    typeof snapshot.setting_brief !== "string" ||
-    snapshot.name.length === 0 ||
-    snapshot.setting_brief.length === 0
-  ) {
-    throw new Error("corrupt campaign snapshot");
-  }
-  if (!Array.isArray(snapshot.entries)) throw new Error("corrupt campaign snapshot");
-  const entries = snapshot.entries.map((entry: unknown): WorldEntrySnapshot => {
-    if (typeof entry !== "object" || entry === null) throw new Error("corrupt campaign snapshot");
-    const captured = entry as Record<string, unknown>;
-    const { keywords = [], priority = 0, sticky = 0 } = captured;
-    if (
-      typeof captured.id !== "string" ||
-      typeof captured.name !== "string" ||
-      typeof captured.description !== "string" ||
-      !WORLD_ENTRY_KINDS.includes(captured.kind as WorldEntryKind) ||
-      captured.name.length === 0 ||
-      !Array.isArray(keywords) ||
-      !keywords.every((keyword) => typeof keyword === "string") ||
-      !Number.isInteger(priority) ||
-      !Number.isInteger(sticky)
-    ) {
-      throw new Error("corrupt campaign snapshot");
-    }
-    return {
-      id: captured.id,
-      kind: captured.kind as WorldEntryKind,
-      name: captured.name,
-      description: captured.description,
-      keywords: keywords as string[],
-      priority: priority as number,
-      sticky: sticky as number,
-    };
-  });
-  return { name: snapshot.name, setting_brief: snapshot.setting_brief, entries };
-}
-
-export function campaignFromRow(
-  db: Database,
-  row: CampaignRecord,
-  characters: CampaignCharacter[],
-  stats: CampaignStat[],
-): Campaign {
-  return { ...row, world_snapshot: parseWorldSnapshot(row.world_snapshot), characters, stats, story_begun: hasAnyMessage(db, row.id) };
-}
-
-/** True once any session of the campaign has a message. */
-export function hasAnyMessage(db: Database, campaignId: string): boolean {
-  return (
-    db
-      .query("SELECT 1 FROM messages m JOIN sessions s ON s.id = m.session_id WHERE s.campaign_id = ? LIMIT 1")
-      .get(campaignId) !== null
-  );
 }

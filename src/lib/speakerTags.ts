@@ -1,9 +1,9 @@
-import type { CampaignCharacter } from "../../shared/domain";
+import type { Character } from "../../shared/domain";
 
 export type NarrationSegment =
   | { kind: "narration"; text: string }
-  /** `character` is null for a walk-on: a label that matches no campaign character. */
-  | { kind: "speaker"; label: string; character: CampaignCharacter | null; text: string };
+  /** `character` is null for a walk-on: a label that matches no world character. */
+  | { kind: "speaker"; label: string; character: Character | null; text: string };
 
 type SpeakerSegment = Extract<NarrationSegment, { kind: "speaker" }>;
 
@@ -16,7 +16,7 @@ function nameKey(name: string) {
 }
 
 /** Full name, case-insensitive; else a one-word label that is exactly one character's first name. */
-export function resolveSpeaker(label: string, characters: CampaignCharacter[]): CampaignCharacter | null {
+export function resolveSpeaker(label: string, characters: Character[]): Character | null {
   const wanted = nameKey(label);
   const exact = characters.find((character) => nameKey(character.name) === wanted);
   if (exact) return exact;
@@ -32,7 +32,7 @@ export function resolveSpeaker(label: string, characters: CampaignCharacter[]): 
  * attributes the next one. While streaming, a trailing paragraph that is
  * still an unfinished tag is held back.
  */
-export function narrationSegments(content: string, characters: CampaignCharacter[], streaming = false): NarrationSegment[] {
+export function narrationSegments(content: string, characters: Character[], streaming = false): NarrationSegment[] {
   const paragraphs = content.split(/\r?\n[ \t]*\r?\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
   if (streaming && PARTIAL_TAG.test(paragraphs.at(-1) ?? "")) paragraphs.pop();
 

@@ -30,7 +30,7 @@ export function MessageScroller({
   followThreshold = 56,
   smooth = true,
   onFollowChange,
-  label = "Session transcript",
+  label = "Chat transcript",
   viewportClassName,
   contentClassName,
   className,

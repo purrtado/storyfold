@@ -1,9 +1,9 @@
-import type { CampaignCharacter, CampaignStateItem, CharacterProfile, PromptCard, StatFields, StatValues, WorldEntrySnapshot } from "./domain";
+import type { Character, CharacterProfile, PromptCard, StatFields, StatValues, WorldEntry } from "./domain";
 import { CHARACTER_PROFILE_FIELDS } from "./domain";
 
 /**
  * One size budget, in tokens (see shared/tokens.ts), for everything sent to
- * the narrator: the system prompt plus the session's completed history.
+ * the narrator: the system prompt plus the chat's completed history.
  * Nothing is ever truncated — a request that would pass it is refused.
  */
 export const NARRATION_TOKEN_BUDGET = 40_000;
@@ -21,20 +21,18 @@ export interface RelationshipPrompt {
 
 export type CharacterPrompt = CharacterProfile & { id: string; stats_enabled: boolean; stats: StatValues };
 
-export type CastPrompt = CharacterPrompt & Pick<CampaignCharacter, "context_mode" | "summary">;
+export type CastPrompt = CharacterPrompt & Pick<Character, "context_mode" | "summary">;
 
 export interface NarrationContext {
-  world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description" | "keywords">> };
-  starting_situation: string;
+  /** Entries exclude scenes, which are opening templates only. */
+  world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntry, "kind" | "name" | "description" | "keywords">> };
+  opening: string;
   /** Every stat definition, rendered once as a legend; values elsewhere refer to these ids. */
   stats: ReadonlyArray<StatFields & { id: string }>;
   protagonist: CharacterPrompt;
   cast: ReadonlyArray<CastPrompt>;
-  notes: ReadonlyArray<Pick<CampaignStateItem, "category" | "subject" | "content">>;
   /** Every relationship; only those between always-sent characters reach the system prompt. */
   relationships: ReadonlyArray<RelationshipPrompt>;
-  /** Handoff grounding this session; replaces the starting situation when set. */
-  handoff: string | null;
   has_history: boolean;
 }
 
@@ -82,14 +80,13 @@ function alwaysSentIds(context: Pick<NarrationContext, "protagonist" | "cast">):
 export const PROMPT_PLACEHOLDERS = [
   "world_name",
   "world_brief",
-  "situation",
+  "opening",
   "stats",
   "protagonist_name",
   "protagonist",
   "cast",
   "offstage",
   "compendium",
-  "notes",
   "relationships",
   "continuation",
 ] as const;
@@ -111,7 +108,7 @@ export function unknownPlaceholders(body: string): string[] {
 export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "body">> = [
   { title: "Narrator role", body: "You are the narrator of an ongoing interactive story." },
   { title: "World", body: "World — {{world_name}}: {{world_brief}}" },
-  { title: "Situation", body: "{{situation}}" },
+  { title: "Opening", body: "{{opening}}" },
   { title: "Stats legend", body: "Stats (scale and meaning):\n{{stats}}" },
   {
     title: "Protagonist",
@@ -128,12 +125,15 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "Compendium",
-    body: "Captured world compendium (captured at campaign creation):\n{{compendium}}\nRespect these definitions as written.",
+    body: "World compendium:\n{{compendium}}\nRespect these definitions as written.",
   },
-  { title: "Campaign state", body: "Current campaign state:\n{{notes}}" },
   {
     title: "Relationships",
-    body: "Current directional relationships (campaign-owned; use as canon, without inventing automatic changes):\n{{relationships}}",
+    body: "Current directional relationships (use as canon, without inventing automatic changes):\n{{relationships}}",
+  },
+  {
+    title: "Knowledge boundaries",
+    body: "Characters speak and act only from what they themselves know: their Knows notes, what they witnessed in this story, and what they were told. The compendium and world lore are narrator background, not something every character knows.",
   },
   {
     title: "Narration boundaries",
@@ -157,17 +157,16 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
 
 /**
  * Narrator grounding: the enabled cards in order, placeholders filled from
- * what the campaign owns, separated by blank lines. A card is left out when
+ * the world as it is now, separated by blank lines. A card is left out when
  * any placeholder it uses is empty, so a heading never introduces nothing.
- * Shared so the New campaign page counts the exact opening prompt against
- * the budget. A session grounded by a handoff never sees the starting
- * situation; only a story without prior narration asks for an opening scene.
+ * The chat's opening is sent only until the chat has narration; after that
+ * the transcript carries the story.
  */
 export function narratorSystemPrompt(
   cards: ReadonlyArray<Pick<PromptCard, "body" | "enabled">>,
   context: NarrationContext,
 ): string {
-  const { world, protagonist, handoff } = context;
+  const { world, protagonist } = context;
   const always = alwaysSentIds(context);
   const protagonistStatus = new Map(
     context.relationships
@@ -177,14 +176,11 @@ export function narratorSystemPrompt(
   const values: Record<PromptPlaceholder, string> = {
     world_name: world.name,
     world_brief: world.setting_brief,
-    situation:
-      handoff !== null
-        ? `Handoff from the previous session: ${handoff}`
-        : `Starting situation: ${
-            context.starting_situation.trim().length > 0
-              ? context.starting_situation
-              : "No starting situation was given; open with a scene that fits the world."
-          }`,
+    opening: context.has_history
+      ? ""
+      : `Opening: ${
+          context.opening.trim().length > 0 ? context.opening : "No opening was given; open with a scene that fits the world."
+        }`,
     stats: context.stats
       .map(
         (stat) =>
@@ -210,16 +206,13 @@ export function narratorSystemPrompt(
       .filter((entry) => entry.keywords.length === 0)
       .map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)
       .join("\n"),
-    notes: context.notes.map((item) => `- ${item.category} — ${item.subject}: ${item.content}`).join("\n"),
     relationships: context.relationships
       .filter((relationship) => always.has(relationship.source_id) && always.has(relationship.target_id))
       .map((relationship) => relationshipLine(relationship, context.stats))
       .join("\n"),
     continuation: context.has_history
       ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
-      : handoff !== null
-        ? "There is no prior narration in this session: continue the story from the handoff."
-        : "There is no prior narration: begin the story now with an opening scene.",
+      : "There is no prior narration: begin the story now with an opening scene.",
   };
   return cards
     .filter((card) => card.enabled)
@@ -245,7 +238,7 @@ export function directionNote(direction: string): string {
 export interface ReplyContext {
   characters: ReadonlyArray<CharacterPrompt>;
   relationships: ReadonlyArray<RelationshipPrompt>;
-  entries: ReadonlyArray<Pick<WorldEntrySnapshot, "kind" | "name" | "description">>;
+  entries: ReadonlyArray<Pick<WorldEntry, "kind" | "name" | "description">>;
 }
 
 /**

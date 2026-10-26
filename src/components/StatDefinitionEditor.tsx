@@ -58,8 +58,8 @@ function statInteger(raw: string, field: string): number {
 }
 
 /**
- * The one stat form: scale, labels, and palette color. Bank, world, and
- * campaign callers supply their own save callbacks; this component only owns
+ * The one stat form: scale, labels, and palette color. Bank and world
+ * callers supply their own save callbacks; this component only owns
  * the form state and error handling. `applies_to` is chosen at creation only.
  */
 export function StatDefinitionEditor<T extends StatFields & { id: string }>(props: {

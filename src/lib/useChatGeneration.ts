@@ -1,13 +1,13 @@
 import { useCallback, useRef, useState } from "react";
 import { useChat } from "@tanstack/ai-react";
 import type { ModelSelection } from "./providers";
-import { ApiError, requestSessionGeneration, stopSessionGeneration } from "./storyApi";
+import { ApiError, requestChatGeneration, stopChatGeneration } from "./storyApi";
 
 type GenerationPhase = "streaming" | "stopping" | "error";
 
 export type Generation = {
   id: number;
-  sessionId: string;
+  chatId: string;
   kind?: GenerationRequest["kind"];
   pendingMessageId?: string;
   playerMessageId?: string;
@@ -29,7 +29,7 @@ export type AcceptedMessageIds = {
 
 type GenerationRequest = {
   id: number;
-  sessionId: string;
+  chatId: string;
   kind: "opening" | "message" | "regenerate";
   content: string;
   direction?: string;
@@ -45,8 +45,8 @@ type ErrorEnvelope = {
 };
 
 export function useChatGeneration(options: {
-  onAccepted: (sessionId: string, ids: AcceptedMessageIds, content: string) => void;
-  onSettled: (sessionId: string) => void | Promise<void>;
+  onAccepted: (chatId: string, ids: AcceptedMessageIds, content: string) => void;
+  onSettled: (chatId: string) => void | Promise<void>;
 }) {
   const [generation, setGeneration] = useState<Generation | null>(null);
   const requestRef = useRef<GenerationRequest | null>(null);
@@ -63,12 +63,12 @@ export function useChatGeneration(options: {
   const chat = useChat({
     fetcher: async (_input, { signal }) => {
       const request = requestRef.current;
-      if (!request) throw new Error("No session request was prepared.");
+      if (!request) throw new Error("No chat request was prepared.");
 
       let response: Response;
       try {
-        response = await requestSessionGeneration(
-          request.sessionId,
+        response = await requestChatGeneration(
+          request.chatId,
           request.kind,
           request.content,
           request.direction,
@@ -101,7 +101,7 @@ export function useChatGeneration(options: {
 
       if (accepted) {
         setGeneration((current) => current?.id === request.id ? { ...current, ...ids } : current);
-        onAcceptedRef.current(request.sessionId, ids, request.content);
+        onAcceptedRef.current(request.chatId, ids, request.content);
       }
 
       if (!response.ok || !response.body) {
@@ -149,7 +149,7 @@ export function useChatGeneration(options: {
       busyRef.current = false;
       activeRequestRef.current = null;
       requestRef.current = null;
-      void Promise.resolve(onSettledRef.current(request.sessionId)).finally(() => {
+      void Promise.resolve(onSettledRef.current(request.chatId)).finally(() => {
         setGeneration((current) => current?.id === request.id ? null : current);
       });
     },
@@ -170,12 +170,12 @@ export function useChatGeneration(options: {
           }
         : current,
       );
-      void onSettledRef.current(request.sessionId);
+      void onSettledRef.current(request.chatId);
     },
   });
 
   const start = useCallback((
-    sessionId: string,
+    chatId: string,
     kind: "opening" | "message" | "regenerate",
     content: string,
     direction?: string,
@@ -184,7 +184,7 @@ export function useChatGeneration(options: {
     if (busyRef.current) return false;
     busyRef.current = true;
     const note = direction?.trim();
-    const request = { id: ++requestSequence.current, sessionId, kind, content, ...(note ? { direction: note } : {}), ...(model ? { model } : {}) };
+    const request = { id: ++requestSequence.current, chatId, kind, content, ...(note ? { direction: note } : {}), ...(model ? { model } : {}) };
     requestRef.current = request;
     activeRequestRef.current = request;
     textRef.current = "";
@@ -192,7 +192,7 @@ export function useChatGeneration(options: {
     chat.setMessages([]);
     setGeneration({
       id: request.id,
-      sessionId,
+      chatId,
       kind,
       text: "",
       phase: "streaming",
@@ -203,21 +203,21 @@ export function useChatGeneration(options: {
     return true;
   }, [chat]);
 
-  const send = useCallback((sessionId: string, content: string, direction?: string, model?: ModelSelection) => {
+  const send = useCallback((chatId: string, content: string, direction?: string, model?: ModelSelection) => {
     if (!content.trim()) return false;
-    return start(sessionId, "message", content, direction, model);
+    return start(chatId, "message", content, direction, model);
   }, [start]);
 
-  const open = useCallback((sessionId: string, direction?: string, model?: ModelSelection) => {
-    return start(sessionId, "opening", "", direction, model);
+  const open = useCallback((chatId: string, direction?: string, model?: ModelSelection) => {
+    return start(chatId, "opening", "", direction, model);
   }, [start]);
 
-  const regenerate = useCallback((sessionId: string, direction?: string, model?: ModelSelection) => {
-    return start(sessionId, "regenerate", "", direction, model);
+  const regenerate = useCallback((chatId: string, direction?: string, model?: ModelSelection) => {
+    return start(chatId, "regenerate", "", direction, model);
   }, [start]);
 
-  const stop = useCallback(async (sessionId: string) => {
-    const localRequest = activeRequestRef.current?.sessionId === sessionId
+  const stop = useCallback(async (chatId: string) => {
+    const localRequest = activeRequestRef.current?.chatId === chatId
       ? activeRequestRef.current
       : null;
     if (localRequest) {
@@ -228,14 +228,14 @@ export function useChatGeneration(options: {
     }
 
     try {
-      await stopSessionGeneration(sessionId);
+      await stopChatGeneration(chatId);
       if (localRequest && activeRequestRef.current === localRequest) {
         busyRef.current = false;
         activeRequestRef.current = null;
         requestRef.current = null;
         chat.stop();
       }
-      await onSettledRef.current(sessionId);
+      await onSettledRef.current(chatId);
       if (localRequest) {
         setGeneration((current) => current?.id === localRequest.id ? null : current);
       }
@@ -251,7 +251,7 @@ export function useChatGeneration(options: {
         }
         return current ?? {
           id: ++requestSequence.current,
-          sessionId,
+          chatId,
           text: "",
           phase: "error",
           error: message,

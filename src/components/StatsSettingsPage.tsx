@@ -21,7 +21,7 @@ export function StatsSettingsPage(props: { onOpenSidebar: () => void }) {
   }, []);
 
   const removeStat = async (stat: StatDefinition) => {
-    if (!window.confirm(`Delete “${stat.label}” from the stat bank? Worlds and campaigns that already use it keep their copy.`)) return;
+    if (!window.confirm(`Delete “${stat.label}” from the stat bank? Worlds that already imported it keep their copy.`)) return;
     setDeletingId(stat.id);
     setActionError("");
     try {
@@ -99,7 +99,7 @@ export function StatsSettingsPage(props: { onOpenSidebar: () => void }) {
         <StatDefinitionEditor
           stat={editor.stat}
           title={editor.stat ? `Edit ${editor.stat.label}` : "Add a stat"}
-          description={editor.stat ? "Changes apply to future imports; worlds and campaigns that already copied this stat keep their copy." : "Character stats follow one character; relationship stats score a pair."}
+          description={editor.stat ? "Changes apply to future imports; worlds that already imported this stat keep their copy." : "Character stats follow one character; relationship stats score a pair."}
           openerRef={openerRef}
           onCreate={createStat}
           onUpdate={updateStat}
