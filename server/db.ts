@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS campaign_characters (
   avatar_id TEXT REFERENCES images(id),
   stats_enabled INTEGER NOT NULL CHECK (stats_enabled IN (0, 1)),
   stats TEXT NOT NULL CHECK (json_valid(stats)),
+  context_mode TEXT NOT NULL DEFAULT 'always' CHECK (context_mode IN ('always', 'in_scene', 'mentioned')),
+  summary TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(aliases)),
+  sticky INTEGER NOT NULL DEFAULT 4,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (id, campaign_id)
@@ -237,8 +241,8 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; versions 3 to 5 upgrade in place. */
-const SCHEMA_VERSION = 6;
+/** Bumped whenever SCHEMA changes; versions 3 to 6 upgrade in place. */
+const SCHEMA_VERSION = 7;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -262,12 +266,28 @@ export function insertDefaultPromptCards(db: Database): void {
   DEFAULT_PROMPT_CARDS.forEach((card, index) => insert.run(newId(), card.title, card.body, index + 1, now, now));
 }
 
+/** Version 7's Elsewhere card, placed right after the Cast card, or last when there is none. */
+function insertElsewhereCard(db: Database): void {
+  const card = DEFAULT_PROMPT_CARDS.find((candidate) => candidate.title === "Elsewhere")!;
+  const cast = db.query<{ position: number }, []>("SELECT position FROM prompt_cards WHERE title = 'Cast' ORDER BY position LIMIT 1").get();
+  const position = cast
+    ? cast.position + 1
+    : db.query<{ next: number }, []>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM prompt_cards").get()!.next;
+  db.query("UPDATE prompt_cards SET position = position + 1 WHERE position >= ?").run(position);
+  const now = nowIso();
+  db.query(
+    "INSERT INTO prompt_cards (id, title, body, enabled, position, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
+  ).run(newId(), card.title, card.body, position, now, now);
+}
+
 /**
  * Opens the workspace database with foreign keys and the schema in place.
  * Older workspaces upgrade in place: version 3 gains the narration direction
- * column, versions 3 and 4 the default prompt cards, and versions 3 to 5
- * entry keywords and narration lore. Anything older is refused rather than
- * migrated; a fresh one gets the stat bank and prompt card seeds.
+ * column, versions 3 and 4 the default prompt cards, versions 3 to 5 entry
+ * keywords and narration lore, and versions 3 to 6 cast context modes —
+ * existing characters keep `always` — and, from version 5 on, the Elsewhere
+ * card. Anything older is refused rather than migrated; a fresh one gets the
+ * stat bank and prompt card seeds.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -284,10 +304,19 @@ export function openDatabase(path: string): Database {
   db.transaction(() => {
     if (populated && version < SCHEMA_VERSION) {
       if (version === 3) db.exec("ALTER TABLE messages ADD COLUMN direction TEXT");
-      db.exec("ALTER TABLE world_entries ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords))");
-      db.exec("ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
-      db.exec("ALTER TABLE world_entries ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0");
-      db.exec("ALTER TABLE messages ADD COLUMN lore TEXT CHECK (lore IS NULL OR json_valid(lore))");
+      if (version < 6) {
+        db.exec("ALTER TABLE world_entries ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(keywords))");
+        db.exec("ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+        db.exec("ALTER TABLE world_entries ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0");
+        db.exec("ALTER TABLE messages ADD COLUMN lore TEXT CHECK (lore IS NULL OR json_valid(lore))");
+      }
+      db.exec(
+        "ALTER TABLE campaign_characters ADD COLUMN context_mode TEXT NOT NULL DEFAULT 'always' CHECK (context_mode IN ('always', 'in_scene', 'mentioned'))",
+      );
+      db.exec("ALTER TABLE campaign_characters ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+      db.exec("ALTER TABLE campaign_characters ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(aliases))");
+      db.exec("ALTER TABLE campaign_characters ADD COLUMN sticky INTEGER NOT NULL DEFAULT 4");
+      if (version >= 5) insertElsewhereCard(db);
     }
     db.exec(SCHEMA);
     if (!populated) {

@@ -6,7 +6,7 @@ import { protagonistOf } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, narratorSystemPrompt } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
-import { selectLore, type LoreSelection } from "./lore";
+import { selectReplyContext, type LoreSelection } from "./lore";
 import {
   SessionClosedError,
   UnknownEntityError,
@@ -408,9 +408,10 @@ export class PlayService {
   }
 
   /**
-   * Keyword lore for one reply, scanned from the recent history — or, before
-   * any, the situation the opening grows from — with the direction counted
-   * as part of the latest input. It gets only the room the budget leaves.
+   * Triggered characters and keyword lore for one reply, scanned from the
+   * recent history — or, before any, the situation the opening grows from —
+   * with the direction counted as part of the latest input. It gets only the
+   * room the budget leaves.
    */
   private replyLore(
     sessionId: string,
@@ -425,7 +426,16 @@ export class PlayService {
         : [sessionGroundingHandoff(this.db, campaign.id, sessionId) ?? campaign.starting_situation];
     if (direction !== null) recent[recent.length - 1] += `\n${direction}`;
     const room = NARRATION_TOKEN_BUDGET - this.narrationTokens(systemPrompt, history) - directionTokens(direction);
-    return selectLore(campaign.world_snapshot.entries, recent, room);
+    return selectReplyContext(
+      {
+        cast: campaign.characters.filter((character) => character.role === "cast"),
+        relationships: relationshipNarrationContext(this.db, campaign),
+        entries: campaign.world_snapshot.entries,
+        stats: campaign.stats,
+      },
+      recent,
+      room,
+    );
   }
 
   /** Alternates share a position; the next turn still goes past the highest. */

@@ -4,6 +4,7 @@ import type {
   Campaign,
   CampaignCharacter,
   CampaignCharacterRole,
+  CharacterContextMode,
   CampaignStat,
   CampaignStateCategory,
   CampaignStateItem,
@@ -23,6 +24,7 @@ import type {
 } from "../shared/domain";
 import {
   CAMPAIGN_STATE_CATEGORIES,
+  CHARACTER_CONTEXT_MODES,
   CHARACTER_PROFILE_FIELDS,
   STAT_COLORS,
   STAT_KINDS,
@@ -551,20 +553,20 @@ function parseEntryKind(value: unknown): WorldEntryKind {
 }
 
 /** Trimmed, non-empty, and distinct ignoring case; the first spelling is kept. */
-function parseKeywords(value: unknown): string[] {
+function parseKeywords(value: unknown, field = "keywords"): string[] {
   if (!Array.isArray(value) || value.some((keyword) => typeof keyword !== "string")) {
-    throw new ValidationError("keywords must be an array of strings");
+    throw new ValidationError(`${field} must be an array of strings`);
   }
   const keywords: string[] = [];
   for (const raw of value as string[]) {
     const keyword = raw.trim();
     if (keyword.length === 0 || keyword.length > KEYWORD_MAX_CHARS) {
-      throw new ValidationError(`each keyword must be 1 to ${KEYWORD_MAX_CHARS} characters`);
+      throw new ValidationError(`each of ${field} must be 1 to ${KEYWORD_MAX_CHARS} characters`);
     }
     if (!keywords.some((kept) => kept.toLowerCase() === keyword.toLowerCase())) keywords.push(keyword);
   }
   if (keywords.length > KEYWORD_COUNT_LIMIT) {
-    throw new ValidationError(`an entry may have at most ${KEYWORD_COUNT_LIMIT} keywords`);
+    throw new ValidationError(`${field} may have at most ${KEYWORD_COUNT_LIMIT} items`);
   }
   return keywords;
 }
@@ -737,6 +739,12 @@ function pickableCharacter(db: Database, worldId: string, id: string, field: str
   return character;
 }
 
+/** New cast members start `in_scene`, staying for a few messages after their last mention. */
+const CAST_STICKY_DEFAULT = 4;
+const SUMMARY_MAX_CHARS = 200;
+
+export type CharacterSceneFields = Pick<CampaignCharacter, "context_mode" | "summary" | "aliases" | "sticky">;
+
 function insertCampaignCharacter(
   db: Database,
   campaignId: string,
@@ -746,13 +754,36 @@ function insertCampaignCharacter(
   values: StatValues | null,
   createdAt: string,
   now: string,
+  scene: Partial<CharacterSceneFields> = {},
 ): string {
   const id = newId();
+  const fields: CharacterSceneFields = {
+    context_mode: role === "protagonist" ? "always" : "in_scene",
+    summary: "",
+    aliases: [],
+    sticky: CAST_STICKY_DEFAULT,
+    ...scene,
+  };
   db.query(
     `INSERT INTO campaign_characters
-       (id, campaign_id, role, ${PROFILE_COLUMNS.join(", ")}, avatar_id, stats_enabled, stats, created_at, updated_at)
-     VALUES (?, ?, ?, ${PROFILE_COLUMNS.map(() => "?").join(", ")}, ?, ?, ?, ?, ?)`,
-  ).run(id, campaignId, role, ...profileValues(profile), avatarId, values ? 1 : 0, JSON.stringify(values ?? {}), createdAt, now);
+       (id, campaign_id, role, ${PROFILE_COLUMNS.join(", ")}, avatar_id, stats_enabled, stats,
+        context_mode, summary, aliases, sticky, created_at, updated_at)
+     VALUES (?, ?, ?, ${PROFILE_COLUMNS.map(() => "?").join(", ")}, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    campaignId,
+    role,
+    ...profileValues(profile),
+    avatarId,
+    values ? 1 : 0,
+    JSON.stringify(values ?? {}),
+    fields.context_mode,
+    fields.summary,
+    JSON.stringify(fields.aliases),
+    fields.sticky,
+    createdAt,
+    now,
+  );
   return id;
 }
 
@@ -864,13 +895,19 @@ export function createCampaign(db: Database, input: CampaignInput): CreatedCampa
 /** Protagonist first, then cast in creation order; rowid keeps same-instant inserts in pick order. */
 const CAMPAIGN_CHARACTER_ORDER = "ORDER BY role = 'protagonist' DESC, created_at, rowid";
 
-interface CampaignCharacterRow extends Omit<CampaignCharacter, "stats_enabled" | "stats"> {
+interface CampaignCharacterRow extends Omit<CampaignCharacter, "stats_enabled" | "stats" | "aliases"> {
   stats_enabled: number;
   stats: string;
+  aliases: string;
 }
 
 function campaignCharacterFromRow(row: CampaignCharacterRow): CampaignCharacter {
-  return { ...row, stats_enabled: row.stats_enabled === 1, stats: JSON.parse(row.stats) as StatValues };
+  return {
+    ...row,
+    stats_enabled: row.stats_enabled === 1,
+    stats: JSON.parse(row.stats) as StatValues,
+    aliases: JSON.parse(row.aliases) as string[],
+  };
 }
 
 export function listCampaignCharacters(db: Database, campaignId: string): CampaignCharacter[] {
@@ -915,20 +952,46 @@ export function createCampaignCharacter(
   db: Database,
   campaignId: string,
   input: CharacterInput,
+  scene: Partial<CharacterSceneFields> = {},
 ): CampaignCharacter | null {
   if (!getCampaign(db, campaignId)) return null;
   const now = nowIso();
-  return getCampaignCharacter(db, campaignId, insertCampaignCharacter(db, campaignId, "cast", input, null, null, now, now));
+  return getCampaignCharacter(db, campaignId, insertCampaignCharacter(db, campaignId, "cast", input, null, null, now, now, scene));
 }
 
-export type CampaignCharacterPatch = Partial<CharacterInput> & { stats_enabled?: boolean; stats?: unknown };
+/** The optional scene fields of a campaign character body; absent ones stay undefined. */
+export function parseCharacterSceneFields(body: Record<string, unknown>): Partial<CharacterSceneFields> {
+  const fields: Partial<CharacterSceneFields> = {};
+  if (body.context_mode !== undefined) {
+    if (!CHARACTER_CONTEXT_MODES.includes(body.context_mode as CharacterContextMode)) {
+      throw new ValidationError(`context_mode must be one of: ${CHARACTER_CONTEXT_MODES.join(", ")}`);
+    }
+    fields.context_mode = body.context_mode as CharacterContextMode;
+  }
+  if (body.summary !== undefined) {
+    if (typeof body.summary !== "string") throw new ValidationError("summary must be a string");
+    const summary = body.summary.trim();
+    if (summary.length > SUMMARY_MAX_CHARS || /[\r\n]/.test(summary)) {
+      throw new ValidationError(`summary must be one line of at most ${SUMMARY_MAX_CHARS} characters`);
+    }
+    fields.summary = summary;
+  }
+  if (body.aliases !== undefined) fields.aliases = parseKeywords(body.aliases, "aliases");
+  if (body.sticky !== undefined) fields.sticky = boundedInteger(body.sticky, "sticky", STICKY_LIMIT);
+  return fields;
+}
 
-/** Profile fields as in parseCharacterPatch, plus `stats_enabled` and a partial `stats` value map. */
+export type CampaignCharacterPatch = Partial<CharacterInput> &
+  Partial<CharacterSceneFields> & { stats_enabled?: boolean; stats?: unknown };
+
+/** Profile fields as in parseCharacterPatch, plus scene fields, `stats_enabled`, and a partial `stats` value map. */
 export function parseCampaignCharacterPatch(body: Record<string, unknown>): CampaignCharacterPatch {
-  const hasStats = body.stats_enabled !== undefined || body.stats !== undefined;
-  const patch: CampaignCharacterPatch = CHARACTER_PROFILE_FIELDS.some((field) => body[field.key] !== undefined) || !hasStats
-    ? parseCharacterPatch(body)
-    : {};
+  const scene = parseCharacterSceneFields(body);
+  const hasOther = body.stats_enabled !== undefined || body.stats !== undefined || Object.keys(scene).length > 0;
+  const patch: CampaignCharacterPatch = {
+    ...(CHARACTER_PROFILE_FIELDS.some((field) => body[field.key] !== undefined) || !hasOther ? parseCharacterPatch(body) : {}),
+    ...scene,
+  };
   if (body.stats_enabled !== undefined) {
     if (typeof body.stats_enabled !== "boolean") throw new ValidationError("stats_enabled must be a boolean");
     patch.stats_enabled = body.stats_enabled;
@@ -938,9 +1001,10 @@ export function parseCampaignCharacterPatch(body: Record<string, unknown>): Camp
 }
 
 /**
- * Profile edits plus stat opt-in: turning stats on fills every character stat
- * with its default, turning them off clears the values; values may only be
- * set while opted in.
+ * Profile and scene edits plus stat opt-in: turning stats on fills every
+ * character stat with its default, turning them off clears the values;
+ * values may only be set while opted in. The protagonist is always sent in
+ * full, so its context mode cannot change.
  */
 export function updateCampaignCharacter(
   db: Database,
@@ -952,6 +1016,9 @@ export function updateCampaignCharacter(
   const existing = getCampaignCharacter(db, campaignId, id);
   if (!campaign || !existing) return null;
   const { stats_enabled, stats, ...profile } = patch;
+  if (existing.role === "protagonist" && profile.context_mode !== undefined && profile.context_mode !== "always") {
+    throw new ValidationError("the protagonist is always sent in full");
+  }
   const enabled = stats_enabled ?? existing.stats_enabled;
   if (!enabled && stats !== undefined) throw new ValidationError("stats are off for this character");
   const base = !enabled ? {} : existing.stats_enabled ? existing.stats : statDefaults(campaign.stats, "character");
@@ -959,9 +1026,19 @@ export function updateCampaignCharacter(
   const next: CampaignCharacter = { ...existing, ...profile, stats_enabled: enabled, stats: values, updated_at: nowIso() };
   db.query(
     `UPDATE campaign_characters SET ${PROFILE_COLUMNS.map((key) => `${key} = ?`).join(", ")},
-       stats_enabled = ?, stats = ?, updated_at = ?
+       stats_enabled = ?, stats = ?, context_mode = ?, summary = ?, aliases = ?, sticky = ?, updated_at = ?
      WHERE id = ?`,
-  ).run(...profileValues(next), enabled ? 1 : 0, JSON.stringify(values), next.updated_at, id);
+  ).run(
+    ...profileValues(next),
+    enabled ? 1 : 0,
+    JSON.stringify(values),
+    next.context_mode,
+    next.summary,
+    JSON.stringify(next.aliases),
+    next.sticky,
+    next.updated_at,
+    id,
+  );
   return next;
 }
 

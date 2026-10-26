@@ -493,6 +493,7 @@ describe("narration prompt", () => {
       const healthStat = campaign.stats.find((stat) => stat.label === "Health")!;
       const trustStat = campaign.stats.find((stat) => stat.label === "Trust")!;
       updateCampaignCharacter(db, campaign.id, protagonistOf(campaign).id, { stats: { [healthStat.id]: 7 } });
+      updateCampaignCharacter(db, campaign.id, campaign.characters[1]!.id, { context_mode: "always" });
       const relationship = createRelationship(
         db,
         campaign,

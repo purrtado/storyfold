@@ -111,6 +111,15 @@ export type StatValues = Record<string, number>;
 
 export type CampaignCharacterRole = "protagonist" | "cast";
 
+/**
+ * How a cast member reaches the narrator. `always`: full profile in the
+ * system prompt. `in_scene`: the one-line summary there, the full profile
+ * only for replies whose recent messages name them. `mentioned`: nothing
+ * until named. The protagonist is always sent in full.
+ */
+export const CHARACTER_CONTEXT_MODES = ["always", "in_scene", "mentioned"] as const;
+export type CharacterContextMode = (typeof CHARACTER_CONTEXT_MODES)[number];
+
 /** A campaign's own copy of a character; edits never reach the library or world. */
 export interface CampaignCharacter extends CharacterProfile {
   id: string;
@@ -120,6 +129,13 @@ export interface CampaignCharacter extends CharacterProfile {
   /** Opted in: carries every character stat of the campaign; otherwise `stats` is empty. */
   stats_enabled: boolean;
   stats: StatValues;
+  context_mode: CharacterContextMode;
+  /** One line sent every turn while an `in_scene` character is offstage; "" sends the name alone. */
+  summary: string;
+  /** Other names that trigger the full profile, besides `name`. */
+  aliases: string[];
+  /** Extra messages the full profile stays after the last mention scrolls out of the scan window. */
+  sticky: number;
   created_at: string;
   updated_at: string;
 }
@@ -222,8 +238,9 @@ export interface Message {
   /** The out-of-character note that shaped this narration; never part of model history. */
   direction: string | null;
   /**
-   * Keyword entries this narration was sent, by name in prompt order, and
-   * those that matched but did not fit the lore budget. Null when none matched.
+   * Characters and keyword entries this narration was sent beyond the system
+   * prompt, by name in prompt order (characters first), and those that were
+   * triggered but did not fit the budget. Null when nothing was triggered.
    */
   lore: MessageLore | null;
   created_at: string;

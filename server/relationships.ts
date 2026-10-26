@@ -59,6 +59,8 @@ export function listRelationships(db: Database, campaignId: string): Relationshi
 export function relationshipNarrationContext(db: Database, campaign: Campaign): RelationshipPrompt[] {
   const names = new Map(campaign.characters.map((character) => [character.id, character.name]));
   return listRelationships(db, campaign.id).map((relationship) => ({
+    source_id: relationship.source_id,
+    target_id: relationship.target_id,
     source_name: names.get(relationship.source_id)!,
     target_name: names.get(relationship.target_id)!,
     how_met: relationship.how_met,
