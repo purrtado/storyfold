@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { PromptCard } from "../../shared/domain";
-import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
+import { DEFAULT_PROMPT_CARDS, PROMPT_PLACEHOLDERS } from "../../shared/narration";
+import { createChat } from "../chats";
 import { openDatabase } from "../db";
-import { createCampaign, createCharacter, createWorld, parseCharacterInput } from "../library";
-import { PlayService } from "../play";
+import { chatSystemPrompt } from "../grounding";
 import { createPromptCard, listPromptCards, reorderPromptCards, updatePromptCard } from "../promptCards";
+import { createCharacter, createWorld, parseCharacterInput } from "../worlds";
 import { headersWith, startTestServer, type TestServer } from "./helpers";
 
 const TRUSTED_ORIGIN = "http://localhost:5173";
@@ -13,16 +14,16 @@ describe("narrator prompt from cards", () => {
   test("enabled cards are sent in order; a card whose placeholder is empty is left out", () => {
     const db = openDatabase(":memory:");
     try {
-      const world = createWorld(db, { name: "Veloria", setting_brief: "A drowned city.", suggested_starting_situation: "" });
-      const hero = createCharacter(db, parseCharacterInput({ name: "Sable", description: "A smuggler." }));
-      const { session } = createCampaign(db, { world_id: world.id, protagonist_id: hero.id, starting_situation: "At the docks." });
-      const play = new PlayService(db);
+      const world = createWorld(db, { name: "Veloria", setting_brief: "A drowned city." });
+      const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Sable", description: "A smuggler." }))!;
+      const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "At the docks." })!;
 
-      const defaults = play.systemPrompt(session.id);
+      const defaults = chatSystemPrompt(db, chat, false);
       expect(defaults.startsWith("You are the narrator of an ongoing interactive story.\n\nWorld — Veloria: A drowned city.")).toBe(true);
-      // No cast, notes, or relationships: their headings are not sent.
+      expect(defaults).toContain("Opening: At the docks.");
+      // No cast or relationships: their headings are not sent.
       expect(defaults).not.toContain("Narrator-controlled cast:");
-      expect(defaults).not.toContain("Current campaign state:");
+      expect(defaults).not.toContain("Current directional relationships");
       expect(defaults).toContain("never tag Sable.");
 
       const cards = listPromptCards(db);
@@ -31,9 +32,34 @@ describe("narrator prompt from cards", () => {
       const style = createPromptCard(db, { title: "Style", body: "Write tersely for {{protagonist_name}}.", enabled: true });
       reorderPromptCards(db, [style.id, ...cards.map((card) => card.id)]);
 
-      const edited = play.systemPrompt(session.id);
+      const edited = chatSystemPrompt(db, chat, false);
       expect(edited.startsWith("Write tersely for Sable.\n\nWorld — Veloria")).toBe(true);
       expect(edited).not.toContain("You are the narrator");
+
+      const continued = chatSystemPrompt(db, chat, true);
+      expect(continued).not.toContain("Opening:");
+      expect(continued).not.toContain("At the docks.");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("the opening card is read live from the chat and drops out when it is blank", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const world = createWorld(db, { name: "Veloria", setting_brief: "A drowned city." });
+      const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Sable", description: "A smuggler." }))!;
+      const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "" })!;
+      expect(chat.opening).toBe("");
+      expect(chatSystemPrompt(db, chat, false)).toContain("No opening was given; open with a scene that fits the world.");
+      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain("Opening: Rain on the pier.");
+
+      const opening = listPromptCards(db).find((card) => card.title === "Opening")!;
+      updatePromptCard(db, opening.id, { body: "Start here: {{opening}}" });
+      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain(
+        "Start here: Opening: Rain on the pier.",
+      );
+      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, true)).not.toContain("Start here");
     } finally {
       db.close();
     }
@@ -76,6 +102,19 @@ describe("prompt card API", () => {
     expect(error.error).toContain("{{ cast }}");
     expect(error.error).toContain("{{cast\n}}");
     expect((await cards())[0]!.body).toBe(first!.body);
+  });
+
+  test("every current placeholder is accepted; the retired situation and notes placeholders are refused", async () => {
+    const [first] = await cards();
+    for (const name of PROMPT_PLACEHOLDERS) {
+      expect((await call("PATCH", `/${first!.id}`, { body: `{{${name}}}` })).status).toBe(200);
+    }
+    for (const name of ["situation", "notes"]) {
+      const refused = await call("PATCH", `/${first!.id}`, { body: `{{${name}}}` });
+      expect(refused.status).toBe(400);
+      expect(((await refused.json()) as { error: string }).error).toContain(`{{${name}}}`);
+    }
+    expect((await cards())[0]!.body).toBe(`{{${PROMPT_PLACEHOLDERS.at(-1)}}}`);
   });
 
   test("order must name every card exactly once and needs a trusted origin", async () => {

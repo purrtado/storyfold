@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
-import type { Campaign, Character, Message, Session, World, WorldEntry, WorldEntrySnapshot } from "../../shared/domain";
+import type { Character, Chat, Message, World, WorldEntry } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
 import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
 import { countTokens } from "../../shared/tokens";
@@ -48,8 +48,8 @@ async function createWorld(body: Record<string, unknown>): Promise<World> {
   return payload.world;
 }
 
-async function createCharacter(body: Record<string, unknown>): Promise<Character> {
-  const response = await json("POST", "/api/characters", body);
+async function createCharacter(worldId: string, body: Record<string, unknown>): Promise<Character> {
+  const response = await json("POST", `/api/worlds/${worldId}/characters`, body);
   expect(response.status).toBe(201);
   const payload = (await response.json()) as { character: Character };
   return payload.character;
@@ -58,8 +58,7 @@ async function createCharacter(body: Record<string, unknown>): Promise<Character
 interface ApiResult {
   status: number;
   entry?: WorldEntry;
-  campaign?: Campaign;
-  session?: Session;
+  chat?: Chat;
   error?: string;
   code?: string;
 }
@@ -78,21 +77,14 @@ async function patchEntry(
   return { status: response.status, ...(await response.json()) };
 }
 
-async function createCampaign(body: Record<string, unknown>): Promise<ApiResult> {
-  const response = await json("POST", "/api/campaigns", body);
+async function createChat(worldId: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const response = await json("POST", `/api/worlds/${worldId}/chats`, body);
   return { status: response.status, ...(await response.json()) };
-}
-
-async function getCampaign(id: string): Promise<Campaign> {
-  const response = await json("GET", `/api/campaigns/${id}`);
-  expect(response.status).toBe(200);
-  const payload = (await response.json()) as { campaign: Campaign };
-  return payload.campaign;
 }
 
 describe("world entries API", () => {
   test("creates, lists, patches and deletes entries with ISO timestamps", async () => {
-    const world = await createWorld({ name: "Ember Coast", setting_brief: "Tide-locked cliffs.", suggested_starting_situation: "" });
+    const world = await createWorld({ name: "Ember Coast", setting_brief: "Tide-locked cliffs." });
 
     const created = await createEntry(world.id, {
       kind: "  location  ",
@@ -117,8 +109,7 @@ describe("world entries API", () => {
     const listResponse = await json("GET", `/api/worlds/${world.id}/entries`);
     const list = (await listResponse.json()) as { entries: WorldEntry[] };
     // Same-millisecond inserts make (created_at, id) order UUID-dependent, so
-    // assert members, not sequence; campaign capture order is asserted where
-    // the contract actually fixes it.
+    // assert members, not sequence.
     expect(list.entries.map((entry) => entry.name).sort()).toEqual(["Ashfall landing", "Maera"]);
 
     const patched = await patchEntry(world.id, created.entry!.id, { name: "Maera Vane" });
@@ -135,7 +126,7 @@ describe("world entries API", () => {
   });
 
   test("entry deletion requires a trusted Origin and preserves entries on rejection", async () => {
-    const world = await createWorld({ name: "Protected", setting_brief: "b", suggested_starting_situation: "" });
+    const world = await createWorld({ name: "Protected", setting_brief: "b" });
     const entry = (await createEntry(world.id, { kind: "lore", name: "Protected lore", description: "Keep this." })).entry!;
     const path = `/api/worlds/${world.id}/entries/${entry.id}`;
     for (const origin of [null, "https://attacker.example"]) {
@@ -153,7 +144,7 @@ describe("world entries API", () => {
   });
 
   test("rejects invalid payloads with invalid_input and unknown routes with not_found", async () => {
-    const world = await createWorld({ name: "Validation", setting_brief: "b", suggested_starting_situation: "" });
+    const world = await createWorld({ name: "Validation", setting_brief: "b" });
 
     for (const body of [
       {},
@@ -177,8 +168,8 @@ describe("world entries API", () => {
   });
 
   test("entries are world-scoped: another world's entry is just missing", async () => {
-    const worldA = await createWorld({ name: "World A", setting_brief: "a", suggested_starting_situation: "" });
-    const worldB = await createWorld({ name: "World B", setting_brief: "b", suggested_starting_situation: "" });
+    const worldA = await createWorld({ name: "World A", setting_brief: "a" });
+    const worldB = await createWorld({ name: "World B", setting_brief: "b" });
     const entry = (await createEntry(worldA.id, { kind: "location", name: "Sunken Archive", description: "d" })).entry!;
 
     const listResponse = await json("GET", `/api/worlds/${worldB.id}/entries`);
@@ -190,56 +181,21 @@ describe("world entries API", () => {
   });
 });
 
-describe("campaign entry capture", () => {
-  test("captures every non-scene entry in creation order; scenes never enter grounding", async () => {
-    const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom.", suggested_starting_situation: "" });
-    const other = await createWorld({ name: "Other", setting_brief: "o", suggested_starting_situation: "" });
-    const protagonist = await createCharacter({ name: "Sable", description: "A cynical ferrywoman spy." });
-    const character = (await createEntry(world.id, { kind: "location", name: "Maera", description: "Lighthouse keeper." })).entry!;
-    const location = (await createEntry(world.id, { kind: "location", name: "Drowned Pier", description: "Sagging boards." })).entry!;
-    await createEntry(world.id, { kind: "scene", name: "Dawn docking", description: "The ferry scrapes ashore." });
-    const lore = (await createEntry(world.id, {
-      kind: "lore",
-      name: "The Bell Pact",
-      description: "Bells bind the tides.",
-      keywords: [" bells ", "Bells", "tide"],
-      priority: 5,
-      sticky: 2,
-    })).entry!;
-    await createEntry(other.id, { kind: "lore", name: "Foreign", description: "Another world's lore." });
-
-    const created = await createCampaign({
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      starting_situation: "Sable docks at dawn.",
-    });
-    expect(created.status).toBe(201);
-    expect(created.campaign?.world_snapshot.entries).toEqual([
-      { id: character.id, kind: "location", name: "Maera", description: "Lighthouse keeper.", keywords: [], priority: 0, sticky: 0 },
-      { id: location.id, kind: "location", name: "Drowned Pier", description: "Sagging boards.", keywords: [], priority: 0, sticky: 0 },
-      { id: lore.id, kind: "lore", name: "The Bell Pact", description: "Bells bind the tides.", keywords: ["bells", "tide"], priority: 5, sticky: 2 },
-    ]);
-    expect(await getCampaign(created.campaign!.id)).toEqual(created.campaign!);
-  });
-});
-
 describe("opening prompt budget", () => {
-  test("creation is refused exactly when the opening prompt passes the budget", async () => {
-    const world = await createWorld({ name: "Boundary", setting_brief: "b".repeat(100_000), suggested_starting_situation: "" });
-    await createEntry(world.id, { kind: "lore", name: "Compact", description: "l".repeat(40_000) });
-    const snapshot = (description: string): CharacterPrompt => ({
+  test("chat creation is refused exactly when the opening prompt passes the budget", async () => {
+    const brief = "b".repeat(100_000);
+    const entryDescription = "l".repeat(40_000);
+    const protagonistPrompt = (description: string): CharacterPrompt => ({
       id: "p", name: "P", description, appearance: "", personality: "", background: "",
-      baseline_motivations: "", speaking_style: "", stats_enabled: false, stats: {},
+      baseline_motivations: "", speaking_style: "", knowledge: "", stats_enabled: false, stats: {},
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
-      world: { name: world.name, setting_brief: world.setting_brief, entries: [{ kind: "lore", name: "Compact", description: "l".repeat(40_000), keywords: [] }] },
-      starting_situation: "s",
+      world: { name: "Boundary", setting_brief: brief, entries: [{ kind: "lore", name: "Compact", description: entryDescription, keywords: [] }] },
+      opening: "s",
       stats: [],
-      protagonist: snapshot("d".repeat(descriptionLength)),
+      protagonist: protagonistPrompt("d".repeat(descriptionLength)),
       cast: [],
-      notes: [],
       relationships: [],
-      handoff: null,
       has_history: false,
     }));
     // Longest description whose prompt still fits; one more character passes the budget.
@@ -252,86 +208,42 @@ describe("opening prompt budget", () => {
     }
     expect(promptTokens(low)).toBe(NARRATION_TOKEN_BUDGET);
     expect(promptTokens(low + 1)).toBe(NARRATION_TOKEN_BUDGET + 1);
-    const exact = await createCharacter({ name: "P", description: "d".repeat(low) });
-    const over = await createCharacter({ name: "P", description: "d".repeat(low + 1) });
 
-    const fits = await createCampaign({ world_id: world.id, protagonist_id: exact.id, starting_situation: "s" });
+    const worldWithProtagonist = async (descriptionLength: number) => {
+      const world = await createWorld({ name: "Boundary", setting_brief: brief });
+      await createEntry(world.id, { kind: "lore", name: "Compact", description: entryDescription });
+      const protagonist = await createCharacter(world.id, { name: "P", description: "d".repeat(descriptionLength) });
+      return { world, protagonist };
+    };
+    const exact = await worldWithProtagonist(low);
+    const over = await worldWithProtagonist(low + 1);
+
+    const fits = await createChat(exact.world.id, { protagonist_id: exact.protagonist.id, opening: "s" });
     expect(fits.status).toBe(201);
-    const refused = await createCampaign({ world_id: world.id, protagonist_id: over.id, starting_situation: "s" });
+    const refused = await createChat(over.world.id, { protagonist_id: over.protagonist.id, opening: "s" });
     expect(refused.status).toBe(400);
     expect(refused.code).toBe("invalid_input");
     expect(refused.error).toContain(String(NARRATION_TOKEN_BUDGET));
+    const listed = (await (await json("GET", `/api/worlds/${over.world.id}/chats`)).json()) as { chats: Chat[] };
+    expect(listed.chats).toEqual([]);
   });
 });
 
-describe("captured grounding is immutable and drives narration", () => {
-  test("library edits and deletes leave captured snapshots intact, across a restart", async () => {
-    const configDir = await makeConfigDirectory();
-    const dbPath = join(configDir, "capture.db");
-    const serverA = await startTestServer({ configDirectory: configDir, databasePath: dbPath });
-    const post = (method: string, path: string, body?: unknown) =>
-      fetch(`${serverA.url}${path}`, {
-        method,
-        headers: headersWith({ "content-type": "application/json", origin: TRUSTED_ORIGIN }),
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
-
-    const worldResponse = await post("POST", "/api/worlds", { name: "Veloria", setting_brief: "b", suggested_starting_situation: "" });
-    const worldPayload = (await worldResponse.json()) as { world: World };
-    const world = worldPayload.world;
-    const characterResponse = await post("POST", "/api/characters", { name: "Sable", description: "Spy of the ferries." });
-    const characterPayload = (await characterResponse.json()) as { character: Character };
-    const protagonist = characterPayload.character;
-    const entryResponse = await post("POST", `/api/worlds/${world.id}/entries`, {
-      kind: "lore",
-      name: "Maera the Lighthouse Keeper",
-      description: "Keeps the drowned light burning.",
-    });
-    const entryPayload = (await entryResponse.json()) as { entry: WorldEntry };
-    const character = entryPayload.entry;
-    const createdResponse = await post("POST", "/api/campaigns", {
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      starting_situation: "Sable docks at dawn.",
-    });
-    expect(createdResponse.status).toBe(201);
-    const createdPayload = (await createdResponse.json()) as { campaign: Campaign };
-    const created = createdPayload.campaign;
-
-    expect((await post("PATCH", `/api/worlds/${world.id}/entries/${character.id}`, { name: "Renamed", description: "Rewritten." })).status).toBe(200);
-    expect((await post("DELETE", `/api/worlds/${world.id}/entries/${character.id}`)).status).toBe(200);
-
-    const captured: WorldEntrySnapshot[] = [
-      { id: character.id, kind: "lore", name: "Maera the Lighthouse Keeper", description: "Keeps the drowned light burning.", keywords: [], priority: 0, sticky: 0 },
-    ];
-    const detailResponse = await post("GET", `/api/campaigns/${created.id}`);
-    const detail = (await detailResponse.json()) as { campaign: Campaign };
-    expect(detail.campaign.world_snapshot.entries).toEqual(captured);
-
-    await serverA.stop();
-    const serverB = await startTestServer({ configDirectory: configDir, databasePath: dbPath });
-    const reloadedResponse = await fetch(`${serverB.url}/api/campaigns/${created.id}`, { headers: headersWith() });
-    const reloaded = (await reloadedResponse.json()) as { campaign: Campaign };
-    expect(reloaded.campaign.world_snapshot.entries).toEqual(captured);
-    await serverB.stop();
-    await removeDirectory(configDir);
-  });
-
-  test("narration uses only the captured entries, not the live library", async () => {
+describe("live world grounding", () => {
+  test("narration reads the world as it is now; scenes never reach the narrator", async () => {
     await configureProvider(base.url, "test-key-world-entries");
 
-    const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom.", suggested_starting_situation: "" });
-    const protagonist = await createCharacter({ name: "Sable", description: "A cynical ferrywoman spy." });
+    const world = await createWorld({ name: "Veloria", setting_brief: "A rain-soaked harbor kingdom." });
+    const other = await createWorld({ name: "Other", setting_brief: "o" });
+    const protagonist = await createCharacter(world.id, { name: "Sable", description: "A cynical ferrywoman spy." });
     const kept = (await createEntry(world.id, { kind: "lore", name: "Maera", description: "Lighthouse keeper." })).entry!;
+    await createEntry(world.id, { kind: "scene", name: "Dawn docking", description: "The ferry scrapes ashore." });
+    await createEntry(other.id, { kind: "lore", name: "Foreign", description: "Another world's lore." });
 
-    const created = await createCampaign({
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      starting_situation: "Sable docks at dawn.",
-    });
-    expect(created.status).toBe(201);
-    // Added to the world after capture: the narrator must never see it.
+    const chat = await createChat(world.id, { protagonist_id: protagonist.id, opening: "Sable docks at dawn." });
+    expect(chat.status).toBe(201);
     await createEntry(world.id, { kind: "location", name: "Quarantine", description: "Off-limits pier." });
+    await patchEntry(world.id, kept.id, { description: "Lighthouse keeper, newly widowed." });
 
     const calls: Array<Record<string, unknown>> = [];
     const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -343,7 +255,7 @@ describe("captured grounding is immutable and drives narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const response = await fetch(`${server.url}/api/sessions/${created.session!.id}/opening`, {
+      const response = await fetch(`${server.url}/api/chats/${chat.chat!.id}/opening`, {
         method: "POST",
         headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
         body: JSON.stringify({}),
@@ -352,20 +264,18 @@ describe("captured grounding is immutable and drives narration", () => {
       const events = parseSseEvents(await response.text());
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
 
-      const history = calls[0].messages as Array<{ role: string; content: string }>;
-      const system = history[0];
+      const history = calls[0]!.messages as Array<{ role: string; content: string }>;
+      const system = history[0]!;
       expect(system.role).toBe("system");
-      expect(system.content).toContain("Lighthouse keeper.");
+      expect(system.content).toContain("Lighthouse keeper, newly widowed.");
+      expect(system.content).toContain("Quarantine");
+      expect(system.content).toContain("Off-limits pier");
       expect(system.content).toContain("Veloria");
       expect(system.content).toContain("Sable");
       expect(system.content).toContain("Sable docks at dawn.");
-      expect(system.content).not.toContain("Quarantine");
-      expect(system.content).not.toContain("Off-limits pier");
-
-      // Renaming the live entry now must not rewrite the captured grounding.
-      await patchEntry(world.id, kept.id, { name: "Renamed after capture" });
-      const snapshot = await getCampaign(created.campaign!.id);
-      expect(snapshot.world_snapshot.entries[0]?.name).toBe("Maera");
+      expect(system.content).not.toContain("Dawn docking");
+      expect(system.content).not.toContain("The ferry scrapes ashore.");
+      expect(system.content).not.toContain("Another world's lore.");
     } finally {
       await server.stop();
     }
@@ -374,18 +284,13 @@ describe("captured grounding is immutable and drives narration", () => {
   test("keyword entries and in-scene cast join only replies whose recent messages mention them, after the player's input", async () => {
     await configureProvider(base.url, "test-key-world-entries");
 
-    const world = await createWorld({ name: "Widow's Bay", setting_brief: "A fog-bound fishing town.", suggested_starting_situation: "" });
-    const protagonist = await createCharacter({ name: "Sable", description: "A new student." });
+    const world = await createWorld({ name: "Widow's Bay", setting_brief: "A fog-bound fishing town." });
+    const protagonist = await createCharacter(world.id, { name: "Sable", description: "A new student." });
     await createEntry(world.id, { kind: "location", name: "Harbor", description: "Always-known docks." });
     await createEntry(world.id, { kind: "location", name: "Widow High", description: "The town's only high school.", keywords: ["school"] });
-    const ria = await createCharacter({ name: "Ria", description: "Sable's lab partner, always sketching." });
-    const created = await createCampaign({
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      cast_character_ids: [ria.id],
-      starting_situation: "Sable arrives in town.",
-    });
-    const sessionId = created.session!.id;
+    await createCharacter(world.id, { name: "Ria", description: "Sable's lab partner, always sketching." });
+    const created = await createChat(world.id, { protagonist_id: protagonist.id, opening: "Sable arrives in town." });
+    const chatId = created.chat!.id;
 
     const calls: Array<Array<{ role: string; content: string }>> = [];
     const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -397,7 +302,7 @@ describe("captured grounding is immutable and drives narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     const play = async (path: string, body: Record<string, unknown>) => {
-      const response = await fetch(`${server.url}/api/sessions/${sessionId}/${path}`, {
+      const response = await fetch(`${server.url}/api/chats/${chatId}/${path}`, {
         method: "POST",
         headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
         body: JSON.stringify(body),
@@ -428,7 +333,7 @@ describe("captured grounding is immutable and drives narration", () => {
       expect(laterText).toContain("- Ria: Sable's lab partner, always sketching.");
       expect(laterText).not.toContain("The town's only high school.");
 
-      const response = await fetch(`${server.url}/api/sessions/${sessionId}/messages`, { headers: headersWith() });
+      const response = await fetch(`${server.url}/api/chats/${chatId}/messages`, { headers: headersWith() });
       const { messages } = (await response.json()) as { messages: Message[] };
       expect(messages.filter((message) => message.role === "assistant").map((message) => message.lore)).toEqual([
         null,

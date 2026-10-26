@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { PromptCard } from "../shared/domain";
 import { unknownPlaceholders } from "../shared/narration";
 import { insertDefaultPromptCards, newId, nowIso } from "./db";
-import { ValidationError, optionalText, requiredText } from "./library";
+import { ValidationError, optionalText, requiredText } from "./worlds";
 
 export type PromptCardPatch = Partial<Pick<PromptCard, "title" | "body" | "enabled">>;
 

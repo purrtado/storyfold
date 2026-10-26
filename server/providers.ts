@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultConfigDirectory } from "./config";
-import { ValidationError } from "./library";
+import { ValidationError } from "./worlds";
 
 const CONFIG_FILE = "config.json";
 const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;

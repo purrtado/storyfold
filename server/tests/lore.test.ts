@@ -1,17 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import type { CampaignCharacter, WorldEntrySnapshot } from "../../shared/domain";
+import type { Character, WorldEntry } from "../../shared/domain";
 import { DEFAULT_PROMPT_CARDS, contextNote, narratorSystemPrompt, type RelationshipPrompt } from "../../shared/narration";
 import { countTokens } from "../../shared/tokens";
 import { LORE_TOKEN_BUDGET, selectReplyContext } from "../lore";
 
-function entry(name: string, fields: Partial<WorldEntrySnapshot> = {}): WorldEntrySnapshot {
-  return { id: name, kind: "lore", name, description: `${name} lore.`, keywords: ["unused"], priority: 0, sticky: 0, ...fields };
+function entry(name: string, fields: Partial<WorldEntry> = {}): WorldEntry {
+  return {
+    id: name, world_id: "w", kind: "lore", name, description: `${name} lore.`, keywords: ["unused"], priority: 0, sticky: 0,
+    created_at: "", updated_at: "", ...fields,
+  };
 }
 
-function character(name: string, fields: Partial<CampaignCharacter> = {}): CampaignCharacter {
+function character(name: string, fields: Partial<Character> = {}): Character {
   return {
-    id: name, campaign_id: "c", role: "cast", name, description: `${name}'s full card.`, appearance: "", personality: "",
-    background: "", baseline_motivations: "", speaking_style: "", avatar_id: null, stats_enabled: false, stats: {},
+    id: name, world_id: "w", name, description: `${name}'s full card.`, appearance: "", personality: "",
+    background: "", baseline_motivations: "", speaking_style: "", knowledge: "", avatar_id: null, stats_enabled: false, stats: {},
     context_mode: "in_scene", summary: "", aliases: [], sticky: 0, created_at: "", updated_at: "", ...fields,
   };
 }
@@ -25,8 +28,8 @@ const ROOM = 40_000;
 function select(
   recent: string[],
   { entries = [], cast = [], relationships = [], room = ROOM }: {
-    entries?: WorldEntrySnapshot[];
-    cast?: CampaignCharacter[];
+    entries?: WorldEntry[];
+    cast?: Character[];
     relationships?: RelationshipPrompt[];
     room?: number;
   },
@@ -94,6 +97,11 @@ describe("characters", () => {
     );
   });
 
+  test("a triggered character's note carries what it knows", () => {
+    const ria = character("Ria", { knowledge: "Saw who cut the ferry rope." });
+    expect(select(["Ria arrives."], { cast: [ria] }).note).toContain("- Ria: Ria's full card.; Knows: Saw who cut the ferry rope.");
+  });
+
   test("go before keyword lore, which keeps its priority order", () => {
     const selection = select(["Ria at school."], { cast: [character("Ria")], entries: [entry("Widow High", { keywords: ["school"], priority: 9 })] });
     expect(selection.lore).toEqual({ used: ["Ria", "Widow High"], dropped: [] });
@@ -103,7 +111,7 @@ describe("characters", () => {
 describe("budget", () => {
   const text = ["alpha beta gamma"];
 
-  test("higher priority goes first; equal priorities keep capture order", () => {
+  test("higher priority goes first; equal priorities keep creation order", () => {
     const entries = [
       entry("A", { keywords: ["alpha"], priority: 1 }),
       entry("B", { keywords: ["beta"], priority: 5 }),
@@ -137,7 +145,7 @@ describe("budget", () => {
 });
 
 describe("system prompt cast", () => {
-  const protagonist = { ...character("Mira", { role: "protagonist", context_mode: "always" }) };
+  const protagonist = character("Mira", { context_mode: "always" });
   const cast = [
     character("Al", { context_mode: "always" }),
     character("Ria", { summary: "Night-shift nurse, red scrubs." }),
@@ -146,13 +154,11 @@ describe("system prompt cast", () => {
   ];
   const prompt = narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
     world: { name: "W", setting_brief: "b", entries: [] },
-    starting_situation: "s",
+    opening: "s",
     stats: [],
     protagonist,
     cast,
-    notes: [],
     relationships: [tie("Mira", "Al", "brother"), tie("Mira", "Ria", "dating"), tie("Ria", "Mira", "smitten")],
-    handoff: null,
     has_history: false,
   });
 

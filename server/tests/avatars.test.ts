@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { protagonistOf, type Campaign, type Character, type World } from "../../shared/domain";
+import type { Character, World } from "../../shared/domain";
 import { AVATAR_BODY_MAX_BYTES } from "../security";
 import {
   headersWith,
@@ -16,11 +16,13 @@ const TRUSTED_ORIGIN = "http://localhost:5173";
 let configDirectory: string;
 let databasePath: string;
 let base: TestServer;
+let world: World;
 
 beforeAll(async () => {
   configDirectory = await makeConfigDirectory();
   databasePath = join(configDirectory, "avatars.db");
   base = await startTestServer({ configDirectory, databasePath });
+  world = await createWorld({ name: "Ember Coast", setting_brief: "b" });
 });
 
 afterAll(async () => {
@@ -50,7 +52,7 @@ function sha256(bytes: Uint8Array): string {
 }
 
 async function createCharacter(body: Record<string, unknown>): Promise<Character> {
-  const response = await json("POST", "/api/characters", body);
+  const response = await json("POST", `/api/worlds/${world.id}/characters`, body);
   expect(response.status).toBe(201);
   const payload: { character: Character } = await response.json();
   return payload.character;
@@ -68,13 +70,6 @@ async function getCharacter(id: string): Promise<Character> {
   expect(response.status).toBe(200);
   const payload: { character: Character } = await response.json();
   return payload.character;
-}
-
-async function getCampaign(id: string): Promise<Campaign> {
-  const response = await json("GET", `/api/campaigns/${id}`);
-  expect(response.status).toBe(200);
-  const payload: { campaign: Campaign } = await response.json();
-  return payload.campaign;
 }
 
 // Real 1x1 PNG, plus format-prefixed bytes for the other accepted types.
@@ -177,32 +172,16 @@ describe("character avatars", () => {
     expect(postImage.status).toBe(405);
   });
 
-  test("campaign creation captures the avatar; later library changes never rewrite the snapshot", async () => {
-    const world = await createWorld({ name: "Ember Coast", setting_brief: "b", suggested_starting_situation: "" });
-    const protagonist = await createCharacter({ name: "Sable", description: "Spy of the ferries." });
-    const castMember = await createCharacter({ name: "Maera", description: "Keeper of the light." });
-    expect((await upload(`/api/characters/${protagonist.id}/avatar`, "image/png", PNG_BYTES)).status).toBe(200);
-    expect((await upload(`/api/characters/${castMember.id}/avatar`, "image/jpeg", JPEG_BYTES)).status).toBe(200);
+  test("a replaced avatar shows up live in the world's character list", async () => {
+    const character = await createCharacter({ name: "Sable", description: "Spy of the ferries." });
+    expect((await upload(`/api/characters/${character.id}/avatar`, "image/png", PNG_BYTES)).status).toBe(200);
+    expect((await upload(`/api/characters/${character.id}/avatar`, "image/gif", GIF_BYTES)).status).toBe(200);
 
-    const created = await json("POST", "/api/campaigns", {
-      world_id: world.id,
-      protagonist_id: protagonist.id,
-      cast_character_ids: [castMember.id],
-      starting_situation: "Sable docks at dawn.",
-    });
-    expect(created.status).toBe(201);
-    const createdPayload: { campaign: Campaign } = await created.json();
-    const campaignId = createdPayload.campaign.id;
-
-    const campaign = await getCampaign(campaignId);
-    expect(protagonistOf(campaign).avatar_id).toBe(sha256(PNG_BYTES));
-    expect(campaign.characters[1]?.avatar_id).toBe(sha256(JPEG_BYTES));
-
-    // Replacing the library avatar leaves the captured campaign untouched.
-    expect((await upload(`/api/characters/${protagonist.id}/avatar`, "image/gif", GIF_BYTES)).status).toBe(200);
-    const after = await getCampaign(campaignId);
-    expect(protagonistOf(after).avatar_id).toBe(sha256(PNG_BYTES));
-    expect((await getCharacter(protagonist.id)).avatar_id).toBe(sha256(GIF_BYTES));
+    const list = await json("GET", `/api/worlds/${world.id}/characters`);
+    const payload: { characters: Character[] } = await list.json();
+    expect(payload.characters.find((entry) => entry.id === character.id)?.avatar_id).toBe(sha256(GIF_BYTES));
+    const stale = await fetch(`${base.url}/api/images/${sha256(PNG_BYTES)}`, { headers: headersWith() });
+    expect(stale.status).toBe(200);
   });
 
   test("delete clears the avatar but keeps the image bytes", async () => {

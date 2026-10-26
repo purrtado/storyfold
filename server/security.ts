@@ -213,6 +213,6 @@ export async function readRawBody(request: Request, limitBytes: number): Promise
 
 export const BODY_LIMITS = {
   chat: CHAT_BODY_MAX_BYTES,
-  /** Domain text fields (worlds, characters, campaigns, play input) allow 100k chars. */
+  /** Domain text fields (worlds, characters, chats, play input) allow 100k chars. */
   text: CHAT_BODY_MAX_BYTES,
 };

@@ -33,7 +33,7 @@ function classifyUpstreamError(status?: number, code?: string, text?: string): S
   if (CONTEXT_HINTS.test(hint)) {
     return {
       message:
-        "This story no longer fits the model's context window. Choose a model with a larger context in Settings, or start a new campaign.",
+        "This story no longer fits the model's context window. Choose a model with a larger context in Settings, or start a new chat.",
       code: "context_limit",
     };
   }

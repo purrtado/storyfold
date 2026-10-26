@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
-import { protagonistOf, type Campaign, type Message, type Session } from "../../shared/domain";
+import type { Chat, Message } from "../../shared/domain";
 import { openDatabase } from "../db";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
@@ -36,69 +36,70 @@ afterAll(async () => {
   if (configDirectory) await removeDirectory(configDirectory);
 });
 
-async function seedStory(serverBase: string): Promise<{ campaign: Campaign; session: Session; protagonistId: string }> {
-  const world = await fetch(`${serverBase}/api/worlds`, {
-    method: "POST",
+const OPENING_TEXT = "Sable docks at dawn while the harbor bells ring.";
+
+function jsonRequest(serverBase: string, method: string, path: string, body?: unknown): Promise<Response> {
+  return fetch(`${serverBase}${path}`, {
+    method,
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({
-      name: "Veloria",
-      setting_brief: "A rain-soaked harbor kingdom of rival ferries.",
-      suggested_starting_situation: "A murder at the docks at dawn.",
-    }),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+async function seedStory(
+  serverBase: string,
+): Promise<{ chat: Chat; worldId: string; protagonistId: string }> {
+  const world = await jsonRequest(serverBase, "POST", "/api/worlds", {
+    name: "Veloria",
+    setting_brief: "A rain-soaked harbor kingdom of rival ferries.",
   });
   expect(world.status).toBe(201);
-  const worldPayload = (await world.json()) as { world: { id: string } };
-  const protagonist = await fetch(`${serverBase}/api/characters`, {
-    method: "POST",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({
-      name: "Sable",
-      description: "A cynical ferrywoman spy.",
-      speaking_style: "Clipped, sarcastic.",
-    }),
+  const { world: created } = (await world.json()) as { world: { id: string } };
+  const protagonist = await jsonRequest(serverBase, "POST", `/api/worlds/${created.id}/characters`, {
+    name: "Sable",
+    description: "A cynical ferrywoman spy.",
+    speaking_style: "Clipped, sarcastic.",
   });
   expect(protagonist.status).toBe(201);
-  const protagonistPayload = (await protagonist.json()) as { character: { id: string } };
-  const created = await fetch(`${serverBase}/api/campaigns`, {
-    method: "POST",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify({
-      world_id: worldPayload.world.id,
-      protagonist_id: protagonistPayload.character.id,
-      starting_situation: "Sable docks at dawn while the harbor bells ring.",
-    }),
+  const { character } = (await protagonist.json()) as { character: { id: string } };
+  const chat = await jsonRequest(serverBase, "POST", `/api/worlds/${created.id}/chats`, {
+    protagonist_id: character.id,
+    opening: OPENING_TEXT,
   });
-  expect(created.status).toBe(201);
-  const createdPayload = (await created.json()) as { campaign: Campaign; session: Session };
-  return { ...createdPayload, protagonistId: protagonistPayload.character.id };
+  expect(chat.status).toBe(201);
+  return {
+    chat: ((await chat.json()) as { chat: Chat }).chat,
+    worldId: created.id,
+    protagonistId: character.id,
+  };
 }
 
-function postMessage(serverBase: string, sessionId: string, body: unknown): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/messages`, {
-    method: "POST",
-    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-    body: JSON.stringify(body),
-  });
-}
-
-function postOpening(serverBase: string, sessionId: string, body: unknown = {}): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/opening`, {
+function postMessage(serverBase: string, chatId: string, body: unknown): Promise<Response> {
+  return fetch(`${serverBase}/api/chats/${chatId}/messages`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
 }
 
-function postRegenerate(serverBase: string, sessionId: string, body: unknown = {}): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/regenerate`, {
+function postOpening(serverBase: string, chatId: string, body: unknown = {}): Promise<Response> {
+  return fetch(`${serverBase}/api/chats/${chatId}/opening`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
 }
 
-function selectVariant(serverBase: string, sessionId: string, messageId: string): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}/select`, {
+function postRegenerate(serverBase: string, chatId: string, body: unknown = {}): Promise<Response> {
+  return fetch(`${serverBase}/api/chats/${chatId}/regenerate`, {
+    method: "POST",
+    headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+}
+
+function selectVariant(serverBase: string, chatId: string, messageId: string): Promise<Response> {
+  return fetch(`${serverBase}/api/chats/${chatId}/messages/${messageId}/select`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN }),
   });
@@ -106,11 +107,11 @@ function selectVariant(serverBase: string, sessionId: string, messageId: string)
 
 function deleteMessage(
   serverBase: string,
-  sessionId: string,
+  chatId: string,
   messageId: string,
   scope?: "variant" | "after",
 ): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}${scope ? `?scope=${scope}` : ""}`, {
+  return fetch(`${serverBase}/api/chats/${chatId}/messages/${messageId}${scope ? `?scope=${scope}` : ""}`, {
     method: "DELETE",
     headers: headersWith({ origin: TRUSTED_ORIGIN }),
   });
@@ -118,11 +119,11 @@ function deleteMessage(
 
 function patchMessage(
   serverBase: string,
-  sessionId: string,
+  chatId: string,
   messageId: string,
   body: unknown,
 ): Promise<Response> {
-  return fetch(`${serverBase}/api/sessions/${sessionId}/messages/${messageId}`, {
+  return fetch(`${serverBase}/api/chats/${chatId}/messages/${messageId}`, {
     method: "PATCH",
     headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
     body: JSON.stringify(body),
@@ -152,16 +153,16 @@ interface TranscriptRow extends Message {
   variant_index: number;
 }
 
-async function transcript(serverBase: string, sessionId: string): Promise<TranscriptRow[]> {
-  const response = await fetch(`${serverBase}/api/sessions/${sessionId}/messages`, {
+async function transcript(serverBase: string, chatId: string): Promise<TranscriptRow[]> {
+  const response = await fetch(`${serverBase}/api/chats/${chatId}/messages`, {
     headers: headersWith(),
   });
   expect(response.status).toBe(200);
   return ((await response.json()) as { messages: TranscriptRow[] }).messages;
 }
 
-async function stopRun(serverBase: string, sessionId: string): Promise<{ pending: boolean; message: Message | null }> {
-  const response = await fetch(`${serverBase}/api/sessions/${sessionId}/stop`, {
+async function stopRun(serverBase: string, chatId: string): Promise<{ pending: boolean; message: Message | null }> {
+  const response = await fetch(`${serverBase}/api/chats/${chatId}/stop`, {
     method: "POST",
     headers: headersWith({ origin: TRUSTED_ORIGIN }),
   });
@@ -309,78 +310,16 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
   throw new Error(`timed out waiting for ${what}`);
 }
 
-describe("campaign creation", () => {
-  test("binds characters and the opening session in one committed response", async () => {
-    const { campaign, session } = await seedStory(base.url);
-    expect(campaign.world_snapshot.name).toBe("Veloria");
-    expect(protagonistOf(campaign).name).toBe("Sable");
-    expect(protagonistOf(campaign).speaking_style).toBe("Clipped, sarcastic.");
-    expect(campaign.characters).toHaveLength(1);
-    expect(campaign.active_session_id).toBe(session.id);
-    expect(session.campaign_id).toBe(campaign.id);
-    const detail = await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() });
-    expect(detail.status).toBe(200);
-  });
-
-  test("unknown world or protagonist references roll back without creating rows", async () => {
-    const before = await (await fetch(`${base.url}/api/campaigns`, { headers: headersWith() })).json();
-    const response = await fetch(`${base.url}/api/campaigns`, {
-      method: "POST",
-      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ world_id: "nope", protagonist_id: "nope", starting_situation: "x" }),
-    });
-    expect(response.status).toBe(404);
-    const after = (await (await fetch(`${base.url}/api/campaigns`, { headers: headersWith() })).json()) as {
-      campaigns: Campaign[];
-    };
-    expect(after.campaigns.map((campaign) => campaign.id)).toEqual(
-      ((before as { campaigns: Campaign[] }).campaigns).map((campaign) => campaign.id),
-    );
-  });
-
-  test("captured characters and world never change when the library is edited", async () => {
-    const { campaign, protagonistId } = await seedStory(base.url);
-    await fetch(`${base.url}/api/worlds/${campaign.world_id}`, {
-      method: "PATCH",
-      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ name: "Veloria Prime", setting_brief: "Rewritten entirely." }),
-    });
-    await fetch(`${base.url}/api/characters/${protagonistId}`, {
-      method: "PATCH",
-      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({ name: "Sable II", description: "Rewritten." }),
-    });
-    const detail = (await (
-      await fetch(`${base.url}/api/campaigns/${campaign.id}`, { headers: headersWith() })
-    ).json()) as { campaign: Campaign };
-    expect(detail.campaign.world_snapshot.name).toBe("Veloria");
-    expect(detail.campaign.world_snapshot.setting_brief).toBe("A rain-soaked harbor kingdom of rival ferries.");
-    expect(protagonistOf(detail.campaign).name).toBe("Sable");
-    const fresh = await fetch(`${base.url}/api/campaigns`, {
-      method: "POST",
-      headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-      body: JSON.stringify({
-        world_id: campaign.world_id,
-        protagonist_id: protagonistId,
-        starting_situation: "New morning.",
-      }),
-    });
-    const freshBody = (await fresh.json()) as { campaign: Campaign };
-    expect(freshBody.campaign.world_snapshot.name).toBe("Veloria Prime");
-    expect(protagonistOf(freshBody.campaign).name).toBe("Sable II");
-  });
-});
-
 describe("opening narration", () => {
   test("streams real narration, stores it complete as Narrator, and appends no player input", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const server = await startTestServer({
       configDirectory,
       databasePath,
       upstreamFetch: sseStub(replyFrames("glm-5.3", ["Rain", " fell on Veloria."])),
     });
     try {
-      const response = await postOpening(server.url, session.id);
+      const response = await postOpening(server.url, chat.id);
       expect(response.headers.get("x-storyfold-accepted")).toBe("true");
       expect(response.headers.get("x-storyfold-player-message-id")).toBeNull();
       const pendingId = response.headers.get("x-storyfold-pending-message-id");
@@ -394,7 +333,7 @@ describe("opening narration", () => {
         .join("");
       expect(narration).toBe("Rain fell on Veloria.");
 
-      const messages = await transcript(server.url, session.id);
+      const messages = await transcript(server.url, chat.id);
       expect(messages).toHaveLength(1);
       expect(messages[0].id).toBe(pendingId);
       expect(messages[0].role).toBe("assistant");
@@ -408,14 +347,14 @@ describe("opening narration", () => {
   });
 
   test("rejects direct and HTTP duplicate reservations after narration completes (already_opened)", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const server = await startTestServer({
       configDirectory,
       databasePath,
       upstreamFetch: sseStub(replyFrames("glm-5.3", ["The bells."])),
     });
     try {
-      const first = await postOpening(server.url, session.id);
+      const first = await postOpening(server.url, chat.id);
       const events = await readSse(first);
       // Drain to completion so the second attempt sees settled state, not a
       // still-pending reply.
@@ -423,34 +362,34 @@ describe("opening narration", () => {
       // Exercise the reservation guard directly rather than relying on the route.
       const db = openDatabase(databasePath);
       try {
-        expect(() => new PlayService(db).reserveOpening(session.id)).toThrow(AlreadyOpenedError);
+        expect(() => new PlayService(db).reserveOpening(chat.id)).toThrow(AlreadyOpenedError);
       } finally {
         db.close();
       }
-      const second = await postOpening(server.url, session.id);
+      const second = await postOpening(server.url, chat.id);
       expect(second.status).toBe(409);
       expect(((await second.json()) as { code: string }).code).toBe("already_opened");
-      expect(await transcript(server.url, session.id)).toHaveLength(1);
+      expect(await transcript(server.url, chat.id)).toHaveLength(1);
     } finally {
       await server.stop();
     }
   });
 
   test("a failed opening retries through regenerate, which discards the failed draft", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const failing = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response('{"error":{"message":"boom"}}', { status: 500 })) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
     try {
-      const first = await postOpening(server.url, session.id);
+      const first = await postOpening(server.url, chat.id);
       expect(first.status).toBe(200);
       const events = await readSse(first);
       expect(events.at(-1)?.type).toBe(EventType.RUN_ERROR);
-      expect((await transcript(server.url, session.id))[0].status).toBe("failed");
+      expect((await transcript(server.url, chat.id))[0].status).toBe("failed");
 
-      // The session is no longer empty, so /opening is closed for good and
+      // The chat is no longer empty, so /opening is closed for good and
       // retries go through regeneration.
-      const opening = await postOpening(server.url, session.id);
+      const opening = await postOpening(server.url, chat.id);
       expect(opening.status).toBe(409);
       const openingBody = (await opening.json()) as { code: string };
       expect(openingBody.code).toBe("already_opened");
@@ -461,10 +400,10 @@ describe("opening narration", () => {
         upstreamFetch: sseStub(replyFrames("glm-5.3", ["Dawn."])),
       });
       try {
-        const retry = await postRegenerate(retryServer.url, session.id);
+        const retry = await postRegenerate(retryServer.url, chat.id);
         expect(retry.status).toBe(200);
         await readSse(retry);
-        const messages = await transcript(retryServer.url, session.id);
+        const messages = await transcript(retryServer.url, chat.id);
         expect(messages.map((message) => message.status)).toEqual(["complete"]);
         expect(messages[0].position).toBe(1);
         expect(messages[0].content).toBe("Dawn.");
@@ -477,24 +416,24 @@ describe("opening narration", () => {
     }
   });
 
-  test("/opening is refused on a non-empty session; regeneration continues with full history", async () => {
-    const { session } = await seedStory(base.url);
+  test("/opening is refused on a non-empty chat; regeneration continues with full history", async () => {
+    const { chat } = await seedStory(base.url);
     const draftText = "A doomed distinct narration, cut off mid-sentence";
     const { fetch: failing, releaseError } = failingUpstream("glm-5.3", [draftText]);
     const failServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
     let playerId: string;
     try {
-      const turn = await postMessage(failServer.url, session.id, { content: "I scout ahead alone." });
+      const turn = await postMessage(failServer.url, chat.id, { content: "I scout ahead alone." });
       const id = turn.headers.get("x-storyfold-player-message-id");
       if (!id) throw new Error("missing player id header");
       playerId = id;
       await waitFor(
-        async () => (await transcript(failServer.url, session.id)).at(-1)?.content === draftText,
+        async () => (await transcript(failServer.url, chat.id)).at(-1)?.content === draftText,
         "distinct partial to persist",
       );
       releaseError();
       await waitFor(
-        async () => (await transcript(failServer.url, session.id)).at(-1)?.status === "failed",
+        async () => (await transcript(failServer.url, chat.id)).at(-1)?.status === "failed",
         "draft to settle failed",
       );
     } finally {
@@ -512,12 +451,12 @@ describe("opening narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const refused = await postOpening(server.url, session.id);
+      const refused = await postOpening(server.url, chat.id);
       expect(refused.status).toBe(409);
       const refusedBody = (await refused.json()) as { code: string };
       expect(refusedBody.code).toBe("already_opened");
 
-      const retry = await postRegenerate(server.url, session.id);
+      const retry = await postRegenerate(server.url, chat.id);
       expect(retry.status).toBe(200);
       expect(retry.headers.get("x-storyfold-player-message-id")).toBe(playerId);
       const events = await readSse(retry);
@@ -532,7 +471,7 @@ describe("opening narration", () => {
       ]);
       expect(JSON.stringify(history)).not.toContain("Begin the opening scene.");
 
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => [row.role, row.status])).toEqual([
         ["user", "complete"],
         ["assistant", "complete"],
@@ -545,7 +484,7 @@ describe("opening narration", () => {
   });
 
   test("a per-run provider override routes to that provider's endpoint, keyless without Authorization", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const headers = headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" });
     const created = await fetch(`${base.url}/api/providers`, {
       method: "POST",
@@ -567,12 +506,12 @@ describe("opening narration", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const opened = await postOpening(server.url, session.id, { provider_id: provider.id, model: "llama3.3:70b" });
+      const opened = await postOpening(server.url, chat.id, { provider_id: provider.id, model: "llama3.3:70b" });
       await readSse(opened);
       expect(calls[0].url).toBe("http://127.0.0.1:11434/v1/chat/completions");
       expect(calls[0].authorization).toBeNull();
       expect(calls[0].body.model).toBe("llama3.3:70b");
-      expect((await transcript(server.url, session.id))[0].status).toBe("complete");
+      expect((await transcript(server.url, chat.id))[0].status).toBe("complete");
     } finally {
       await server.stop();
       await fetch(`${base.url}/api/providers/${provider.id}`, { method: "DELETE", headers });
@@ -582,7 +521,7 @@ describe("opening narration", () => {
 
 describe("player turns", () => {
   test("commits accepted input and narration atomically; full SSE text equals the stored row", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const calls: Array<Record<string, unknown>> = [];
     const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
       calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -593,7 +532,7 @@ describe("player turns", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const response = await postMessage(server.url, session.id, { content: "I watch the docks." });
+      const response = await postMessage(server.url, chat.id, { content: "I watch the docks." });
       expect(response.headers.get("x-storyfold-accepted")).toBe("true");
       const playerId = response.headers.get("x-storyfold-player-message-id");
       const pendingId = response.headers.get("x-storyfold-pending-message-id");
@@ -604,7 +543,7 @@ describe("player turns", () => {
         .filter((event): event is Extract<StreamChunk, { type: "TEXT_MESSAGE_CONTENT" }> => event.type === "TEXT_MESSAGE_CONTENT")
         .map((event) => event.delta)
         .join("");
-      const messages = await transcript(server.url, session.id);
+      const messages = await transcript(server.url, chat.id);
       expect(messages.map((message) => message.position)).toEqual([1, 2]);
       expect(messages[0].id).toBe(playerId);
       expect(messages[0].role).toBe("user");
@@ -626,36 +565,36 @@ describe("player turns", () => {
   });
 
   test("busy rejects concurrent submissions without saving the extra input", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Slow"]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const first = postMessage(server.url, session.id, { content: "First action." });
+      const first = postMessage(server.url, chat.id, { content: "First action." });
       const firstResponse = await first;
       if (!firstResponse.body) throw new Error("missing SSE body");
       const firstBody = firstResponse.body.getReader();
       // Real browsers keep the SSE stream flowing while issuing other requests.
       void firstBody.read();
       await waitFor(() => calls.length === 1, "first run to reach upstream");
-      const second = await postMessage(server.url, session.id, { content: "Second action." });
+      const second = await postMessage(server.url, chat.id, { content: "Second action." });
       expect(second.status).toBe(409);
       const body = (await second.json()) as { code: string; accepted: boolean; error: string };
       expect(body.code).toBe("busy");
       expect(body.accepted).toBe(false);
       expect(typeof body.error).toBe("string");
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.filter((message) => message.role === "user")).toHaveLength(1);
       expect(rows.some((message) => message.content === "Second action.")).toBe(false);
 
       calls[0].release();
       expect(firstResponse.status).toBe(200);
-      await waitFor(async () => (await transcript(server.url, session.id))[1]?.status === "complete", "first run to settle");
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.status === "complete", "first run to settle");
       await firstBody.cancel().catch(() => {});
-      const again = await postMessage(server.url, session.id, { content: "Third action." });
+      const again = await postMessage(server.url, chat.id, { content: "Third action." });
       expect(again.status).toBe(200);
       // The slot is usable again: a fresh pending run holds it.
       await waitFor(
-        async () => (await transcript(server.url, session.id)).at(-1)?.status === "pending",
+        async () => (await transcript(server.url, chat.id)).at(-1)?.status === "pending",
         "third run to hold the pending slot",
       );
       await again.body?.cancel();
@@ -666,15 +605,15 @@ describe("player turns", () => {
   });
 
   test("server Stop settles interrupted with persisted partial, cancels the real upstream, and late chunks cannot overwrite", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls, aborts } = gatedUpstream("glm-5.3", [["Partial "], ["New "]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const response = await postMessage(server.url, session.id, { content: "I head into the fog." });
+      const response = await postMessage(server.url, chat.id, { content: "I head into the fog." });
       expect(response.status).toBe(200);
       await waitFor(() => calls.length === 1, "run to reach upstream");
 
-      const stopped = await stopRun(server.url, session.id);
+      const stopped = await stopRun(server.url, chat.id);
       expect(stopped.pending).toBe(true);
       expect(stopped.message?.status).toBe("interrupted");
       expect(stopped.message?.content).toBe("Partial ");
@@ -683,20 +622,20 @@ describe("player turns", () => {
       // Release with NO terminal frames: an abandoned connection must not
       // resurrect or complete the settled row.
       calls[0].release([]);
-      await waitFor(async () => (await transcript(server.url, session.id))[1]?.content === "Partial ", "row to stay partial");
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.content === "Partial ", "row to stay partial");
 
       // Same server, same PlayService: a new run starts, is stoppable, and the
       // idempotent second Stop reports nothing pending.
-      const second = postMessage(server.url, session.id, { content: "Again." });
+      const second = postMessage(server.url, chat.id, { content: "Again." });
       await waitFor(() => calls.length === 2, "second run to reach upstream");
-      const stoppedAgain = await stopRun(server.url, session.id);
+      const stoppedAgain = await stopRun(server.url, chat.id);
       expect(stoppedAgain.pending).toBe(true);
       expect(stoppedAgain.message?.status).toBe("interrupted");
-      const idempotent = await stopRun(server.url, session.id);
+      const idempotent = await stopRun(server.url, chat.id);
       expect(idempotent.pending).toBe(false);
       expect((await second).status).toBe(200);
 
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => row.status)).toEqual([
         "complete",
         "interrupted",
@@ -712,7 +651,7 @@ describe("player turns", () => {
   });
 
   test("client disconnect settles interrupted promptly even when the upstream ignores aborts", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const encoder = new TextEncoder();
     const ignoresAbort = (async (_input: string | URL | Request, _init?: RequestInit) => {
       const body = new ReadableStream<Uint8Array>({
@@ -725,12 +664,12 @@ describe("player turns", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: ignoresAbort });
     try {
-      const response = await postMessage(server.url, session.id, { content: "I cut the line." });
+      const response = await postMessage(server.url, chat.id, { content: "I cut the line." });
       const reader = response.body!.getReader();
       await reader.read();
       await reader.cancel();
-      await waitFor(async () => (await transcript(server.url, session.id))[1]?.status === "interrupted", "disconnect to settle interrupted");
-      const rows = await transcript(server.url, session.id);
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.status === "interrupted", "disconnect to settle interrupted");
+      const rows = await transcript(server.url, chat.id);
       expect(rows[1].content).toBe("Ignores ");
       expect(rows[0].role).toBe("user");
 
@@ -741,9 +680,9 @@ describe("player turns", () => {
         upstreamFetch: sseStub(replyFrames("glm-5.3", ["Fresh."])),
       });
       try {
-        const follow = await postMessage(next.url, session.id, { content: "I try again." });
+        const follow = await postMessage(next.url, chat.id, { content: "I try again." });
         expect(follow.status).toBe(200);
-        await waitFor(async () => (await transcript(next.url, session.id)).at(-1)?.status === "complete", "follow-up run to complete");
+        await waitFor(async () => (await transcript(next.url, chat.id)).at(-1)?.status === "complete", "follow-up run to complete");
       } finally {
         await next.stop();
       }
@@ -753,18 +692,18 @@ describe("player turns", () => {
   });
 
   test("upstream failure settles the draft failed while the player input stays saved", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const failing = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response('{"error":{"message":"boom-secret"}}', { status: 500 })) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
     try {
-      const response = await postMessage(server.url, session.id, { content: "I light a torch." });
+      const response = await postMessage(server.url, chat.id, { content: "I light a torch." });
       const playerId = response.headers.get("x-storyfold-player-message-id");
       if (!playerId) throw new Error("missing player id header");
       const events = await readSse(response);
       expect(events.at(-1)?.type).toBe(EventType.RUN_ERROR);
       expect(JSON.stringify(events)).not.toContain("boom-secret");
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows[0].id).toBe(playerId);
       expect(rows[0].status).toBe("complete");
       expect(rows[0].content).toBe("I light a torch.");
@@ -775,33 +714,33 @@ describe("player turns", () => {
   });
 
   test("empty normal-stop narration fails the draft and reports an error, never success", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const server = await startTestServer({
       configDirectory,
       databasePath,
       upstreamFetch: sseStub(replyFrames("glm-5.3", [])),
     });
     try {
-      const response = await postMessage(server.url, session.id, { content: "Say nothing." });
+      const response = await postMessage(server.url, chat.id, { content: "Say nothing." });
       const events = await readSse(response);
       expect(events.at(-1)?.type).toBe(EventType.RUN_ERROR);
       expect(events.some((event) => event.type === EventType.RUN_FINISHED)).toBe(false);
-      expect((await transcript(server.url, session.id))[1].status).toBe("failed");
+      expect((await transcript(server.url, chat.id))[1].status).toBe("failed");
     } finally {
       await server.stop();
     }
   });
 
   test("model history keeps accepted input and complete narration in order, excluding drafts", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const opening = await startTestServer({
       configDirectory,
       databasePath,
       upstreamFetch: sseStub(replyFrames("glm-5.3", ["The fog rolls in."])),
     });
     try {
-      expect((await postOpening(opening.url, session.id)).status).toBe(200);
-      await waitFor(async () => (await transcript(opening.url, session.id))[0]?.status === "complete", "opening to settle");
+      expect((await postOpening(opening.url, chat.id)).status).toBe(200);
+      await waitFor(async () => (await transcript(opening.url, chat.id))[0]?.status === "complete", "opening to settle");
     } finally {
       await opening.stop();
     }
@@ -810,17 +749,17 @@ describe("player turns", () => {
     const { fetch: failing, releaseError } = failingUpstream("glm-5.3", [draftText]);
     const failServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: failing });
     try {
-      const failed = await postMessage(failServer.url, session.id, { content: "A doomed distinct action." });
+      const failed = await postMessage(failServer.url, chat.id, { content: "A doomed distinct action." });
       const playerId = failed.headers.get("x-storyfold-player-message-id");
       if (!playerId) throw new Error("missing player id header");
       // The distinct partial must be persisted while the run is still failing.
       await waitFor(
-        async () => (await transcript(failServer.url, session.id)).at(-1)?.content === draftText,
+        async () => (await transcript(failServer.url, chat.id)).at(-1)?.content === draftText,
         "distinct partial to persist",
       );
       releaseError();
-      await waitFor(async () => (await transcript(failServer.url, session.id)).at(-1)?.status === "failed", "draft to settle failed");
-      const rows = await transcript(failServer.url, session.id);
+      await waitFor(async () => (await transcript(failServer.url, chat.id)).at(-1)?.status === "failed", "draft to settle failed");
+      const rows = await transcript(failServer.url, chat.id);
       expect(rows.at(-1)?.status).toBe("failed");
       expect(rows.at(-1)?.content).toBe(draftText);
       expect(rows.at(-2)?.content).toBe("A doomed distinct action.");
@@ -839,7 +778,7 @@ describe("player turns", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const good = await postMessage(server.url, session.id, { content: "This succeeds." });
+      const good = await postMessage(server.url, chat.id, { content: "This succeeds." });
       await readSse(good);
       const history = calls[0].messages as Array<{ role: string; content: string }>;
       const nonSystem = history.filter((message) => message.role !== "system");
@@ -854,6 +793,22 @@ describe("player turns", () => {
       await server.stop();
     }
   });
+
+  test("a turn past the narration budget is refused with nothing saved and points to a new chat", async () => {
+    const { chat } = await seedStory(base.url);
+    const server = await startTestServer({ configDirectory, databasePath });
+    try {
+      const response = await postMessage(server.url, chat.id, { content: "7 ".repeat(25_000) });
+      expect(response.status).toBe(413);
+      const body = (await response.json()) as { code: string; accepted: boolean; error: string };
+      expect(body.code).toBe("context_limit");
+      expect(body.accepted).toBe(false);
+      expect(body.error).toContain("start a new chat");
+      expect(await transcript(server.url, chat.id)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
 describe("missing provider", () => {
@@ -864,8 +819,8 @@ describe("missing provider", () => {
       databasePath: join(emptyConfig, "play.db"),
     });
     try {
-      const { session } = await seedStory(server.url);
-      const response = await postMessage(server.url, session.id, { content: "The lamp flickers." });
+      const { chat } = await seedStory(server.url);
+      const response = await postMessage(server.url, chat.id, { content: "The lamp flickers." });
       expect(response.status).toBe(400);
       const body = (await response.json()) as {
         code: string;
@@ -878,22 +833,22 @@ describe("missing provider", () => {
       expect(body.accepted).toBe(true);
       expect(body.player_message_id).toBeTruthy();
       expect(body.pending_message_id).toBeTruthy();
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => [row.id, row.role, row.status])).toEqual([
         [body.player_message_id, "user", "complete"],
         [body.pending_message_id, "assistant", "failed"],
       ]);
       expect(rows[0].content).toBe("The lamp flickers.");
 
-      // A fresh empty session still reaches the missing provider on /opening;
-      // this session is no longer empty, so /opening is refused before that.
-      const refused = await postOpening(server.url, session.id);
+      // A fresh empty chat still reaches the missing provider on /opening;
+      // this chat is no longer empty, so /opening is refused before that.
+      const refused = await postOpening(server.url, chat.id);
       expect(refused.status).toBe(409);
       const refusedBody = (await refused.json()) as { code: string };
       expect(refusedBody.code).toBe("already_opened");
 
       const fresh = await seedStory(server.url);
-      const opening = await postOpening(server.url, fresh.session.id);
+      const opening = await postOpening(server.url, fresh.chat.id);
       expect(opening.status).toBe(400);
       const openingBody = (await opening.json()) as { code: string; accepted: boolean; player_message_id?: string };
       expect(openingBody.code).toBe("no_provider");
@@ -905,7 +860,7 @@ describe("missing provider", () => {
     }
   });
 
-  test("retrying after configuring the provider completes the session, upstream injected throughout", async () => {
+  test("retrying after configuring the provider completes the chat, upstream injected throughout", async () => {
     const emptyConfig = await makeConfigDirectory();
     const server = await startTestServer({
       configDirectory: emptyConfig,
@@ -913,16 +868,16 @@ describe("missing provider", () => {
       upstreamFetch: sseStub(replyFrames("glm-5.3", ["Now it works."])),
     });
     try {
-      const { session } = await seedStory(server.url);
-      const rejected = await postMessage(server.url, session.id, { content: "Untyped input." });
+      const { chat } = await seedStory(server.url);
+      const rejected = await postMessage(server.url, chat.id, { content: "Untyped input." });
       expect(rejected.status).toBe(400);
       await rejected.text();
 
       await configureProvider(server.url, API_KEY);
-      const retry = await postMessage(server.url, session.id, { content: "Typed input." });
+      const retry = await postMessage(server.url, chat.id, { content: "Typed input." });
       expect(retry.status).toBe(200);
       await retry.text();
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => row.status)).toEqual(["complete", "failed", "complete", "complete"]);
       expect(rows[3].speaker_name).toBe("Narrator");
       expect(rows[3].content).toBe("Now it works.");
@@ -934,22 +889,22 @@ describe("missing provider", () => {
 });
 
 describe("regeneration, swipes, edits, and deletes", () => {
-  test("regenerating an empty session is refused with nothing saved", async () => {
-    const { session } = await seedStory(base.url);
+  test("regenerating an empty chat is refused with nothing saved", async () => {
+    const { chat } = await seedStory(base.url);
     const server = await startTestServer({ configDirectory, databasePath });
     try {
-      const response = await postRegenerate(server.url, session.id);
+      const response = await postRegenerate(server.url, chat.id);
       expect(response.status).toBe(409);
       const body = (await response.json()) as { code: string };
       expect(body.code).toBe("nothing_to_regenerate");
-      expect(await transcript(server.url, session.id)).toEqual([]);
+      expect(await transcript(server.url, chat.id)).toEqual([]);
     } finally {
       await server.stop();
     }
   });
 
   test("regeneration keeps complete alternates as swipes and discards drafts", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [
       ["First dawn."],
       ["Second dawn."],
@@ -957,17 +912,17 @@ describe("regeneration, swipes, edits, and deletes", () => {
     ]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      const first = (await transcript(server.url, session.id))[0];
+      await readSse(await postOpening(server.url, chat.id));
+      const first = (await transcript(server.url, chat.id))[0];
       expect(first.variant_ids).toEqual([first.id]);
       expect(first.variant_index).toBe(0);
 
-      await readSse(await postRegenerate(server.url, session.id));
-      const modelOverride = await postRegenerate(server.url, session.id, { provider_id: providerId, model: "glm-5.3-flash" });
+      await readSse(await postRegenerate(server.url, chat.id));
+      const modelOverride = await postRegenerate(server.url, chat.id, { provider_id: providerId, model: "glm-5.3-flash" });
       await readSse(modelOverride);
       expect(calls[2].model).toBe("glm-5.3-flash");
 
-      const swipes = await transcript(server.url, session.id);
+      const swipes = await transcript(server.url, chat.id);
       expect(swipes).toHaveLength(1);
       expect(swipes[0].content).toBe("Third dawn.");
       expect(swipes[0].variant_ids).toHaveLength(3);
@@ -979,30 +934,30 @@ describe("regeneration, swipes, edits, and deletes", () => {
       const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
       const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
       try {
-        const run = await postRegenerate(draftServer.url, session.id);
+        const run = await postRegenerate(draftServer.url, chat.id);
         await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
-        await stopRun(draftServer.url, session.id);
+        await stopRun(draftServer.url, chat.id);
         await run.body?.cancel().catch(() => {});
         await waitFor(
-          async () => (await transcript(draftServer.url, session.id))[0]?.status === "interrupted",
+          async () => (await transcript(draftServer.url, chat.id))[0]?.status === "interrupted",
           "draft to settle interrupted",
         );
-        const draftRows = await transcript(draftServer.url, session.id);
+        const draftRows = await transcript(draftServer.url, chat.id);
         expect(draftRows).toHaveLength(1);
         expect(draftRows[0].content).toBe("Draft ");
         expect(draftRows[0].variant_ids).toHaveLength(4);
         expect(draftRows[0].variant_index).toBe(3);
 
         // Regenerating again discards the interrupted draft.
-        const again = await postRegenerate(draftServer.url, session.id);
+        const again = await postRegenerate(draftServer.url, chat.id);
         await waitFor(() => draftCalls.length === 2, "second regeneration to reach upstream");
         draftCalls[1].release();
         await again.body?.cancel().catch(() => {});
         await waitFor(
-          async () => (await transcript(draftServer.url, session.id))[0]?.status === "complete",
+          async () => (await transcript(draftServer.url, chat.id))[0]?.status === "complete",
           "second draft to settle",
         );
-        const settled = await transcript(draftServer.url, session.id);
+        const settled = await transcript(draftServer.url, chat.id);
         expect(settled).toHaveLength(1);
         expect(settled[0].content).toBe("Draft ");
         expect(settled[0].variant_ids).toHaveLength(4);
@@ -1017,16 +972,16 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("selection switches the shown swipe and deletes a left-behind draft", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."], ["Third."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      const firstId = (await transcript(server.url, session.id))[0].id;
-      await readSse(await postRegenerate(server.url, session.id));
-      await readSse(await postRegenerate(server.url, session.id));
+      await readSse(await postOpening(server.url, chat.id));
+      const firstId = (await transcript(server.url, chat.id))[0].id;
+      await readSse(await postRegenerate(server.url, chat.id));
+      await readSse(await postRegenerate(server.url, chat.id));
 
-      const select = await selectVariant(server.url, session.id, firstId);
+      const select = await selectVariant(server.url, chat.id, firstId);
       expect(select.status).toBe(200);
       const selected = ((await select.json()) as { messages: TranscriptRow[] }).messages;
       expect(selected).toHaveLength(1);
@@ -1038,18 +993,18 @@ describe("regeneration, swipes, edits, and deletes", () => {
       const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
       const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
       try {
-        const run = await postRegenerate(draftServer.url, session.id);
+        const run = await postRegenerate(draftServer.url, chat.id);
         await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
-        await stopRun(draftServer.url, session.id);
+        await stopRun(draftServer.url, chat.id);
         await run.body?.cancel().catch(() => {});
         await waitFor(
-          async () => (await transcript(draftServer.url, session.id))[0]?.status === "interrupted",
+          async () => (await transcript(draftServer.url, chat.id))[0]?.status === "interrupted",
           "draft to settle interrupted",
         );
-        const draftRows = await transcript(draftServer.url, session.id);
+        const draftRows = await transcript(draftServer.url, chat.id);
         expect(draftRows[0].variant_ids).toHaveLength(4);
 
-        const back = await selectVariant(draftServer.url, session.id, firstId);
+        const back = await selectVariant(draftServer.url, chat.id, firstId);
         expect(back.status).toBe(200);
         const kept = ((await back.json()) as { messages: TranscriptRow[] }).messages;
         expect(kept[0].id).toBe(firstId);
@@ -1061,14 +1016,14 @@ describe("regeneration, swipes, edits, and deletes", () => {
       }
 
       // Once later turns exist the old narration is no longer a swipe target.
-      const turn = await postMessage(server.url, session.id, { content: "I press on." });
+      const turn = await postMessage(server.url, chat.id, { content: "I press on." });
       expect(turn.status).toBe(200);
       await readSse(turn);
-      const stale = await selectVariant(server.url, session.id, firstId);
+      const stale = await selectVariant(server.url, chat.id, firstId);
       expect(stale.status).toBe(409);
       const staleBody = (await stale.json()) as { code: string };
       expect(staleBody.code).toBe("not_trailing");
-      const missing = await selectVariant(server.url, session.id, "no-such-message");
+      const missing = await selectVariant(server.url, chat.id, "no-such-message");
       expect(missing.status).toBe(404);
     } finally {
       await server.stop();
@@ -1076,23 +1031,23 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("swipe deletion selects the newest remaining and refuses the sole alternate", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      const sole = (await transcript(server.url, session.id))[0];
-      const only = await deleteMessage(server.url, session.id, sole.id, "variant");
+      await readSse(await postOpening(server.url, chat.id));
+      const sole = (await transcript(server.url, chat.id))[0];
+      const only = await deleteMessage(server.url, chat.id, sole.id, "variant");
       expect(only.status).toBe(409);
       const onlyBody = (await only.json()) as { code: string };
       expect(onlyBody.code).toBe("sole_variant");
 
-      await readSse(await postRegenerate(server.url, session.id));
-      const two = await transcript(server.url, session.id);
+      await readSse(await postRegenerate(server.url, chat.id));
+      const two = await transcript(server.url, chat.id);
       expect(two[0].variant_ids).toEqual([sole.id, two[0].id]);
 
       // Deleting the shown swipe falls back to the newest remaining.
-      const removed = await deleteMessage(server.url, session.id, two[0].id, "variant");
+      const removed = await deleteMessage(server.url, chat.id, two[0].id, "variant");
       expect(removed.status).toBe(200);
       const after = ((await removed.json()) as { messages: TranscriptRow[] }).messages;
       expect(after).toHaveLength(1);
@@ -1101,10 +1056,10 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(after[0].variant_ids).toEqual([sole.id]);
 
       // Older narration is not a swipe target once later turns exist.
-      const turn = await postMessage(server.url, session.id, { content: "Onward." });
+      const turn = await postMessage(server.url, chat.id, { content: "Onward." });
       expect(turn.status).toBe(200);
       await readSse(turn);
-      const stale = await deleteMessage(server.url, session.id, sole.id, "variant");
+      const stale = await deleteMessage(server.url, chat.id, sole.id, "variant");
       expect(stale.status).toBe(409);
       const staleBody = (await stale.json()) as { code: string };
       expect(staleBody.code).toBe("not_trailing");
@@ -1114,7 +1069,7 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("deletes cascade across alternates and later turns; positions continue after the highest survivor", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream } = scriptedUpstream("glm-5.3", [
       ["Opening."],
       ["Opening swipe."],
@@ -1123,52 +1078,52 @@ describe("regeneration, swipes, edits, and deletes", () => {
     ]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      await readSse(await postRegenerate(server.url, session.id));
-      const turn = await postMessage(server.url, session.id, { content: "I act." });
+      await readSse(await postOpening(server.url, chat.id));
+      await readSse(await postRegenerate(server.url, chat.id));
+      const turn = await postMessage(server.url, chat.id, { content: "I act." });
       const playerId = turn.headers.get("x-storyfold-player-message-id");
       if (!playerId) throw new Error("missing player id header");
       await readSse(turn);
-      await readSse(await postRegenerate(server.url, session.id));
+      await readSse(await postRegenerate(server.url, chat.id));
 
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => row.position)).toEqual([1, 2, 3]);
       expect(rows[2].variant_ids).toHaveLength(2);
 
       // Default delete removes the message and all its alternates.
-      const one = await deleteMessage(server.url, session.id, rows[2].id);
+      const one = await deleteMessage(server.url, chat.id, rows[2].id);
       expect(one.status).toBe(200);
       const afterOne = ((await one.json()) as { messages: TranscriptRow[] }).messages;
       expect(afterOne.map((row) => row.position)).toEqual([1, 2]);
 
       // Delete from the player message onward: it and everything after go.
-      const cut = await deleteMessage(server.url, session.id, playerId, "after");
+      const cut = await deleteMessage(server.url, chat.id, playerId, "after");
       expect(cut.status).toBe(200);
       const remaining = ((await cut.json()) as { messages: TranscriptRow[] }).messages;
       expect(remaining.map((row) => row.position)).toEqual([1]);
       expect(remaining[0].variant_ids).toHaveLength(2);
 
       // The next turn continues after the highest survivor; no gap is reused.
-      const next = await postMessage(server.url, session.id, { content: "Fresh start." });
+      const next = await postMessage(server.url, chat.id, { content: "Fresh start." });
       expect(next.status).toBe(200);
       await readSse(next);
-      expect((await transcript(server.url, session.id)).map((row) => row.position)).toEqual([1, 2, 3]);
+      expect((await transcript(server.url, chat.id)).map((row) => row.position)).toEqual([1, 2, 3]);
     } finally {
       await server.stop();
     }
   });
 
   test("edits change complete messages in place and refuse drafts", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."], ["Second."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      const swipeId = (await transcript(server.url, session.id))[0].id;
-      await readSse(await postRegenerate(server.url, session.id));
+      await readSse(await postOpening(server.url, chat.id));
+      const swipeId = (await transcript(server.url, chat.id))[0].id;
+      await readSse(await postRegenerate(server.url, chat.id));
 
-      const narration = (await transcript(server.url, session.id))[0];
-      const edited = await patchMessage(server.url, session.id, narration.id, { content: "Edited opening." });
+      const narration = (await transcript(server.url, chat.id))[0];
+      const edited = await patchMessage(server.url, chat.id, narration.id, { content: "Edited opening." });
       expect(edited.status).toBe(200);
       const message = ((await edited.json()) as { message: Message }).message;
       expect(message.id).toBe(narration.id);
@@ -1178,46 +1133,46 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(message.position).toBe(1);
 
       // Only the edited alternate changed: the swipe keeps its original text.
-      const swipe = await selectVariant(server.url, session.id, swipeId);
+      const swipe = await selectVariant(server.url, chat.id, swipeId);
       expect(swipe.status).toBe(200);
       const shown = ((await swipe.json()) as { messages: TranscriptRow[] }).messages;
       expect(shown[0].content).toBe("First.");
       expect(shown[0].variant_ids).toEqual([swipeId, narration.id]);
       expect(shown[0].variant_index).toBe(0);
-      const back = await selectVariant(server.url, session.id, narration.id);
+      const back = await selectVariant(server.url, chat.id, narration.id);
       expect(back.status).toBe(200);
 
-      const turn = await postMessage(server.url, session.id, { content: "I act." });
+      const turn = await postMessage(server.url, chat.id, { content: "I act." });
       const playerId = turn.headers.get("x-storyfold-player-message-id");
       if (!playerId) throw new Error("missing player id header");
       await readSse(turn);
 
-      const playerEdit = await patchMessage(server.url, session.id, playerId, { content: "I act decisively." });
+      const playerEdit = await patchMessage(server.url, chat.id, playerId, { content: "I act decisively." });
       expect(playerEdit.status).toBe(200);
       expect(((await playerEdit.json()) as { message: Message }).message.speaker_name).toBe("Sable");
 
-      const invalid = await patchMessage(server.url, session.id, playerId, { content: "   " });
+      const invalid = await patchMessage(server.url, chat.id, playerId, { content: "   " });
       expect(invalid.status).toBe(400);
       const invalidBody = (await invalid.json()) as { code: string };
       expect(invalidBody.code).toBe("invalid_input");
-      const missing = await patchMessage(server.url, session.id, "no-such-message", { content: "x" });
+      const missing = await patchMessage(server.url, chat.id, "no-such-message", { content: "x" });
       expect(missing.status).toBe(404);
 
       // Drafts are not editable.
       const { fetch: draftUpstream, calls: draftCalls } = gatedUpstream("glm-5.3", [["Draft "]]);
       const draftServer = await startTestServer({ configDirectory, databasePath, upstreamFetch: draftUpstream });
       try {
-        const run = await postRegenerate(draftServer.url, session.id);
+        const run = await postRegenerate(draftServer.url, chat.id);
         await waitFor(() => draftCalls.length === 1, "regeneration to reach upstream");
-        await stopRun(draftServer.url, session.id);
+        await stopRun(draftServer.url, chat.id);
         await run.body?.cancel().catch(() => {});
         await waitFor(
-          async () => (await transcript(draftServer.url, session.id)).at(-1)?.status === "interrupted",
+          async () => (await transcript(draftServer.url, chat.id)).at(-1)?.status === "interrupted",
           "draft to settle interrupted",
         );
-        const draftRows = await transcript(draftServer.url, session.id);
+        const draftRows = await transcript(draftServer.url, chat.id);
         expect(draftRows.at(-1)?.status).toBe("interrupted");
-        const refused = await patchMessage(draftServer.url, session.id, draftRows.at(-1)!.id, { content: "Nope." });
+        const refused = await patchMessage(draftServer.url, chat.id, draftRows.at(-1)!.id, { content: "Nope." });
         expect(refused.status).toBe(409);
         const refusedBody = (await refused.json()) as { code: string };
         expect(refusedBody.code).toBe("not_editable");
@@ -1231,18 +1186,18 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("model history and the narration budget count only the selected alternate", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const big = "A".repeat(100_000);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [[big], ["Short."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      await readSse(await postOpening(server.url, session.id));
-      await readSse(await postRegenerate(server.url, session.id));
+      await readSse(await postOpening(server.url, chat.id));
+      await readSse(await postRegenerate(server.url, chat.id));
       // The 100k swipe is the oldest alternate; unselected after the regenerate.
-      const swipeId = (await transcript(server.url, session.id))[0].variant_ids[0];
+      const swipeId = (await transcript(server.url, chat.id))[0].variant_ids[0];
 
       // The unselected 100k swipe does not count: a 60k input still fits.
-      const turn = await postMessage(server.url, session.id, { content: "B".repeat(60_000) });
+      const turn = await postMessage(server.url, chat.id, { content: "B".repeat(60_000) });
       expect(turn.status).toBe(200);
       const events = await readSse(turn);
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
@@ -1253,16 +1208,16 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(JSON.stringify(history)).not.toContain(big);
 
       // But the budget still binds: growth past it is refused, standing still is not.
-      const rows = await transcript(server.url, session.id);
-      const oversized = await patchMessage(server.url, session.id, rows[0].id, { content: "C".repeat(100_000) });
+      const rows = await transcript(server.url, chat.id);
+      const oversized = await patchMessage(server.url, chat.id, rows[0].id, { content: "C".repeat(100_000) });
       expect(oversized.status).toBe(413);
       const oversizedBody = (await oversized.json()) as { code: string };
       expect(oversizedBody.code).toBe("context_limit");
-      const kept = await patchMessage(server.url, session.id, rows[0].id, { content: "Shout." });
+      const kept = await patchMessage(server.url, chat.id, rows[0].id, { content: "Shout." });
       expect(kept.status).toBe(200);
 
       // An unselected alternate feeds no model history: growing it is uncapped.
-      const swipeEdit = await patchMessage(server.url, session.id, swipeId, {
+      const swipeEdit = await patchMessage(server.url, chat.id, swipeId, {
         content: "D".repeat(100_000),
       });
       expect(swipeEdit.status).toBe(200);
@@ -1272,35 +1227,35 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("a direction steers only its own reply and stays on that alternate", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [["Night."], ["Vex snarls."], ["Vex shrugs."], ["Dawn."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     const lastUser = (index: number) =>
       (calls[index].messages as Array<{ role: string; content: string }>).at(-1);
     try {
-      await readSse(await postOpening(server.url, session.id, { direction: "  Open at night.  " }));
+      await readSse(await postOpening(server.url, chat.id, { direction: "  Open at night.  " }));
       expect(lastUser(0)).toEqual({ role: "user", content: "Begin the opening scene.\n\n(OOC: Open at night.)" });
 
-      await readSse(await postMessage(server.url, session.id, { content: "I greet Vex.", direction: "Make Vex angry." }));
+      await readSse(await postMessage(server.url, chat.id, { content: "I greet Vex.", direction: "Make Vex angry." }));
       expect(lastUser(1)).toEqual({ role: "user", content: "I greet Vex.\n\n(OOC: Make Vex angry.)" });
-      const directed = (await transcript(server.url, session.id)).at(-1)!;
+      const directed = (await transcript(server.url, chat.id)).at(-1)!;
       expect(directed.direction).toBe("Make Vex angry.");
 
       // Plain regenerate carries no direction; the directed swipe keeps its own.
-      await readSse(await postRegenerate(server.url, session.id, { direction: "   " }));
+      await readSse(await postRegenerate(server.url, chat.id, { direction: "   " }));
       expect(lastUser(2)).toEqual({ role: "user", content: "I greet Vex." });
-      expect((await transcript(server.url, session.id)).at(-1)!.direction).toBeNull();
-      expect((await selectVariant(server.url, session.id, directed.id)).status).toBe(200);
-      expect((await transcript(server.url, session.id)).at(-1)!.direction).toBe("Make Vex angry.");
+      expect((await transcript(server.url, chat.id)).at(-1)!.direction).toBeNull();
+      expect((await selectVariant(server.url, chat.id, directed.id)).status).toBe(200);
+      expect((await transcript(server.url, chat.id)).at(-1)!.direction).toBe("Make Vex angry.");
 
       // Later turns never see earlier directions.
-      await readSse(await postMessage(server.url, session.id, { content: "I leave." }));
+      await readSse(await postMessage(server.url, chat.id, { content: "I leave." }));
       const laterHistory = (calls[3].messages as Array<{ role: string; content: string }>).filter((message) => message.role !== "system");
       expect(JSON.stringify(laterHistory)).not.toContain("(OOC:");
 
-      const invalid = await postRegenerate(server.url, session.id, { direction: 7 });
+      const invalid = await postRegenerate(server.url, chat.id, { direction: 7 });
       expect(invalid.status).toBe(400);
-      const explicitNull = await postRegenerate(server.url, session.id, { direction: null });
+      const explicitNull = await postRegenerate(server.url, chat.id, { direction: null });
       expect(explicitNull.status).toBe(400);
     } finally {
       await server.stop();
@@ -1308,28 +1263,28 @@ describe("regeneration, swipes, edits, and deletes", () => {
   });
 
   test("every message operation is refused busy while a reply is pending", async () => {
-    const { session } = await seedStory(base.url);
+    const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Slow "]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const run = await postMessage(server.url, session.id, { content: "I begin." });
+      const run = await postMessage(server.url, chat.id, { content: "I begin." });
       expect(run.status).toBe(200);
       await waitFor(() => calls.length === 1, "run to reach upstream");
-      const rows = await transcript(server.url, session.id);
+      const rows = await transcript(server.url, chat.id);
 
-      const regenerate = await postRegenerate(server.url, session.id);
+      const regenerate = await postRegenerate(server.url, chat.id);
       expect(regenerate.status).toBe(409);
       const regenerateBody = (await regenerate.json()) as { code: string };
       expect(regenerateBody.code).toBe("busy");
-      const select = await selectVariant(server.url, session.id, rows[0].id);
+      const select = await selectVariant(server.url, chat.id, rows[0].id);
       expect(select.status).toBe(409);
       const selectBody = (await select.json()) as { code: string };
       expect(selectBody.code).toBe("busy");
-      const remove = await deleteMessage(server.url, session.id, rows[0].id);
+      const remove = await deleteMessage(server.url, chat.id, rows[0].id);
       expect(remove.status).toBe(409);
       const removeBody = (await remove.json()) as { code: string };
       expect(removeBody.code).toBe("busy");
-      const edit = await patchMessage(server.url, session.id, rows[0].id, { content: "Edited." });
+      const edit = await patchMessage(server.url, chat.id, rows[0].id, { content: "Edited." });
       expect(edit.status).toBe(409);
       const editBody = (await edit.json()) as { code: string };
       expect(editBody.code).toBe("busy");
@@ -1337,7 +1292,7 @@ describe("regeneration, swipes, edits, and deletes", () => {
       calls[0].release();
       await run.body?.cancel().catch(() => {});
       await waitFor(
-        async () => (await transcript(server.url, session.id))[1]?.status === "complete",
+        async () => (await transcript(server.url, chat.id))[1]?.status === "complete",
         "run to settle",
       );
     } finally {
@@ -1346,61 +1301,95 @@ describe("regeneration, swipes, edits, and deletes", () => {
     }
   });
 
-  test("closed sessions refuse every message operation and return selected rows only", async () => {
-    const { campaign, session } = await seedStory(base.url);
-    const { fetch: upstream } = scriptedUpstream("glm-5.3", [["Opening."]]);
-    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
-    try {
-      await readSse(await postOpening(server.url, session.id));
-      const rows = await transcript(server.url, session.id);
-      const closed = await fetch(`${server.url}/api/campaigns/${campaign.id}/sessions`, {
-        method: "POST",
-        headers: headersWith({ origin: TRUSTED_ORIGIN, "content-type": "application/json" }),
-        body: JSON.stringify({ title: "Next", handoff: "Dawn breaks." }),
-      });
-      expect(closed.status).toBe(201);
-
-      const codes: string[] = [];
-      const refuse = async (response: Response): Promise<void> => {
-        expect(response.status).toBe(409);
-        codes.push(((await response.json()) as { code: string }).code);
-      };
-      await refuse(await postRegenerate(server.url, session.id));
-      await refuse(await selectVariant(server.url, session.id, rows[0].id));
-      await refuse(await deleteMessage(server.url, session.id, rows[0].id));
-      await refuse(await patchMessage(server.url, session.id, rows[0].id, { content: "Edited." }));
-      await refuse(await postOpening(server.url, session.id));
-      expect(codes.every((code) => code === "session_closed")).toBe(true);
-
-      const after = await transcript(server.url, session.id);
-      expect(after).toHaveLength(1);
-      expect(after[0].id).toBe(rows[0].id);
-    } finally {
-      await server.stop();
-    }
-  });
-
-  test("message ids from another session are missing", async () => {
+  test("message ids from another chat are missing", async () => {
     const mine = await seedStory(base.url);
     const other = await seedStory(base.url);
     const { fetch: upstream } = scriptedUpstream("glm-5.3", [["First."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
-      const opened = await postOpening(server.url, other.session.id);
+      const opened = await postOpening(server.url, other.chat.id);
       expect(opened.status).toBe(200);
       await readSse(opened);
-      const foreign = (await transcript(server.url, other.session.id))[0];
+      const foreign = (await transcript(server.url, other.chat.id))[0];
 
-      // The id exists, but only its own session can see it.
-      const self = await selectVariant(server.url, other.session.id, foreign.id);
+      // The id exists, but only its own chat can see it.
+      const self = await selectVariant(server.url, other.chat.id, foreign.id);
       expect(self.status).toBe(200);
-      const select = await selectVariant(server.url, mine.session.id, foreign.id);
+      const select = await selectVariant(server.url, mine.chat.id, foreign.id);
       expect(select.status).toBe(404);
-      const remove = await deleteMessage(server.url, mine.session.id, foreign.id);
+      const remove = await deleteMessage(server.url, mine.chat.id, foreign.id);
       expect(remove.status).toBe(404);
-      const edit = await patchMessage(server.url, mine.session.id, foreign.id, { content: "x" });
+      const edit = await patchMessage(server.url, mine.chat.id, foreign.id, { content: "x" });
       expect(edit.status).toBe(404);
-      expect(await transcript(server.url, other.session.id)).toHaveLength(1);
+      expect(await transcript(server.url, other.chat.id)).toHaveLength(1);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+function systemPrompt(call: Record<string, unknown>): string {
+  const first = (call.messages as Array<{ role: string; content: string }>)[0];
+  expect(first.role).toBe("system");
+  return first.content;
+}
+
+describe("grounding", () => {
+  test("the opening is sent only before the chat has narration", async () => {
+    const { chat } = await seedStory(base.url);
+    const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [["The bells."], ["Onward."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, chat.id));
+      expect(systemPrompt(calls[0])).toContain(OPENING_TEXT);
+
+      await readSse(await postMessage(server.url, chat.id, { content: "I step ashore." }));
+      expect(systemPrompt(calls[1])).not.toContain(OPENING_TEXT);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("every reply reads the world, its characters and its entries as they are now", async () => {
+    const { chat, worldId, protagonistId } = await seedStory(base.url);
+    const entryResponse = await jsonRequest(base.url, "POST", `/api/worlds/${worldId}/entries`, {
+      kind: "lore",
+      name: "Tide Bell",
+      description: "Rings once for each drowned ferry.",
+    });
+    expect(entryResponse.status).toBe(201);
+    const { entry } = (await entryResponse.json()) as { entry: { id: string } };
+
+    const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [["First."], ["Second."]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postOpening(server.url, chat.id));
+      const before = systemPrompt(calls[0]);
+      expect(before).toContain("A rain-soaked harbor kingdom of rival ferries.");
+      expect(before).toContain("A cynical ferrywoman spy.");
+      expect(before).toContain("Rings once for each drowned ferry.");
+
+      const edits = [
+        await jsonRequest(base.url, "PATCH", `/api/characters/${protagonistId}`, {
+          description: "A ferrywoman turned lighthouse keeper.",
+        }),
+        await jsonRequest(base.url, "PATCH", `/api/worlds/${worldId}`, {
+          setting_brief: "A drowned harbor kingdom lit by a single lighthouse.",
+        }),
+        await jsonRequest(base.url, "PATCH", `/api/worlds/${worldId}/entries/${entry.id}`, {
+          description: "Rings twice when the tide turns.",
+        }),
+      ];
+      for (const edit of edits) expect(edit.status).toBe(200);
+
+      await readSse(await postMessage(server.url, chat.id, { content: "I climb the stairs." }));
+      const after = systemPrompt(calls[1]);
+      expect(after).toContain("A ferrywoman turned lighthouse keeper.");
+      expect(after).toContain("A drowned harbor kingdom lit by a single lighthouse.");
+      expect(after).toContain("Rings twice when the tide turns.");
+      expect(after).not.toContain("A cynical ferrywoman spy.");
+      expect(after).not.toContain("A rain-soaked harbor kingdom of rival ferries.");
+      expect(after).not.toContain("Rings once for each drowned ferry.");
     } finally {
       await server.stop();
     }

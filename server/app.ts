@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { protagonistOf } from "../shared/domain";
+import type { Chat } from "../shared/domain";
 import { DATABASE_FILENAME, defaultDataDirectory } from "./config";
 import { ModelCatalog } from "./models";
 import {
@@ -27,71 +27,44 @@ import {
   type ReservedTurn,
 } from "./play";
 import {
-  SessionClosedError,
+  ConflictError,
   UnknownEntityError,
   ValidationError,
-  beginNextSession,
   clearCharacterAvatar,
-  createCampaignStateItem,
-  createCampaign,
   createCharacter,
+  createStatDefinition,
   createWorld,
   createWorldEntry,
-  copyCharacterToLibrary,
-  createCampaignCharacter,
-  deleteCampaignCharacter,
   deleteCharacter,
-  deleteCampaignStateItem,
+  deleteStatDefinition,
   deleteWorldEntry,
-  forkCampaignFromMessage,
-  getCampaign,
   getCharacter,
   getImage,
-  getSession,
   getWorld,
-  listCampaignSessions,
-  listCampaignState,
-  listCampaigns,
-  listCharacters,
-  listCampaignCharacters,
+  importWorldStats,
+  listStatDefinitions,
   listWorldCharacters,
   listWorldEntries,
   listWorlds,
   IMAGE_MIME_TYPES,
   type ImageMime,
-  parseCampaignInput,
-  parseCampaignStateInput,
-  parseCampaignStatePatch,
   parseCharacterInput,
   parseCharacterPatch,
-  parseForkInput,
-  parseSessionCreateInput,
+  parseCharacterSceneFields,
+  parseIdList,
+  parseStatInput,
+  parseStatPatch,
   parseWorldEntryInput,
   parseWorldEntryPatch,
   parseWorldInput,
   parseWorldPatch,
   setCharacterAvatar,
-  updateCampaignStateItem,
   updateCharacter,
-  updateWorld,
-  saveCampaignCharacterToWorld,
-  setCampaignCharacterAvatar,
-  updateCampaignCharacter,
-  updateWorldEntry,
-  createCampaignStat,
-  createStatDefinition,
-  deleteCampaignStat,
-  deleteStatDefinition,
-  importCampaignStats,
-  listStatDefinitions,
-  parseCampaignCharacterPatch,
-  parseCharacterSceneFields,
-  parseIdList,
-  parseStatInput,
-  parseStatPatch,
-  updateCampaignStat,
   updateStatDefinition,
-} from "./library";
+  updateWorld,
+  updateWorldEntry,
+} from "./worlds";
+import { branchChat, createChat, deleteChat, getChat, listChats, parseChatInput, parseChatPatch, renameChat } from "./chats";
 import {
   RelationshipValidationError,
   createRelationship,
@@ -247,8 +220,8 @@ function domainErrorResponse(error: unknown): Response | null {
   if (error instanceof NotEditableError) {
     return jsonError(409, error.message, undefined, { code: "not_editable", accepted: false });
   }
-  if (error instanceof SessionClosedError) {
-    return jsonError(409, error.message, undefined, { code: "session_closed", accepted: false });
+  if (error instanceof ConflictError) {
+    return jsonError(409, error.message, undefined, { code: "conflict", accepted: false });
   }
   if (error instanceof RelationshipValidationError) {
     return jsonError(400, error.message, undefined, { code: "invalid_input", accepted: false });
@@ -302,35 +275,9 @@ async function handleWorlds(request: Request, id: string | undefined, db: Databa
   return jsonError(405, "Method not allowed");
 }
 
-async function handleCharacters(
-  request: Request,
-  id: string | undefined,
-  action: string | undefined,
-  db: Database,
-): Promise<Response> {
-  if (id === undefined) {
-    if (request.method === "GET") return jsonResponse({ characters: listCharacters(db) });
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        return jsonResponse({ character: createCharacter(db, parseCharacterInput(body)) }, 201);
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
-  }
-  if (action === "copy-to-library") {
-    if (request.method !== "POST") return jsonError(405, "Method not allowed");
-    try {
-      const character = copyCharacterToLibrary(db, id);
-      return character ? jsonResponse({ character }, 201) : notFound("Unknown character");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (action !== undefined) return jsonError(404, "Not found");
+/** Characters are listed and created under their world; reads, edits, and deletes use /api/characters/:id. */
+async function handleCharacters(request: Request, id: string | undefined, db: Database): Promise<Response> {
+  if (id === undefined) return jsonError(404, "Not found");
   if (request.method === "GET") {
     const character = getCharacter(db, id);
     return character ? jsonResponse({ character }) : notFound("Unknown character");
@@ -418,7 +365,6 @@ function handleImageGet(request: Request, id: string | undefined, db: Database):
   });
 }
 
-/** World characters are listed and created under their world; edits use /api/characters/:id. */
 async function handleWorldCharacters(
   request: Request,
   worldId: string | undefined,
@@ -433,7 +379,8 @@ async function handleWorldCharacters(
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      return jsonResponse({ character: createCharacter(db, parseCharacterInput(body), worldId) }, 201);
+      const character = createCharacter(db, worldId, parseCharacterInput(body), parseCharacterSceneFields(body));
+      return character ? jsonResponse({ character }, 201) : notFound("Unknown world");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
@@ -487,193 +434,21 @@ async function handleWorldEntries(
   return jsonError(405, "Method not allowed");
 }
 
-async function handleCampaigns(request: Request, id: string | undefined, db: Database): Promise<Response> {
-  if (id === undefined) {
-    if (request.method === "GET") return jsonResponse({ campaigns: listCampaigns(db) });
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        return jsonResponse(createCampaign(db, parseCampaignInput(body)), 201);
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
-  }
-  if (request.method === "GET") {
-    const campaign = getCampaign(db, id);
-    return campaign ? jsonResponse({ campaign }) : notFound("Unknown campaign");
-  }
-  return jsonError(405, "Method not allowed");
-}
-
-/**
- * Campaign state is campaign-owned manual grounding: routes carry the campaign
- * id and an item id resolves only inside it, so another campaign's item is
- * indistinguishable from a missing one. Mutations are refused while a
- * narration run is pending in the campaign's active session; nothing was
- * saved when that happens. The active session is re-read and the guard
- * re-checked after the request body arrives, so a close and pending start
- * landing inside the body read still refuse the write.
- */
-async function handleCampaignState(
+async function handleWorldRelationships(
   request: Request,
-  campaignId: string | undefined,
-  itemId: string | undefined,
-  ctx: AppContext,
-): Promise<Response> {
-  if (campaignId === undefined) return notFound("Unknown campaign");
-  const campaign = getCampaign(ctx.db, campaignId);
-  if (!campaign) return notFound("Unknown campaign");
-
-  if (itemId === undefined) {
-    if (request.method === "GET") {
-      return jsonResponse({ items: listCampaignState(ctx.db, campaignId) });
-    }
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        const input = parseCampaignStateInput(body);
-        const active = getCampaign(ctx.db, campaignId);
-        if (!active) return notFound("Unknown campaign");
-        if (ctx.play.hasPending(active.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-        return jsonResponse(createCampaignStateItem(ctx.db, campaignId, input), 201);
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
-  }
-
-  if (request.method === "PATCH") {
-    const body = await readObjectBody(request);
-    if (body instanceof Response) return body;
-    try {
-      const patch = parseCampaignStatePatch(body);
-      const active = getCampaign(ctx.db, campaignId);
-      if (!active) return notFound("Unknown campaign");
-      if (ctx.play.hasPending(active.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      const item = updateCampaignStateItem(ctx.db, campaignId, itemId, patch);
-      return item ? jsonResponse(item) : notFound("Unknown state item");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (request.method === "DELETE") {
-    try {
-      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      if (!deleteCampaignStateItem(ctx.db, campaignId, itemId)) return notFound("Unknown state item");
-      return jsonResponse({ ok: true });
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  return jsonError(405, "Method not allowed");
-}
-
-/** Campaign writes are refused while the campaign's active session generates. */
-function assertCampaignIdle(ctx: AppContext, campaignId: string): void {
-  const campaign = getCampaign(ctx.db, campaignId);
-  if (campaign && ctx.play.hasPending(campaign.active_session_id)) {
-    throw new BusyError("A reply is already being generated for this session");
-  }
-}
-
-/**
- * Campaign characters are the campaign's own copies: an id resolves only
- * inside its campaign's URL. Every write re-checks pending narration after the
- * body is read; Save to world writes only to the world.
- */
-async function handleCampaignCharacters(
-  request: Request,
-  campaignId: string | undefined,
-  characterId: string | undefined,
-  action: string | undefined,
-  ctx: AppContext,
-): Promise<Response> {
-  if (campaignId === undefined || !getCampaign(ctx.db, campaignId)) return notFound("Unknown campaign");
-  if (characterId === undefined) {
-    if (request.method === "GET") return jsonResponse({ characters: listCampaignCharacters(ctx.db, campaignId) });
-    if (request.method === "POST") {
-      const body = await readObjectBody(request);
-      if (body instanceof Response) return body;
-      try {
-        const input = parseCharacterInput(body);
-        const scene = parseCharacterSceneFields(body);
-        assertCampaignIdle(ctx, campaignId);
-        return jsonResponse({ character: createCampaignCharacter(ctx.db, campaignId, input, scene) }, 201);
-      } catch (error) {
-        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-      }
-    }
-    return jsonError(405, "Method not allowed");
-  }
-  if (action === "save-to-world") {
-    if (request.method !== "POST") return jsonError(405, "Method not allowed");
-    const character = saveCampaignCharacterToWorld(ctx.db, campaignId, characterId);
-    return character ? jsonResponse({ character }, 201) : notFound("Unknown character");
-  }
-  if (action === "avatar") {
-    if (!hasTrustedOrigin(request)) return jsonError(403, "Origin not allowed");
-    if (request.method !== "PUT" && request.method !== "DELETE") return jsonError(405, "Method not allowed");
-    const upload = request.method === "PUT" ? await readAvatarUpload(request) : null;
-    if (upload instanceof Response) return upload;
-    try {
-      assertCampaignIdle(ctx, campaignId);
-      const character = setCampaignCharacterAvatar(ctx.db, campaignId, characterId, upload);
-      return character ? jsonResponse({ character }) : notFound("Unknown character");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (action !== undefined) return jsonError(404, "Not found");
-  if (request.method === "PATCH") {
-    const body = await readObjectBody(request);
-    if (body instanceof Response) return body;
-    try {
-      const patch = parseCampaignCharacterPatch(body);
-      assertCampaignIdle(ctx, campaignId);
-      const character = updateCampaignCharacter(ctx.db, campaignId, characterId, patch);
-      return character ? jsonResponse({ character }) : notFound("Unknown character");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (request.method === "DELETE") {
-    try {
-      assertCampaignIdle(ctx, campaignId);
-      return deleteCampaignCharacter(ctx.db, campaignId, characterId)
-        ? jsonResponse({ ok: true })
-        : notFound("Unknown character");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  return jsonError(405, "Method not allowed");
-}
-
-async function handleCampaignRelationships(
-  request: Request,
-  campaignId: string | undefined,
+  worldId: string | undefined,
   relationshipId: string | undefined,
-  ctx: AppContext,
+  db: Database,
 ): Promise<Response> {
-  if (campaignId === undefined) return notFound("Unknown campaign");
-  const campaign = getCampaign(ctx.db, campaignId);
-  if (!campaign) return notFound("Unknown campaign");
+  if (worldId === undefined || !getWorld(db, worldId)) return notFound("Unknown world");
   if (relationshipId === undefined) {
-    if (request.method === "GET") return jsonResponse({ relationships: listRelationships(ctx.db, campaignId) });
+    if (request.method === "GET") return jsonResponse({ relationships: listRelationships(db, worldId) });
     if (request.method === "POST") {
       const body = await readObjectBody(request);
       if (body instanceof Response) return body;
       try {
-        const activeCampaign = getCampaign(ctx.db, campaignId);
-        if (!activeCampaign) return notFound("Unknown campaign");
-        if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-        const relationship = createRelationship(ctx.db, activeCampaign, body.source_id, body.target_id, parseRelationshipPatch(body, activeCampaign));
-        return jsonResponse({ relationship }, 201);
+        const patch = parseRelationshipPatch(body, listStatDefinitions(db, worldId));
+        return jsonResponse({ relationship: createRelationship(db, worldId, body.source_id, body.target_id, patch) }, 201);
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
       }
@@ -684,22 +459,15 @@ async function handleCampaignRelationships(
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      const activeCampaign = getCampaign(ctx.db, campaignId);
-      if (!activeCampaign) return notFound("Unknown campaign");
-      if (ctx.play.hasPending(activeCampaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      const relationship = updateRelationship(ctx.db, activeCampaign, relationshipId, parseRelationshipPatch(body, activeCampaign));
+      const patch = parseRelationshipPatch(body, listStatDefinitions(db, worldId));
+      const relationship = updateRelationship(db, worldId, relationshipId, patch);
       return relationship ? jsonResponse({ relationship }) : notFound("Unknown relationship");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
   }
   if (request.method === "DELETE") {
-    try {
-      if (ctx.play.hasPending(campaign.active_session_id)) throw new BusyError("A reply is already being generated for this session");
-      return deleteRelationship(ctx.db, campaignId, relationshipId) ? jsonResponse({ ok: true }) : notFound("Unknown relationship");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
+    return deleteRelationship(db, worldId, relationshipId) ? jsonResponse({ ok: true }) : notFound("Unknown relationship");
   }
   return jsonError(405, "Method not allowed");
 }
@@ -773,8 +541,26 @@ async function handlePromptCards(request: Request, id: string | undefined, db: D
   }
 }
 
-async function handleWorldStats(request: Request, worldId: string | undefined, db: Database): Promise<Response> {
+/** `import` copies bank stats into the world; everything else is the world's own stat list. */
+async function handleWorldStats(
+  request: Request,
+  worldId: string | undefined,
+  action: string | undefined,
+  db: Database,
+): Promise<Response> {
   if (worldId === undefined || !getWorld(db, worldId)) return notFound("Unknown world");
+  if (action === "import") {
+    if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    try {
+      const stats = importWorldStats(db, worldId, parseIdList(body.stat_ids, "stat_ids"));
+      return stats ? jsonResponse({ stats }, 201) : notFound("Unknown world");
+    } catch (error) {
+      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+    }
+  }
+  if (action !== undefined) return jsonError(404, "Not found");
   if (request.method === "GET") return jsonResponse({ stats: listStatDefinitions(db, worldId) });
   if (request.method === "POST") {
     const body = await readObjectBody(request);
@@ -788,90 +574,16 @@ async function handleWorldStats(request: Request, worldId: string | undefined, d
   return jsonError(405, "Method not allowed");
 }
 
-/**
- * Campaign stats are the campaign's own copies, listed on the campaign itself.
- * `import` copies bank stats while the story has not begun. Every write
- * re-checks pending narration after the body is read.
- */
-async function handleCampaignStats(
-  request: Request,
-  campaignId: string | undefined,
-  statId: string | undefined,
-  ctx: AppContext,
-): Promise<Response> {
-  if (campaignId === undefined || !getCampaign(ctx.db, campaignId)) return notFound("Unknown campaign");
-  if (statId === undefined || statId === "import") {
-    if (request.method !== "POST") return jsonError(405, "Method not allowed");
-    const body = await readObjectBody(request);
-    if (body instanceof Response) return body;
-    try {
-      if (statId === "import") {
-        const ids = parseIdList(body.stat_ids, "stat_ids");
-        assertCampaignIdle(ctx, campaignId);
-        return jsonResponse({ stats: importCampaignStats(ctx.db, campaignId, ids) }, 201);
-      }
-      const input = parseStatInput(body);
-      assertCampaignIdle(ctx, campaignId);
-      return jsonResponse({ stat: createCampaignStat(ctx.db, campaignId, input) }, 201);
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (request.method === "PATCH") {
-    const body = await readObjectBody(request);
-    if (body instanceof Response) return body;
-    try {
-      const patch = parseStatPatch(body);
-      assertCampaignIdle(ctx, campaignId);
-      const stat = updateCampaignStat(ctx.db, campaignId, statId, patch);
-      return stat ? jsonResponse({ stat }) : notFound("Unknown stat");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  if (request.method === "DELETE") {
-    try {
-      assertCampaignIdle(ctx, campaignId);
-      return deleteCampaignStat(ctx.db, campaignId, statId) ? jsonResponse({ ok: true }) : notFound("Unknown stat");
-    } catch (error) {
-      return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-    }
-  }
-  return jsonError(405, "Method not allowed");
-}
-
-/**
- * Sessions are listed in story order. POST closes the campaign's open session
- * with the reviewed handoff (checkpointing the state at that boundary) and
- * opens the next one; active_session_id moves in the same transaction. The
- * busy guard re-reads the campaign after the request body arrives, so a close
- * whose body was in flight cannot close a session that gained a pending
- * narration run meanwhile.
- */
-async function handleCampaignSessions(
-  request: Request,
-  campaignId: string | undefined,
-  ctx: AppContext,
-): Promise<Response> {
-  if (campaignId === undefined) return notFound("Unknown campaign");
-  const campaign = getCampaign(ctx.db, campaignId);
-  if (!campaign) return notFound("Unknown campaign");
-
-  if (request.method === "GET") {
-    return jsonResponse({ sessions: listCampaignSessions(ctx.db, campaignId) });
-  }
+/** Chats are created and listed under their world; everything else uses /api/chats/:id. */
+async function handleWorldChats(request: Request, worldId: string | undefined, db: Database): Promise<Response> {
+  if (worldId === undefined || !getWorld(db, worldId)) return notFound("Unknown world");
+  if (request.method === "GET") return jsonResponse({ chats: listChats(db, worldId) });
   if (request.method === "POST") {
     const body = await readObjectBody(request);
     if (body instanceof Response) return body;
     try {
-      const input = parseSessionCreateInput(body);
-      const active = getCampaign(ctx.db, campaignId);
-      if (!active) return notFound("Unknown campaign");
-      if (ctx.play.hasPending(active.active_session_id)) {
-        throw new BusyError("A reply is already being generated for this session");
-      }
-      const result = beginNextSession(ctx.db, campaignId, input);
-      return result ? jsonResponse({ session: result.session }, 201) : notFound("Unknown campaign");
+      const chat = createChat(db, worldId, parseChatInput(body));
+      return chat ? jsonResponse({ chat }, 201) : notFound("Unknown world");
     } catch (error) {
       return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
     }
@@ -889,7 +601,7 @@ async function handleCampaignSessions(
 async function handlePlayPost(
   request: Request,
   kind: "messages" | "opening" | "regenerate",
-  sessionId: string,
+  chatId: string,
   ctx: AppContext,
 ): Promise<Response> {
   const body = await readObjectBody(request);
@@ -906,18 +618,7 @@ async function handlePlayPost(
     return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
   }
 
-  const session = getSession(ctx.db, sessionId);
-  if (!session) return notFound("Unknown session");
-  if (session.closed_at !== null) {
-    return jsonError(
-      409,
-      "This session is closed; play continues in the campaign's active session",
-      undefined,
-      { code: "session_closed", accepted: false },
-    );
-  }
-  const campaign = getCampaign(ctx.db, session.campaign_id);
-  if (!campaign) return jsonError(500, "Internal server error");
+  if (!getChat(ctx.db, chatId)) return notFound("Unknown chat");
 
   // Provider settings load before the reservation: from the first await below
   // to run registration there is no await, so reserve→register→stream is
@@ -929,17 +630,20 @@ async function handlePlayPost(
   const provider = selection
     ? config.providers.find((candidate) => candidate.id === selection.provider_id)
     : undefined;
-  const reserveTurn = (): ReservedTurn => {
+  const reserveTurn = (chat: Chat): ReservedTurn => {
     if (kind === "messages") {
-      return ctx.play.reservePlayerTurn(sessionId, content, protagonistOf(campaign).name, direction);
+      return ctx.play.reservePlayerTurn(chatId, content, getCharacter(ctx.db, chat.protagonist_id)!.name, direction);
     }
     if (kind === "opening") {
-      return ctx.play.reserveOpening(sessionId, direction);
+      return ctx.play.reserveOpening(chatId, direction);
     }
-    return ctx.play.reserveRegeneration(sessionId, direction);
+    return ctx.play.reserveRegeneration(chatId, direction);
   };
   try {
-    const reserved = reserveTurn();
+    // The chat may have been discarded while the settings loaded.
+    const chat = getChat(ctx.db, chatId);
+    if (!chat) return notFound("Unknown chat");
+    const reserved = reserveTurn(chat);
     if (!selection || !provider) {
       ctx.play.failPending(reserved.pendingId);
       return jsonError(400, "No model selected. Add a provider in Settings.", undefined, {
@@ -950,7 +654,7 @@ async function handlePlayPost(
       });
     }
     return ctx.play.streamNarration({
-      sessionId,
+      chatId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
       settings: { baseUrl: provider.base_url, model: selection.model, apiKey: provider.api_key },
@@ -960,6 +664,95 @@ async function handlePlayPost(
   } catch (error) {
     return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
   }
+}
+
+/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop]]`. */
+async function handleChats(request: Request, path: string[], ctx: AppContext): Promise<Response> {
+  const [chatId, action, messageId, messageAction] = path;
+  if (chatId === undefined) {
+    if (request.method !== "GET") return jsonError(405, "Method not allowed");
+    return jsonResponse({ chats: listChats(ctx.db) });
+  }
+  const chat = getChat(ctx.db, chatId);
+  if (!chat) return notFound("Unknown chat");
+
+  if (action === undefined) {
+    if (request.method === "GET") return jsonResponse({ chat, world: getWorld(ctx.db, chat.world_id) });
+    if (request.method === "PATCH") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const renamed = renameChat(ctx.db, chatId, parseChatPatch(body).title);
+        return renamed ? jsonResponse({ chat: renamed }) : notFound("Unknown chat");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    if (request.method === "DELETE") {
+      try {
+        if (ctx.play.hasPending(chatId)) throw new BusyError("A reply is already being generated for this chat");
+        return deleteChat(ctx.db, chatId) ? jsonResponse({ ok: true }) : notFound("Unknown chat");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (action === "messages") {
+    if (messageId === undefined) {
+      if (request.method === "GET") return jsonResponse({ messages: ctx.play.transcript(chatId) });
+      if (request.method === "POST") return handlePlayPost(request, "messages", chatId, ctx);
+      return jsonError(405, "Method not allowed");
+    }
+    if (messageAction === "branch" && request.method === "POST") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        const title = body.title === undefined ? undefined : parseChatPatch(body).title;
+        if (ctx.play.hasPending(chatId)) throw new BusyError("A reply is already being generated for this chat");
+        const branch = branchChat(ctx.db, chatId, messageId, title);
+        return branch ? jsonResponse({ chat: branch }, 201) : notFound("Unknown message");
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    if (messageAction === "select" && request.method === "POST") {
+      try {
+        return jsonResponse({ messages: ctx.play.selectVariant(chatId, messageId) });
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    if (messageAction !== undefined) return jsonError(404, "Not found");
+    if (request.method === "DELETE") {
+      const scope = new URL(request.url).searchParams.get("scope");
+      if (scope !== null && scope !== "variant" && scope !== "after") {
+        return jsonError(400, "scope must be 'variant' or 'after'", undefined, {
+          code: "invalid_input",
+          accepted: false,
+        });
+      }
+      try {
+        return jsonResponse({ messages: ctx.play.deleteMessage(chatId, messageId, scope) });
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    if (request.method === "PATCH") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      try {
+        return jsonResponse({ message: ctx.play.editMessage(chatId, messageId, parsePlayerContent(body)) });
+      } catch (error) {
+        return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+      }
+    }
+    return jsonError(405, "Method not allowed");
+  }
+  if (action === "regenerate" && request.method === "POST") return handlePlayPost(request, "regenerate", chatId, ctx);
+  if (action === "opening" && request.method === "POST") return handlePlayPost(request, "opening", chatId, ctx);
+  if (action === "stop" && request.method === "POST") return jsonResponse(ctx.play.stop(chatId));
+  return jsonError(404, "Not found");
 }
 
 async function route(request: Request, pathname: string, ctx: AppContext): Promise<Response> {
@@ -980,120 +773,26 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   if (resource === "stats") return handleStats(request, segments[2], ctx.db);
   if (resource === "prompt-cards") return handlePromptCards(request, segments[2], ctx.db);
   if (resource === "worlds") {
-    if (segments[3] === "stats") return handleWorldStats(request, segments[2], ctx.db);
+    if (segments[3] === "stats") return handleWorldStats(request, segments[2], segments[4], ctx.db);
     if (segments[3] === "entries") {
       return handleWorldEntries(request, segments[2], segments[4], ctx.db);
     }
     if (segments[3] === "characters") {
       return handleWorldCharacters(request, segments[2], ctx.db);
     }
+    if (segments[3] === "relationships") {
+      return handleWorldRelationships(request, segments[2], segments[4], ctx.db);
+    }
+    if (segments[3] === "chats") return handleWorldChats(request, segments[2], ctx.db);
     return handleWorlds(request, segments[2], ctx.db);
   }
   if (resource === "characters") {
     if (segments[3] === "avatar") return handleCharacterAvatar(request, segments[2], ctx.db);
-    return handleCharacters(request, segments[2], segments[3], ctx.db);
+    if (segments[3] !== undefined) return jsonError(404, "Not found");
+    return handleCharacters(request, segments[2], ctx.db);
   }
   if (resource === "images") return handleImageGet(request, segments[2], ctx.db);
-  if (resource === "campaigns") {
-    if (segments[3] === "state") return handleCampaignState(request, segments[2], segments[4], ctx);
-    if (segments[3] === "sessions") return handleCampaignSessions(request, segments[2], ctx);
-    if (segments[3] === "characters") {
-      return handleCampaignCharacters(request, segments[2], segments[4], segments[5], ctx);
-    }
-    if (segments[3] === "stats") return handleCampaignStats(request, segments[2], segments[4], ctx);
-    if (segments[3] === "relationships") {
-      return handleCampaignRelationships(request, segments[2], segments[4], ctx);
-    }
-    return handleCampaigns(request, segments[2], ctx.db);
-  }
-
-  if (resource === "sessions" && typeof segments[2] === "string") {
-    const sessionId = segments[2];
-    const action = segments[3];
-    if (action === undefined) {
-      if (request.method === "GET") {
-        const session = getSession(ctx.db, sessionId);
-        if (!session) return notFound("Unknown session");
-        const campaign = getCampaign(ctx.db, session.campaign_id);
-        if (!campaign) return jsonError(500, "Internal server error");
-        return jsonResponse({ session, campaign });
-      }
-      return jsonError(405, "Method not allowed");
-    }
-    if (action === "messages") {
-      const messageId = segments[4];
-      if (messageId === undefined) {
-        if (request.method === "GET") {
-          if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
-          return jsonResponse({ messages: ctx.play.transcript(sessionId) });
-        }
-        if (request.method === "POST") return handlePlayPost(request, "messages", sessionId, ctx);
-        return jsonError(405, "Method not allowed");
-      }
-      if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
-      if (segments[5] === "fork" && request.method === "POST") {
-        const body = await readObjectBody(request);
-        if (body instanceof Response) return body;
-        try {
-          const session = getSession(ctx.db, sessionId);
-          if (!session) return notFound("Unknown session");
-          const sourceCampaign = getCampaign(ctx.db, session.campaign_id);
-          if (!sourceCampaign) return jsonError(500, "Internal server error");
-          if (ctx.play.hasPending(sourceCampaign.active_session_id)) {
-            throw new BusyError("A reply is already being generated for this session");
-          }
-          const forked = forkCampaignFromMessage(ctx.db, sessionId, messageId, parseForkInput(body));
-          return forked ? jsonResponse(forked, 201) : notFound("Unknown message");
-        } catch (error) {
-          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-        }
-      }
-      if (segments[5] === "select" && request.method === "POST") {
-        try {
-          return jsonResponse({ messages: ctx.play.selectVariant(sessionId, messageId) });
-        } catch (error) {
-          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-        }
-      }
-      if (segments[5] !== undefined) return jsonError(404, "Not found");
-      if (request.method === "DELETE") {
-        const scope = new URL(request.url).searchParams.get("scope");
-        if (scope !== null && scope !== "variant" && scope !== "after") {
-          return jsonError(400, "scope must be 'variant' or 'after'", undefined, {
-            code: "invalid_input",
-            accepted: false,
-          });
-        }
-        try {
-          return jsonResponse({ messages: ctx.play.deleteMessage(sessionId, messageId, scope) });
-        } catch (error) {
-          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-        }
-      }
-      if (request.method === "PATCH") {
-        const body = await readObjectBody(request);
-        if (body instanceof Response) return body;
-        try {
-          return jsonResponse({ message: ctx.play.editMessage(sessionId, messageId, parsePlayerContent(body)) });
-        } catch (error) {
-          return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
-        }
-      }
-      return jsonError(405, "Method not allowed");
-    }
-    if (action === "regenerate" && request.method === "POST") {
-      return handlePlayPost(request, "regenerate", sessionId, ctx);
-    }
-    if (action === "opening" && request.method === "POST") {
-      return handlePlayPost(request, "opening", sessionId, ctx);
-    }
-    if (action === "stop" && request.method === "POST") {
-      if (!getSession(ctx.db, sessionId)) return notFound("Unknown session");
-      return jsonResponse(ctx.play.stop(sessionId));
-    }
-    return jsonError(404, "Not found");
-  }
-
+  if (resource === "chats") return handleChats(request, segments.slice(2), ctx);
   return jsonError(404, "Not found");
 }
 
