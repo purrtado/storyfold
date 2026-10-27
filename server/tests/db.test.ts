@@ -55,7 +55,7 @@ describe("schema version", () => {
 
       const reopened = openDatabase(path);
       try {
-        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(8);
+        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(9);
         expect(listStatDefinitions(reopened, null)).toHaveLength(8);
         const cards = listPromptCards(reopened);
         expect(cards.map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
@@ -71,7 +71,7 @@ describe("schema version", () => {
   test("a workspace from an older schema is refused with its path and left untouched", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
-      for (const version of [1, 3, 7]) {
+      for (const version of [1, 3, 8]) {
         const path = join(directory, `v${version}.db`);
         const stale = new Database(path, { create: true });
         stale.exec("CREATE TABLE campaigns (id TEXT PRIMARY KEY)");

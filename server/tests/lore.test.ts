@@ -14,7 +14,7 @@ function entry(name: string, fields: Partial<WorldEntry> = {}): WorldEntry {
 function character(name: string, fields: Partial<Character> = {}): Character {
   return {
     id: name, world_id: "w", name, description: `${name}'s full card.`, appearance: "", personality: "",
-    background: "", baseline_motivations: "", speaking_style: "", knowledge: "", avatar_id: null, stats_enabled: false, stats: {},
+    intimacy: "", knowledge: "", memories: "", thoughts: "", avatar_id: null, stats_enabled: false, stats: {},
     context_mode: "in_scene", summary: "", aliases: [], sticky: 0, created_at: "", updated_at: "", ...fields,
   };
 }
@@ -99,7 +99,7 @@ describe("characters", () => {
 
   test("a triggered character's note carries what it knows", () => {
     const ria = character("Ria", { knowledge: "Saw who cut the ferry rope." });
-    expect(select(["Ria arrives."], { cast: [ria] }).note).toContain("- Ria: Ria's full card.; Knows: Saw who cut the ferry rope.");
+    expect(select(["Ria arrives."], { cast: [ria] }).note).toContain("- Ria: Ria's full card.; Knows (in Ria's own words): Saw who cut the ferry rope.");
   });
 
   test("go before keyword lore, which keeps its priority order", () => {
