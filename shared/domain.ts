@@ -29,20 +29,20 @@ export interface WorldEntry {
 }
 
 /**
- * The one character profile shape. `prompt` labels the field in narrator
- * grounding; name and description are rendered without a label. `voice`
+ * The one character profile shape. `tag` names the field's element inside the
+ * narrator's `<character>` block; name is the block's attribute instead. `voice`
  * "first" fields are authored in the character's own words, which teaches
  * the narrator how they speak; "third" fields are factual.
  */
 export const CHARACTER_PROFILE_FIELDS = [
-  { key: "name", label: "Name", prompt: "", voice: "third", required: true },
-  { key: "description", label: "Description", prompt: "", voice: "third", required: true },
-  { key: "appearance", label: "Appearance", prompt: "Appearance", voice: "third", required: false },
-  { key: "personality", label: "Personality", prompt: "Personality", voice: "third", required: false },
-  { key: "intimacy", label: "Intimacy", prompt: "Intimacy (sexual preferences and boundaries)", voice: "third", required: false },
-  { key: "knowledge", label: "Knowledge", prompt: "Knows", voice: "first", required: false },
-  { key: "memories", label: "Memories", prompt: "Remembers", voice: "first", required: false },
-  { key: "thoughts", label: "Inner thoughts", prompt: "Privately thinks", voice: "first", required: false },
+  { key: "name", label: "Name", tag: "", voice: "third", required: true },
+  { key: "description", label: "Description", tag: "description", voice: "third", required: true },
+  { key: "appearance", label: "Appearance", tag: "appearance", voice: "third", required: false },
+  { key: "personality", label: "Personality", tag: "personality", voice: "third", required: false },
+  { key: "intimacy", label: "Intimacy", tag: "intimacy", voice: "third", required: false },
+  { key: "knowledge", label: "Knowledge", tag: "knows", voice: "first", required: false },
+  { key: "memories", label: "Memories", tag: "remembers", voice: "first", required: false },
+  { key: "thoughts", label: "Inner thoughts", tag: "thinks", voice: "first", required: false },
 ] as const;
 
 export type CharacterProfileKey = (typeof CHARACTER_PROFILE_FIELDS)[number]["key"];

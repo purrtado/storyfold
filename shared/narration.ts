@@ -44,23 +44,25 @@ function statValues(stats: NarrationContext["stats"], values: StatValues): strin
     .join(", ");
 }
 
+/** Authored text is free-form, so markup-significant characters are escaped to keep block boundaries intact. */
+function escapeMarkup(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /**
- * One authored character as prompt text: description first, then only the
- * labelled fields actually authored — blank fields add no scaffold text —
- * then stat values when the character carries stats. First-person fields
- * name whose "I" they are, so the narrator never reads them as its own voice.
+ * One authored character as a `<character>` block: one element per authored
+ * field — blank fields add no scaffold text — then stat values when the
+ * character carries stats.
  */
-function characterDefinition(character: CharacterPrompt, stats: NarrationContext["stats"]): string {
-  const definition = [
-    character.description,
-    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.prompt !== "" && character[field.key].length > 0).map((field) =>
-      field.voice === "first"
-        ? `${field.prompt} (in ${character.name}'s own words): ${character[field.key]}`
-        : `${field.prompt}: ${character[field.key]}`,
-    ),
-  ].join("; ");
+function characterBlock(character: CharacterPrompt, stats: NarrationContext["stats"]): string {
   const values = character.stats_enabled ? statValues(stats, character.stats) : "";
-  return values ? `${definition} [${values}]` : definition;
+  const elements = [
+    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.tag !== "" && character[field.key].length > 0).map(
+      (field) => [field.tag, character[field.key]] as const,
+    ),
+    ...(values ? [["stats", values] as const] : []),
+  ].map(([tag, text]) => `  <${tag}>${escapeMarkup(text)}</${tag}>`);
+  return [`<character name="${escapeMarkup(character.name).replace(/"/g, "&quot;")}">`, ...elements, "</character>"].join("\n");
 }
 
 function relationshipLine(relationship: RelationshipPrompt, stats: NarrationContext["stats"]): string {
@@ -116,7 +118,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   { title: "Stats legend", body: "Stats (scale and meaning):\n{{stats}}" },
   {
     title: "Protagonist",
-    body: "The player controls their character, {{protagonist_name}}: {{protagonist}}\nWhenever the player speaks or acts, it is {{protagonist_name}} acting.",
+    body: "The player controls their character, {{protagonist_name}}:\n{{protagonist}}\nWhenever the player speaks or acts, it is {{protagonist_name}} acting.",
   },
   { title: "Cast", body: "Narrator-controlled cast:\n{{cast}}\nRespect these definitions as written." },
   {
@@ -137,7 +139,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "Knowledge boundaries",
-    body: "Characters speak and act only from what they themselves know: their Knows and Remembers notes, what they witnessed in this story, and what they were told. Their Privately thinks notes are never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
+    body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
   },
   {
     title: "Narration boundaries",
@@ -193,10 +195,10 @@ export function narratorSystemPrompt(
       )
       .join("\n"),
     protagonist_name: protagonist.name,
-    protagonist: characterDefinition(protagonist, context.stats),
+    protagonist: characterBlock(protagonist, context.stats),
     cast: context.cast
       .filter((member) => member.context_mode === "always")
-      .map((member) => `- ${member.name}: ${characterDefinition(member, context.stats)}`)
+      .map((member) => characterBlock(member, context.stats))
       .join("\n"),
     offstage: context.cast
       .filter((member) => member.context_mode === "in_scene")
@@ -253,7 +255,7 @@ export interface ReplyContext {
  */
 export function contextNote(context: ReplyContext, stats: NarrationContext["stats"]): string {
   const sections = [
-    ["Characters present or mentioned:", context.characters.map((character) => `- ${character.name}: ${characterDefinition(character, stats)}`)],
+    ["Characters present or mentioned:", context.characters.map((character) => characterBlock(character, stats))],
     ["Their relationships:", context.relationships.map((relationship) => relationshipLine(relationship, stats))],
     ["World lore:", context.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)],
   ] as const;

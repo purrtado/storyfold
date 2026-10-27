@@ -325,12 +325,12 @@ describe("live world grounding", () => {
       expect(opening!.at(-1)!.content).not.toContain("Context for this reply");
       expect(school!.at(-1)!.content).toBe(
         "I walk to school with Ria.\n\n(Context for this reply, not part of the player's message:\n" +
-          "Characters present or mentioned:\n- Ria: Sable's lab partner, always sketching.\n" +
+          'Characters present or mentioned:\n<character name="Ria">\n  <description>Sable\'s lab partner, always sketching.</description>\n</character>\n' +
           "World lore:\n- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
       );
       // Ria stays for 4 more messages after her mention; the school does not.
       const laterText = later!.map((message) => message.content).join("\n");
-      expect(laterText).toContain("- Ria: Sable's lab partner, always sketching.");
+      expect(laterText).toContain("<description>Sable's lab partner, always sketching.</description>");
       expect(laterText).not.toContain("The town's only high school.");
 
       const response = await fetch(`${server.url}/api/chats/${chatId}/messages`, { headers: headersWith() });

@@ -482,9 +482,8 @@ describe("narration prompt", () => {
       expect(prompt.match(/Stats \(scale and meaning\):/g)).toHaveLength(1);
       expect(prompt).toContain(`- Health (character, 0–10): ${health.description} 0: dying · 10: unharmed`);
       expect(prompt).toContain(`- Trust (relationship, 0–10): ${trust.description} 0: none · 10: complete`);
-      expect(prompt).toContain("The player controls their character, Mira: A careful sailor. [Health 7/10]");
-      expect(prompt).toContain("- Oren: A retired navigator.");
-      expect(prompt).not.toMatch(/- Oren: [^\n]*\[/);
+      expect(prompt).toContain('The player controls their character, Mira:\n<character name="Mira">\n  <description>A careful sailor.</description>\n  <stats>Health 7/10</stats>\n</character>');
+      expect(prompt).toContain('<character name="Oren">\n  <description>A retired navigator.</description>\n</character>');
       expect(prompt).toContain(
         "- Mira → Oren: status: wary; how met (in Mira's own words): At sea.; known facts (in Mira's own words): Keeps a brass compass.; Trust 4/10",
       );
