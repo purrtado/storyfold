@@ -165,8 +165,8 @@ describe("system prompt cast", () => {
   });
 
   test("only `always` members carry full cards; `in_scene` ones get one line; `mentioned` ones are absent", () => {
-    expect(prompt).toContain('<cast>\n<character name="Al">\n  <description>Al\'s full card.</description>\n</character>\n</cast>');
-    expect(prompt).toContain("<elsewhere>\n- Ria: Night-shift nurse, red scrubs. (Mira → Ria: dating)\n- Cy\n</elsewhere>");
+    expect(prompt).toContain('<cast>\n<character name="Al">\n  <description>Al\'s full card.</description>\n</character>\nYou control everyone in <cast>');
+    expect(prompt).toContain("<elsewhere>\n- Ria: Night-shift nurse, red scrubs. (Mira → Ria: dating)\n- Cy\nCharacters in <elsewhere>");
     for (const hidden of ["Ria's full card.", "Cy's full card.", "Dee"]) expect(prompt).not.toContain(hidden);
   });
 

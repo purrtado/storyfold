@@ -19,8 +19,8 @@ describe("narrator prompt from cards", () => {
       const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "At the docks." })!;
 
       const defaults = chatSystemPrompt(db, chat, false);
-      expect(defaults.startsWith("You are the narrator of an ongoing interactive story.")).toBe(true);
-      expect(defaults).toContain("<world>\n<name>Veloria</name>\n<brief>A drowned city.</brief>\n</world>");
+      expect(defaults.startsWith("<narrator_role>\nYou are the narrator of an ongoing interactive story.\n</narrator_role>\n\n")).toBe(true);
+      expect(defaults).toContain("<world>\nVeloria: A drowned city.\n</world>");
       expect(defaults).toContain("<opening>\nAt the docks.\n</opening>");
       // No cast or relationships: their sections are not sent.
       expect(defaults).not.toContain("<cast>");
@@ -30,11 +30,11 @@ describe("narrator prompt from cards", () => {
       const cards = listPromptCards(db);
       const role = cards.find((card) => card.title === "Narrator role")!;
       updatePromptCard(db, role.id, { enabled: false });
-      const style = createPromptCard(db, { title: "Style", body: "Write tersely for {{protagonist_name}}.", enabled: true });
+      const style = createPromptCard(db, { title: "Style & Tone", body: "Write tersely for {{protagonist_name}}.", enabled: true });
       reorderPromptCards(db, [style.id, ...cards.map((card) => card.id)]);
 
       const edited = chatSystemPrompt(db, chat, false);
-      expect(edited.startsWith("Write tersely for Sable.\n\n<world>")).toBe(true);
+      expect(edited.startsWith("<style_tone>\nWrite tersely for Sable.\n</style_tone>\n\n<world>")).toBe(true);
       expect(edited).not.toContain("You are the narrator");
 
       const continued = chatSystemPrompt(db, chat, true);

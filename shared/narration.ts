@@ -120,43 +120,54 @@ export function unknownPlaceholders(body: string): string[] {
   return [...new Set([...body.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]!).filter((name) => !isPlaceholder(name)))];
 }
 
+/**
+ * The tag a card's body is wrapped in: its title in snake case — accents
+ * dropped, every other run of non-alphanumerics an underscore, `_`-prefixed
+ * when it would start with a digit, `card` when nothing is left.
+ */
+export function promptCardTag(title: string): string {
+  const tag = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (tag === "") return "card";
+  return /^[0-9]/.test(tag) ? `_${tag}` : tag;
+}
+
 /** The cards a fresh workspace starts with, and what Reset to defaults restores. */
 export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "body">> = [
-  {
-    title: "Narrator role",
-    body: "You are the narrator of an ongoing interactive story. The story's material is given in tagged sections; the instructions refer to them by tag.",
-  },
-  { title: "World", body: "<world>\n<name>{{world_name}}</name>\n<brief>{{world_brief}}</brief>\n</world>" },
-  { title: "Opening", body: "<opening>\n{{opening}}\n</opening>" },
-  { title: "Stats legend", body: "<stats_legend>\n{{stats}}\n</stats_legend>\nEach <stat> gives its scale and what its ends mean." },
+  { title: "Narrator role", body: "You are the narrator of an ongoing interactive story." },
+  { title: "World", body: "{{world_name}}: {{world_brief}}" },
+  { title: "Opening", body: "{{opening}}" },
+  { title: "Stats legend", body: "{{stats}}\nEach <stat> gives its scale and what its ends mean." },
   {
     title: "Protagonist",
-    body: "<protagonist>\n{{protagonist}}\n</protagonist>\nThe player controls {{protagonist_name}}, the character in <protagonist>. Whenever the player speaks or acts, it is {{protagonist_name}} acting.",
+    body: "{{protagonist}}\nThe player controls {{protagonist_name}}, the character in <protagonist>. Whenever the player speaks or acts, it is {{protagonist_name}} acting.",
   },
-  { title: "Cast", body: "<cast>\n{{cast}}\n</cast>\nYou control everyone in <cast>; respect these definitions as written." },
+  { title: "Cast", body: "{{cast}}\nYou control everyone in <cast>; respect these definitions as written." },
   {
     title: "Elsewhere",
     body: [
-      "<elsewhere>",
       "{{offstage}}",
-      "</elsewhere>",
       "Characters in <elsewhere> are not in the current scene. They exist and the player may mention them. Do not bring them into a scene unless the player calls for them or the story clearly requires it; never just because they are listed.",
     ].join("\n"),
   },
   {
     title: "Compendium",
-    body: "<compendium>\n{{compendium}}\n</compendium>\nRespect these definitions as written.",
+    body: "{{compendium}}\nRespect these definitions as written.",
   },
   {
     title: "Relationships",
-    body: "<relationships>\n{{relationships}}\n</relationships>\nThese directional relationships are canon; do not invent automatic changes to them.",
+    body: "{{relationships}}\nThese directional relationships are canon; do not invent automatic changes to them.",
   },
   {
     title: "Knowledge boundaries",
     body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. In a <relationship> block, first-person text is the from character's own words about the to character. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The <compendium> is narrator background, not something every character knows.",
   },
   {
-    title: "Reply context",
+    title: "Reply context notes",
     body: "The player's latest message may end with a <reply_context> block: characters, relationships, and compendium entries that just became relevant. Treat it like the sections above, as narrator background, not as something the player said.",
   },
   {
@@ -180,15 +191,16 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
 ];
 
 /**
- * Narrator grounding: the enabled cards in order, placeholders filled from
- * the world as it is now, separated by blank lines. Every value is escaped
- * text or generated markup, so authored text cannot close a card's tags. A
- * card is left out when any placeholder it uses is empty, so a section never
- * introduces nothing. The chat's opening is sent only until the chat has
- * narration; after that the transcript carries the story.
+ * Narrator grounding: each enabled card's body wrapped in its title's tag
+ * (`promptCardTag`), in order, placeholders filled from the world as it is
+ * now, separated by blank lines. Every value is escaped text or generated
+ * markup, so authored world text cannot close a card's tag. A card is left
+ * out when any placeholder it uses is empty, so a section never introduces
+ * nothing. The chat's opening is sent only until the chat has narration;
+ * after that the transcript carries the story.
  */
 export function narratorSystemPrompt(
-  cards: ReadonlyArray<Pick<PromptCard, "body" | "enabled">>,
+  cards: ReadonlyArray<Pick<PromptCard, "title" | "body" | "enabled">>,
   context: NarrationContext,
 ): string {
   const { world, protagonist } = context;
@@ -252,7 +264,9 @@ export function narratorSystemPrompt(
           return values[name];
         })
         .trim();
-      return missing || text === "" ? [] : [text];
+      if (missing || text === "") return [];
+      const tag = promptCardTag(card.title);
+      return [`<${tag}>\n${text}\n</${tag}>`];
     })
     .join("\n\n");
 }

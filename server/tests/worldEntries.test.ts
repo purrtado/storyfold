@@ -318,7 +318,7 @@ describe("live world grounding", () => {
       const [opening, school, later] = calls;
       for (const messages of calls) {
         expect(messages[0]!.content).toContain("Always-known docks.");
-        expect(messages[0]!.content).toContain("<elsewhere>\n- Ria\n</elsewhere>");
+        expect(messages[0]!.content).toContain("<elsewhere>\n- Ria\nCharacters in <elsewhere>");
         expect(messages[0]!.content).not.toContain("The town's only high school.");
         expect(messages[0]!.content).not.toContain("always sketching");
       }
