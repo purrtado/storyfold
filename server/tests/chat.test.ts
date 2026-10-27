@@ -33,6 +33,7 @@ describe("provider transport (startNarrationRun)", () => {
           headers: { "content-type": "application/json" },
         })) as typeof fetch;
       const run = startNarrationRun({
+        threadId: "chat-test",
         baseUrl: "https://provider.test/v1",
         model: "glm-5.3",
         apiKey: API_KEY,
@@ -58,6 +59,7 @@ describe("provider transport (startNarrationRun)", () => {
         { status: 400, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
     const contextRun = startNarrationRun({
+      threadId: "chat-test",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -77,6 +79,7 @@ describe("provider transport (startNarrationRun)", () => {
         headers: { "content-type": "application/json" },
       })) as typeof fetch;
     const genericRun = startNarrationRun({
+      threadId: "chat-test",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -103,6 +106,7 @@ describe("provider transport (startNarrationRun)", () => {
       return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
     }) as typeof fetch;
     const run = startNarrationRun({
+      threadId: "chat-test",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -125,6 +129,7 @@ describe("completion evidence (raw protocol)", () => {
     const upstream = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
     const run = startNarrationRun({
+      threadId: "chat-test",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,

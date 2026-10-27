@@ -536,6 +536,7 @@ export class PlayService {
     }
 
     const { stream: upstream } = startNarrationRun({
+      threadId: chatId,
       baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,

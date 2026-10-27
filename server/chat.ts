@@ -140,6 +140,8 @@ async function* sanitizeRunStream(
 }
 
 export interface NarrationRunRequest {
+  /** The chat id; the SDK's conversation id and prompt cache key. */
+  threadId: string;
   baseUrl: string;
   model: string;
   /** null for keyless local servers; no Authorization header is sent. */
@@ -193,6 +195,7 @@ export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
 
   const stream = chat({
     adapter,
+    threadId: request.threadId,
     messages: request.messages,
     ...(request.systemPrompt !== undefined ? { systemPrompts: [request.systemPrompt] } : {}),
     stream: true,
