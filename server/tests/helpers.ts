@@ -102,7 +102,7 @@ export function openAiChatCompletionSse(model: string, deltas: string[]): string
       created: 1_700_000_000,
       model,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8, prompt_tokens_details: { cached_tokens: 2 } },
     },
   ];
   const sse = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");

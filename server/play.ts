@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
-import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
-import type { StreamChunk } from "@tanstack/ai";
-import type { Message, MessageLore } from "../shared/domain";
-import { NARRATION_TOKEN_BUDGET, directionNote } from "../shared/narration";
+import { EventType, fromSpecTokenUsage, toServerSentEventsResponse } from "@tanstack/ai";
+import type { StreamChunk, TokenUsage } from "@tanstack/ai";
+import type { Message, MessageLore, MessageUsage } from "../shared/domain";
+import { NARRATION_TOKEN_BUDGET, directionNote, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
 import { selectReplyContext, type LoreSelection } from "./lore";
@@ -11,8 +11,6 @@ import { chatGrounding, chatSystemPrompt } from "./grounding";
 import { UnknownEntityError, ValidationError } from "./worlds";
 import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
 
-/** Stands in for the player's turn when an opening request has no history. */
-const OPENING_REQUEST = "Begin the opening scene.";
 
 export const NARRATOR_NAME = "Narrator";
 
@@ -52,8 +50,8 @@ export interface TranscriptMessage extends Message {
   variant_index: number;
 }
 
-/** Storage shape of a message: lore is JSON text until parsed. */
-type MessageRecord = Omit<Message, "lore"> & { lore: string | null };
+/** Storage shape of a message: lore and usage are JSON text until parsed. */
+type MessageRecord = Omit<Message, "lore" | "usage"> & { lore: string | null; usage: string | null };
 
 /** Storage row including the selection flag; never sent to the client. */
 interface MessageRow extends MessageRecord {
@@ -61,10 +59,27 @@ interface MessageRow extends MessageRecord {
 }
 
 const MESSAGE_COLUMNS =
-  "id, chat_id, position, role, speaker_name, content, status, direction, lore, created_at, updated_at";
+  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, created_at, updated_at";
 
 function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
-  return { ...row, lore: row.lore === null ? null : (JSON.parse(row.lore) as MessageLore) };
+  return {
+    ...row,
+    lore: row.lore === null ? null : (JSON.parse(row.lore) as MessageLore),
+    usage: row.usage === null ? null : (JSON.parse(row.usage) as MessageUsage),
+  };
+}
+
+/** The provider's counts from a normal finish, null when it reported none. */
+function providerUsage(chunk: Extract<StreamChunk, { type: EventType.RUN_FINISHED }>): MessageUsage["provider"] {
+  const usage: TokenUsage | undefined = Array.isArray(chunk.usage)
+    ? fromSpecTokenUsage(chunk.usage, chunk.metadata?.tanstack?.usage)
+    : chunk.usage;
+  if (!usage) return null;
+  return {
+    prompt_tokens: usage.promptTokens,
+    cached_tokens: usage.promptTokensDetails?.cachedTokens ?? 0,
+    completion_tokens: usage.completionTokens,
+  };
 }
 
 export interface PlaySettings {
@@ -80,6 +95,8 @@ interface ActiveRun {
   settled: boolean;
   /** Bound during streamNarration; Stop uses the same first-wins settlement. */
   settle: (status: "complete" | "interrupted" | "failed") => void;
+  /** Written when the call starts; the provider's counts join it on a normal finish. */
+  estimate: MessageUsage["estimate"];
 }
 
 /**
@@ -345,22 +362,6 @@ export class PlayService {
     );
   }
 
-  private hasCompletedHistory(chatId: string): boolean {
-    return (
-      this.db
-        .query<unknown, [string]>(
-          "SELECT 1 FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') AND length(content) > 0 LIMIT 1",
-        )
-        .get(chatId) !== null
-    );
-  }
-
-  /** What the model is sent before any one-reply notes: system prompt, history, and the opening stand-in. */
-  private narrationTokens(systemPrompt: string, history: NarrationMessage[]): number {
-    const messages = history.reduce((sum, message) => sum + countTokens(message.content), 0);
-    const opening = history.length === 0 ? countTokens(OPENING_REQUEST) : 0;
-    return countTokens(systemPrompt) + messages + opening;
-  }
 
   /**
    * The one size rule: the system prompt plus the completed history the model
@@ -369,7 +370,7 @@ export class PlayService {
    * not counted: it only ever takes the room left over.
    */
   private assertWithinBudget(chatId: string, extra: number): void {
-    const total = this.narrationTokens(this.systemPrompt(chatId), this.modelHistory(chatId)) + extra;
+    const total = countTokens(this.systemPrompt(chatId)) + historyTokens(this.modelHistory(chatId)) + extra;
     if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
         `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
@@ -380,7 +381,7 @@ export class PlayService {
 
   /**
    * Triggered characters and keyword lore for one reply, scanned from the
-   * recent history — or, before any, the chat's opening — with the direction
+   * recent history — the opening message included — with the direction
    * counted as part of the latest input. It gets only the room the budget
    * leaves.
    */
@@ -392,9 +393,9 @@ export class PlayService {
   ): LoreSelection {
     const chat = getChat(this.db, chatId)!;
     const grounding = chatGrounding(this.db, chat);
-    const recent = history.length > 0 ? history.map((message) => message.content) : [chat.opening];
+    const recent = history.map((message) => message.content);
     if (direction !== null) recent[recent.length - 1] += `\n${direction}`;
-    const room = NARRATION_TOKEN_BUDGET - this.narrationTokens(systemPrompt, history) - directionTokens(direction);
+    const room = NARRATION_TOKEN_BUDGET - countTokens(systemPrompt) - historyTokens(history) - directionTokens(direction);
     return selectReplyContext(
       {
         cast: grounding.cast,
@@ -446,16 +447,25 @@ export class PlayService {
    * reply.
    */
   systemPrompt(chatId: string): string {
-    return chatSystemPrompt(this.db, getChat(this.db, chatId)!, this.hasCompletedHistory(chatId));
+    return chatSystemPrompt(this.db, getChat(this.db, chatId)!);
   }
 
-  /** Completed narration and accepted player input only, in position order. */
+  /**
+   * The opening message, then completed narration and accepted player input
+   * in position order. A player turn sent before any narration joins the
+   * opening message, so every call starts with one user message that never
+   * changes for the chat.
+   */
   modelHistory(chatId: string): NarrationMessage[] {
-    return this.db
+    const opening = openingMessage(getChat(this.db, chatId)!.opening);
+    const stored = this.db
       .query<{ role: "user" | "assistant"; content: string }, [string]>(
         "SELECT role, content FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') ORDER BY position",
       )
       .all(chatId);
+    const [first, ...rest] = stored;
+    if (first?.role === "user") return [{ role: "user", content: `${opening}\n\n${first.content}` }, ...rest];
+    return [{ role: "user", content: opening }, ...stored];
   }
 
   /**
@@ -475,6 +485,22 @@ export class PlayService {
   }): Response {
     const service = this;
     const chatId = options.chatId;
+
+    const systemPrompt = this.systemPrompt(chatId);
+    const history = this.modelHistory(chatId);
+    const direction = this.getMessage(options.pendingId)?.direction ?? null;
+    const lore = this.replyLore(chatId, systemPrompt, history, direction);
+    // Lore first, so an OOC note still ends the player's latest message.
+    const notes = lore.note + (direction === null ? "" : directionNote(direction));
+    const estimate = { system: countTokens(systemPrompt), history: historyTokens(history), context: countTokens(notes) };
+    this.db
+      .query("UPDATE messages SET lore = ?, usage = ? WHERE id = ?")
+      .run(lore.lore && JSON.stringify(lore.lore), JSON.stringify({ estimate, provider: null } satisfies MessageUsage), options.pendingId);
+    if (notes !== "") {
+      const last = history.at(-1)!;
+      if (last.role === "user") last.content += notes;
+      else history.push({ role: "user", content: notes.trimStart() });
+    }
 
     // First terminal settlement wins and releases the exclusivity slot, so a
     // stalled upstream can never hold a chat hostage.
@@ -497,6 +523,7 @@ export class PlayService {
         detachDisconnect();
         service.unregister(chatId, run);
       },
+      estimate,
     };
     this.runs.set(chatId, run);
 
@@ -506,22 +533,6 @@ export class PlayService {
       onDisconnect();
     } else {
       options.disconnectSignal?.addEventListener("abort", onDisconnect, { once: true });
-    }
-
-    // An opening request carries no player row; whether the story starts
-    // fresh depends on the history, not on the protocol kind.
-    const systemPrompt = this.systemPrompt(chatId);
-    const history = this.modelHistory(chatId);
-    const direction = this.getMessage(options.pendingId)?.direction ?? null;
-    const lore = this.replyLore(chatId, systemPrompt, history, direction);
-    this.db.query("UPDATE messages SET lore = ? WHERE id = ?").run(lore.lore && JSON.stringify(lore.lore), options.pendingId);
-    if (history.length === 0) history.push({ role: "user", content: OPENING_REQUEST });
-    // Lore first, so an OOC note still ends the player's latest message.
-    const notes = lore.note + (direction === null ? "" : directionNote(direction));
-    if (notes !== "") {
-      const last = history.at(-1)!;
-      if (last.role === "user") last.content += notes;
-      else history.push({ role: "user", content: notes.trimStart() });
     }
 
     const { stream: upstream } = startNarrationRun({
@@ -562,6 +573,7 @@ export class PlayService {
     const persist = this.db.query(
       "UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
     );
+    const recordUsage = this.db.query("UPDATE messages SET usage = ? WHERE id = ?");
     async function* generate(): AsyncGenerator<StreamChunk> {
       try {
         for await (const chunk of upstream) {
@@ -573,6 +585,8 @@ export class PlayService {
             continue;
           }
           if (chunk.type === EventType.RUN_FINISHED) {
+            const usage: MessageUsage = { estimate: run.estimate, provider: providerUsage(chunk) };
+            recordUsage.run(JSON.stringify(usage), run.messageId);
             if (run.partial.trim().length > 0) {
               // Normal-stop evidence with real narration: complete.
               run.settle("complete");
@@ -658,4 +672,8 @@ export function parseDirection(body: Record<string, unknown>): string | null {
 
 function directionTokens(direction: string | null): number {
   return direction === null ? 0 : countTokens(directionNote(direction));
+}
+
+function historyTokens(history: NarrationMessage[]): number {
+  return history.reduce((sum, message) => sum + countTokens(message.content), 0);
 }

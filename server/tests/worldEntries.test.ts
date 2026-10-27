@@ -3,7 +3,7 @@ import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import type { Character, Chat, Message, World, WorldEntry } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
-import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt, openingMessage } from "../../shared/narration";
 import { countTokens } from "../../shared/tokens";
 import {
   configureProvider,
@@ -191,13 +191,11 @@ describe("opening prompt budget", () => {
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
       world: { name: "Boundary", setting_brief: brief, entries: [{ kind: "lore", name: "Compact", description: entryDescription, keywords: [] }] },
-      opening: "s",
       stats: [],
       protagonist: protagonistPrompt("d".repeat(descriptionLength)),
       cast: [],
       relationships: [],
-      has_history: false,
-    }));
+    })) + countTokens(openingMessage("s"));
     // Longest description whose prompt still fits; one more character passes the budget.
     let low = 1;
     let high = 100_000;
@@ -272,7 +270,7 @@ describe("live world grounding", () => {
       expect(system.content).toContain("Off-limits pier");
       expect(system.content).toContain("Veloria");
       expect(system.content).toContain("Sable");
-      expect(system.content).toContain("Sable docks at dawn.");
+      expect(history[1]).toEqual({ role: "user", content: openingMessage("Sable docks at dawn.") });
       expect(system.content).not.toContain("Dawn docking");
       expect(system.content).not.toContain("The ferry scrapes ashore.");
       expect(system.content).not.toContain("Another world's lore.");

@@ -168,6 +168,8 @@ export interface Message {
    * triggered but did not fit the budget. Null when nothing was triggered.
    */
   lore: MessageLore | null;
+  /** What this narration was sent and what the provider reported; null on player messages and replies never sent. */
+  usage: MessageUsage | null;
   created_at: string;
   updated_at: string;
 }
@@ -178,8 +180,19 @@ export interface MessageLore {
 }
 
 /**
+ * Token accounting for one narration call. `estimate` splits what was sent,
+ * counted with shared/tokens: the system prompt, the chat history (the
+ * opening message included), and the one-reply notes (reply context and OOC).
+ * `provider` is what the provider reported, null when it reported nothing.
+ */
+export interface MessageUsage {
+  estimate: { system: number; history: number; context: number };
+  provider: { prompt_tokens: number; cached_tokens: number; completion_tokens: number } | null;
+}
+
+/**
  * One ordered piece of the global narrator prompt. Enabled bodies are sent in
- * `position` order; the title only labels the card in the editor.
+ * `position` order, each wrapped in a tag named after its title.
  */
 export interface PromptCard {
   id: string;

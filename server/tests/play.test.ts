@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import type { Chat, Message } from "../../shared/domain";
+import { openingMessage } from "../../shared/narration";
 import { openDatabase } from "../db";
 import { AlreadyOpenedError, PlayService } from "../play";
 import {
@@ -464,12 +465,11 @@ describe("opening narration", () => {
 
       const history = calls[0].messages as Array<{ role: string; content: string }>;
       expect(history[0].role).toBe("system");
-      // Accepted player input is retained verbatim; the discarded failed draft
-      // is excluded; no synthetic seed row replaces real history.
+      // Accepted player input is retained verbatim, joined to the opening
+      // message it followed; the discarded failed draft is excluded.
       expect(history.filter((message) => message.role !== "system")).toEqual([
-        { role: "user", content: "I scout ahead alone." },
+        { role: "user", content: `${openingMessage(OPENING_TEXT)}\n\nI scout ahead alone.` },
       ]);
-      expect(JSON.stringify(history)).not.toContain("Begin the opening scene.");
 
       const rows = await transcript(server.url, chat.id);
       expect(rows.map((row) => [row.role, row.status])).toEqual([
@@ -558,7 +558,7 @@ describe("player turns", () => {
       expect(history[0].role).toBe("system");
       expect(history[0].content).toContain("Veloria");
       expect(history[0].content).toContain("Sable");
-      expect(history.at(-1)).toEqual({ role: "user", content: "I watch the docks." });
+      expect(history.at(-1)).toEqual({ role: "user", content: `${openingMessage(OPENING_TEXT)}\n\nI watch the docks.` });
     } finally {
       await server.stop();
     }
@@ -783,6 +783,7 @@ describe("player turns", () => {
       const history = calls[0].messages as Array<{ role: string; content: string }>;
       const nonSystem = history.filter((message) => message.role !== "system");
       expect(nonSystem.map((message) => [message.role, message.content])).toEqual([
+        ["user", openingMessage(OPENING_TEXT)],
         ["assistant", "The fog rolls in."],
         ["user", "A doomed distinct action."],
         ["user", "This succeeds."],
@@ -1203,7 +1204,10 @@ describe("regeneration, swipes, edits, and deletes", () => {
       expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
       const history = calls[2].messages as Array<{ role: string; content: string }>;
       const nonSystem = history.filter((message) => message.role !== "system");
-      expect(nonSystem[0]).toEqual({ role: "assistant", content: "Short." });
+      expect(nonSystem.slice(0, 2)).toEqual([
+        { role: "user", content: openingMessage(OPENING_TEXT) },
+        { role: "assistant", content: "Short." },
+      ]);
       expect(nonSystem.at(-1)).toEqual({ role: "user", content: "B".repeat(60_000) });
       expect(JSON.stringify(history)).not.toContain(big);
 
@@ -1234,7 +1238,7 @@ describe("regeneration, swipes, edits, and deletes", () => {
       (calls[index].messages as Array<{ role: string; content: string }>).at(-1);
     try {
       await readSse(await postOpening(server.url, chat.id, { direction: "  Open at night.  " }));
-      expect(lastUser(0)).toEqual({ role: "user", content: "Begin the opening scene.\n\n<ooc>Open at night.</ooc>" });
+      expect(lastUser(0)).toEqual({ role: "user", content: `${openingMessage(OPENING_TEXT)}\n\n<ooc>Open at night.</ooc>` });
 
       await readSse(await postMessage(server.url, chat.id, { content: "I greet Vex.", direction: "Make Vex angry." }));
       expect(lastUser(1)).toEqual({ role: "user", content: "I greet Vex.\n\n<ooc>Make Vex angry.</ooc>" });
@@ -1335,16 +1339,22 @@ function systemPrompt(call: Record<string, unknown>): string {
 }
 
 describe("grounding", () => {
-  test("the opening is sent only before the chat has narration", async () => {
+  test("every call starts with the same system prompt and opening message", async () => {
     const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = scriptedUpstream("glm-5.3", [["The bells."], ["Onward."]]);
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
     try {
       await readSse(await postOpening(server.url, chat.id));
-      expect(systemPrompt(calls[0])).toContain(OPENING_TEXT);
-
       await readSse(await postMessage(server.url, chat.id, { content: "I step ashore." }));
-      expect(systemPrompt(calls[1])).not.toContain(OPENING_TEXT);
+      const [first, second] = calls.map((call) => call.messages as Array<{ role: string; content: string }>);
+      expect(second!.slice(0, 2)).toEqual(first!.slice(0, 2));
+      expect(first![1]).toEqual({ role: "user", content: openingMessage(OPENING_TEXT) });
+      expect(systemPrompt(calls[0]!)).not.toContain(OPENING_TEXT);
+
+      const reply = (await transcript(server.url, chat.id)).at(-1)!;
+      expect(reply.usage?.provider).toEqual({ prompt_tokens: 5, cached_tokens: 2, completion_tokens: 3 });
+      expect(reply.usage?.estimate.context).toBe(0);
+      expect(reply.usage?.estimate.history).toBeGreaterThan(0);
     } finally {
       await server.stop();
     }

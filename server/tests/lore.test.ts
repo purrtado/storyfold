@@ -156,12 +156,10 @@ describe("system prompt cast", () => {
   ];
   const prompt = narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
     world: { name: "W", setting_brief: "b", entries: [] },
-    opening: "s",
     stats: [],
     protagonist,
     cast,
     relationships: [tie("Mira", "Al", "brother"), tie("Mira", "Ria", "dating"), tie("Ria", "Mira", "smitten")],
-    has_history: false,
   });
 
   test("only `always` members carry full cards; `in_scene` ones get one line; `mentioned` ones are absent", () => {

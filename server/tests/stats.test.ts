@@ -478,7 +478,7 @@ describe("narration prompt", () => {
       updateRelationship(db, world.id, relationship.id, { stats: { [trust.id]: 4 } });
       const chat = createChat(db, world.id, { protagonist_id: mira.id, opening: "A storm approaches." })!;
 
-      const prompt = chatSystemPrompt(db, chat, false);
+      const prompt = chatSystemPrompt(db, chat);
       expect(prompt.match(/<stats_legend>/g)).toHaveLength(1);
       expect(prompt).toContain(`<stat name="Health" applies_to="character" scale="0–10" low="0: dying" high="10: unharmed">${health.description}</stat>`);
       expect(prompt).toContain(`<stat name="Trust" applies_to="relationship" scale="0–10" low="0: none" high="10: complete">${trust.description}</stat>`);

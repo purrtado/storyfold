@@ -26,14 +26,12 @@ export type CastPrompt = CharacterPrompt & Pick<Character, "context_mode" | "sum
 export interface NarrationContext {
   /** Entries exclude scenes, which are opening templates only. */
   world: { name: string; setting_brief: string; entries: ReadonlyArray<Pick<WorldEntry, "kind" | "name" | "description" | "keywords">> };
-  opening: string;
   /** Every stat definition, rendered once as a legend; values elsewhere refer to these ids. */
   stats: ReadonlyArray<StatFields & { id: string }>;
   protagonist: CharacterPrompt;
   cast: ReadonlyArray<CastPrompt>;
   /** Every relationship; only those between always-sent characters reach the system prompt. */
   relationships: ReadonlyArray<RelationshipPrompt>;
-  has_history: boolean;
 }
 
 /** Values in legend order, e.g. "Health 7/10, Stress 2/10"; "" when none apply. */
@@ -96,7 +94,6 @@ function alwaysSentIds(context: Pick<NarrationContext, "protagonist" | "cast">):
 export const PROMPT_PLACEHOLDERS = [
   "world_name",
   "world_brief",
-  "opening",
   "stats",
   "protagonist_name",
   "protagonist",
@@ -104,7 +101,6 @@ export const PROMPT_PLACEHOLDERS = [
   "offstage",
   "compendium",
   "relationships",
-  "continuation",
 ] as const;
 
 export type PromptPlaceholder = (typeof PROMPT_PLACEHOLDERS)[number];
@@ -140,7 +136,6 @@ export function promptCardTag(title: string): string {
 export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "body">> = [
   { title: "Narrator role", body: "You are the narrator of an ongoing interactive story." },
   { title: "World", body: "{{world_name}}: {{world_brief}}" },
-  { title: "Opening", body: "{{opening}}" },
   { title: "Stats legend", body: "{{stats}}\nEach <stat> gives its scale and what its ends mean." },
   {
     title: "Protagonist",
@@ -187,7 +182,6 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
     title: "OOC notes",
     body: "The player's latest message may end with an out-of-character <ooc> note. Follow it for this reply only, and never answer or mention it in the narration.",
   },
-  { title: "Continuation", body: "{{continuation}}" },
 ];
 
 /**
@@ -196,8 +190,8 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
  * now, separated by blank lines. Every value is escaped text or generated
  * markup, so authored world text cannot close a card's tag. A card is left
  * out when any placeholder it uses is empty, so a section never introduces
- * nothing. The chat's opening is sent only until the chat has narration;
- * after that the transcript carries the story.
+ * nothing. Nothing here depends on the chat's progress, so the prompt only
+ * changes when the world or the cards do.
  */
 export function narratorSystemPrompt(
   cards: ReadonlyArray<Pick<PromptCard, "title" | "body" | "enabled">>,
@@ -213,11 +207,6 @@ export function narratorSystemPrompt(
   const values: Record<PromptPlaceholder, string> = {
     world_name: escapeMarkup(world.name),
     world_brief: escapeMarkup(world.setting_brief),
-    opening: context.has_history
-      ? ""
-      : context.opening.trim().length > 0
-        ? escapeMarkup(context.opening)
-        : "No opening was given; open with a scene that fits the world.",
     stats: context.stats
       .map((stat) =>
         taggedElement(
@@ -249,9 +238,6 @@ export function narratorSystemPrompt(
       .filter((relationship) => always.has(relationship.source_id) && always.has(relationship.target_id))
       .map((relationship) => relationshipBlock(relationship, context.stats))
       .join("\n"),
-    continuation: context.has_history
-      ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
-      : "There is no prior narration: begin the story now with an opening scene.",
   };
   return cards
     .filter((card) => card.enabled)
@@ -269,6 +255,17 @@ export function narratorSystemPrompt(
       return [`<${tag}>\n${text}\n</${tag}>`];
     })
     .join("\n\n");
+}
+
+/**
+ * The first user message of every narrator call: the chat's opening, or a
+ * request for one. It never changes for a chat, so it stays part of the
+ * cached prefix along with the system prompt.
+ */
+export function openingMessage(opening: string): string {
+  return opening.trim().length > 0
+    ? `<opening>\n${escapeMarkup(opening)}\n</opening>\nBegin the story with this opening scene.`
+    : "Begin the story with an opening scene that fits the world.";
 }
 
 /** The out-of-character note appended to the latest player input for one reply. */

@@ -300,7 +300,7 @@ describe("knowledge in the system prompt", () => {
       updateCharacter(db, tamsin.id, { context_mode: "in_scene", summary: "Dockhand." });
       const chat = createChat(db, world.id, { protagonist_id: mira.id, opening: "Dawn." })!;
 
-      const prompt = chatSystemPrompt(db, chat, false);
+      const prompt = chatSystemPrompt(db, chat);
       expect(prompt).toContain('<character name="Mira">\n  <description>Mira of the harbor.</description>\n  <knows>Where the ledger is hidden.</knows>\n</character>');
       expect(prompt).toContain('<character name="Oren">\n  <description>Oren of the harbor.</description>\n  <knows>The captain\'s real name.</knows>\n</character>');
       expect(prompt).toContain("- Tamsin: Dockhand.");

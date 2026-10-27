@@ -3,7 +3,9 @@
 import { ArrowUp, Clapperboard, Square, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
+import type { MessageUsage } from "../../shared/domain";
 import { SPRING_PRESS } from "../lib/ease";
+import { PromptUsage } from "./PromptUsage";
 
 export interface ComposerProps {
   value: string;
@@ -22,6 +24,8 @@ export interface ComposerProps {
   /** This chat owns the running reply and shows the stop control. */
   showStop?: boolean;
   onStop?: () => void;
+  /** Token accounting of the latest narration; omit to hide the usage control. */
+  usage?: { usage: MessageUsage; pending: boolean } | null;
 }
 
 export function Composer({
@@ -37,6 +41,7 @@ export function Composer({
   busy = false,
   showStop = false,
   onStop,
+  usage = null,
 }: ComposerProps) {
   const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -127,6 +132,7 @@ export function Composer({
 
         <div className="flex min-h-8 items-center gap-1 [margin-block-start:0.25rem]">
           <div className="flex min-w-0 flex-1 items-center">{modelControl}</div>
+          {usage && <PromptUsage usage={usage.usage} pending={usage.pending} />}
           {onDirectionChange && !directionOpen && (
             <button
               type="button"
