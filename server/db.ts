@@ -28,10 +28,10 @@ CREATE TABLE characters (
   description TEXT NOT NULL,
   appearance TEXT NOT NULL,
   personality TEXT NOT NULL,
-  background TEXT NOT NULL,
-  baseline_motivations TEXT NOT NULL,
-  speaking_style TEXT NOT NULL,
+  intimacy TEXT NOT NULL,
   knowledge TEXT NOT NULL,
+  memories TEXT NOT NULL,
+  thoughts TEXT NOT NULL,
   avatar_id TEXT REFERENCES images(id),
   stats_enabled INTEGER NOT NULL CHECK (stats_enabled IN (0, 1)),
   stats TEXT NOT NULL CHECK (json_valid(stats)),
@@ -156,7 +156,7 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [

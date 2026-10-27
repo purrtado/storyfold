@@ -562,8 +562,8 @@ export function CharacterRoster(props: {
       )}
 
       <label className="grid gap-1 text-sm">
-        How they met
-        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3" rows={3} value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
+        <span>How they met <span className="text-muted">In the source's own words</span></span>
+        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3 placeholder:text-muted" rows={3} placeholder="“I met her on the night ferry…”" value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
       </label>
       <label className="grid gap-1 text-sm">
         Current status
@@ -571,10 +571,10 @@ export function CharacterRoster(props: {
       </label>
 
       <fieldset className="grid gap-2 rounded-xl border border-border p-3">
-        <legend className="px-1 text-sm font-medium">Known facts</legend>
+        <legend className="px-1 text-sm font-medium">Known facts <span className="font-normal text-muted">In the source's own words</span></legend>
         {draft.known_facts.map((fact, index) => (
           <div key={index} className="flex min-w-0 items-start gap-2">
-            <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm" rows={2} aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
+            <textarea className="min-h-14 min-w-0 flex-1 rounded-lg border border-border bg-background p-2 text-sm placeholder:text-muted" rows={2} placeholder="“She owes the harbormaster money.”" aria-label={`Known fact ${index + 1}`} value={fact} onChange={(event) => updateDraft((current) => ({ ...current, known_facts: current.known_facts.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry) }))} />
             <button type="button" className="pressable min-h-10 shrink-0 rounded-lg border border-border px-2 text-xs [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => updateDraft((current) => ({ ...current, known_facts: current.known_facts.filter((_, entryIndex) => entryIndex !== index) }))}>Remove</button>
           </div>
         ))}

@@ -486,7 +486,7 @@ describe("narration prompt", () => {
       expect(prompt).toContain("- Oren: A retired navigator.");
       expect(prompt).not.toMatch(/- Oren: [^\n]*\[/);
       expect(prompt).toContain(
-        "- Mira → Oren: status: wary; how met: At sea.; known facts: Keeps a brass compass.; Trust 4/10",
+        "- Mira → Oren: status: wary; how met (in Mira's own words): At sea.; known facts (in Mira's own words): Keeps a brass compass.; Trust 4/10",
       );
       db.close();
     } finally {

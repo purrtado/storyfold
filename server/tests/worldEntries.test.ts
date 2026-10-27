@@ -186,8 +186,8 @@ describe("opening prompt budget", () => {
     const brief = "b".repeat(100_000);
     const entryDescription = "l".repeat(40_000);
     const protagonistPrompt = (description: string): CharacterPrompt => ({
-      id: "p", name: "P", description, appearance: "", personality: "", background: "",
-      baseline_motivations: "", speaking_style: "", knowledge: "", stats_enabled: false, stats: {},
+      id: "p", name: "P", description, appearance: "", personality: "", intimacy: "",
+      knowledge: "", memories: "", thoughts: "", stats_enabled: false, stats: {},
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
       world: { name: "Boundary", setting_brief: brief, entries: [{ kind: "lore", name: "Compact", description: entryDescription, keywords: [] }] },

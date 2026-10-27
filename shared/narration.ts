@@ -47,13 +47,16 @@ function statValues(stats: NarrationContext["stats"], values: StatValues): strin
 /**
  * One authored character as prompt text: description first, then only the
  * labelled fields actually authored — blank fields add no scaffold text —
- * then stat values when the character carries stats.
+ * then stat values when the character carries stats. First-person fields
+ * name whose "I" they are, so the narrator never reads them as its own voice.
  */
 function characterDefinition(character: CharacterPrompt, stats: NarrationContext["stats"]): string {
   const definition = [
     character.description,
-    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.prompt !== "" && character[field.key].length > 0).map(
-      (field) => `${field.prompt}: ${character[field.key]}`,
+    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.prompt !== "" && character[field.key].length > 0).map((field) =>
+      field.voice === "first"
+        ? `${field.prompt} (in ${character.name}'s own words): ${character[field.key]}`
+        : `${field.prompt}: ${character[field.key]}`,
     ),
   ].join("; ");
   const values = character.stats_enabled ? statValues(stats, character.stats) : "";
@@ -62,10 +65,11 @@ function characterDefinition(character: CharacterPrompt, stats: NarrationContext
 
 function relationshipLine(relationship: RelationshipPrompt, stats: NarrationContext["stats"]): string {
   const values = statValues(stats, relationship.stats);
+  const voice = `(in ${relationship.source_name}'s own words)`;
   const parts = [
     ...(relationship.status ? [`status: ${relationship.status}`] : []),
-    ...(relationship.how_met ? [`how met: ${relationship.how_met}`] : []),
-    ...(relationship.known_facts.length > 0 ? [`known facts: ${relationship.known_facts.join("; ")}`] : []),
+    ...(relationship.how_met ? [`how met ${voice}: ${relationship.how_met}`] : []),
+    ...(relationship.known_facts.length > 0 ? [`known facts ${voice}: ${relationship.known_facts.join("; ")}`] : []),
     ...(values ? [values] : []),
   ];
   return `- ${relationship.source_name} → ${relationship.target_name}: ${parts.join("; ")}`;
@@ -133,7 +137,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "Knowledge boundaries",
-    body: "Characters speak and act only from what they themselves know: their Knows notes, what they witnessed in this story, and what they were told. The compendium and world lore are narrator background, not something every character knows.",
+    body: "Characters speak and act only from what they themselves know: their Knows and Remembers notes, what they witnessed in this story, and what they were told. Their Privately thinks notes are never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
   },
   {
     title: "Narration boundaries",

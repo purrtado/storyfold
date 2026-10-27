@@ -30,17 +30,19 @@ export interface WorldEntry {
 
 /**
  * The one character profile shape. `prompt` labels the field in narrator
- * grounding; name and description are rendered without a label.
+ * grounding; name and description are rendered without a label. `voice`
+ * "first" fields are authored in the character's own words, which teaches
+ * the narrator how they speak; "third" fields are factual.
  */
 export const CHARACTER_PROFILE_FIELDS = [
-  { key: "name", label: "Name", prompt: "", required: true },
-  { key: "description", label: "Description", prompt: "", required: true },
-  { key: "appearance", label: "Appearance", prompt: "Appearance", required: false },
-  { key: "personality", label: "Personality", prompt: "Personality", required: false },
-  { key: "background", label: "Background", prompt: "Background", required: false },
-  { key: "baseline_motivations", label: "Motivations", prompt: "Motivations", required: false },
-  { key: "speaking_style", label: "Speaking style", prompt: "Speaking style", required: false },
-  { key: "knowledge", label: "Knowledge", prompt: "Knows", required: false },
+  { key: "name", label: "Name", prompt: "", voice: "third", required: true },
+  { key: "description", label: "Description", prompt: "", voice: "third", required: true },
+  { key: "appearance", label: "Appearance", prompt: "Appearance", voice: "third", required: false },
+  { key: "personality", label: "Personality", prompt: "Personality", voice: "third", required: false },
+  { key: "intimacy", label: "Intimacy", prompt: "Intimacy (sexual preferences and boundaries)", voice: "third", required: false },
+  { key: "knowledge", label: "Knowledge", prompt: "Knows", voice: "first", required: false },
+  { key: "memories", label: "Memories", prompt: "Remembers", voice: "first", required: false },
+  { key: "thoughts", label: "Inner thoughts", prompt: "Privately thinks", voice: "first", required: false },
 ] as const;
 
 export type CharacterProfileKey = (typeof CHARACTER_PROFILE_FIELDS)[number]["key"];

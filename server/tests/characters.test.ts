@@ -91,7 +91,7 @@ describe("world characters API", () => {
     expect([brann.stats_enabled, brann.stats, brann.avatar_id]).toEqual([false, {}, null]);
 
     const plain = await createWorldCharacter(world.id, { name: "Moro", description: "A cartographer." });
-    expect([plain.appearance, plain.personality, plain.background, plain.baseline_motivations, plain.speaking_style, plain.knowledge]).toEqual(["", "", "", "", "", ""]);
+    expect([plain.appearance, plain.personality, plain.intimacy, plain.knowledge, plain.memories, plain.thoughts]).toEqual(["", "", "", "", "", ""]);
 
     expect((await listCharacters(world.id)).map((character) => character.id)).toEqual([brann.id, plain.id]);
     expect(await listCharacters(other.id)).toEqual([]);
@@ -272,7 +272,7 @@ describe("character edits reach narration", () => {
       expect(history[0]!.content).not.toContain("Stale Name");
       expect(history[0]!.content).toContain("Fearless, loudly.");
       expect(history[0]!.content).toContain("The played character.");
-      expect(history[0]!.content).toContain("Knows: The ferry schedule by heart.");
+      expect(history[0]!.content).toContain("Knows (in Current Name's own words): The ferry schedule by heart.");
 
       const transcriptResponse = await fetch(`${server.url}/api/chats/${chat.id}/messages`, { headers: headersWith() });
       const transcript = (await transcriptResponse.json()) as {
@@ -301,15 +301,15 @@ describe("knowledge in the system prompt", () => {
       const chat = createChat(db, world.id, { protagonist_id: mira.id, opening: "Dawn." })!;
 
       const prompt = chatSystemPrompt(db, chat, false);
-      expect(prompt).toContain("Mira of the harbor.; Knows: Where the ledger is hidden.");
-      expect(prompt).toContain("- Oren: Oren of the harbor.; Knows: The captain's real name.");
+      expect(prompt).toContain("Mira of the harbor.; Knows (in Mira's own words): Where the ledger is hidden.");
+      expect(prompt).toContain("- Oren: Oren of the harbor.; Knows (in Oren's own words): The captain's real name.");
       expect(prompt).toContain("- Tamsin: Dockhand.");
       expect(prompt).not.toContain("Who sank the Marigold.");
 
       const card = DEFAULT_PROMPT_CARDS.find((candidate) => candidate.title === "Knowledge boundaries");
       expect(card).toBeDefined();
       expect(prompt).toContain(card!.body);
-      expect(prompt.indexOf(card!.body)).toBeGreaterThan(prompt.indexOf("Knows: The captain's real name."));
+      expect(prompt.indexOf(card!.body)).toBeGreaterThan(prompt.indexOf("Knows (in Oren's own words): The captain's real name."));
       db.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -58,7 +58,7 @@ async function seedStory(
   const protagonist = await jsonRequest(serverBase, "POST", `/api/worlds/${created.id}/characters`, {
     name: "Sable",
     description: "A cynical ferrywoman spy.",
-    speaking_style: "Clipped, sarcastic.",
+    thoughts: "Never trust a man who pays in advance.",
   });
   expect(protagonist.status).toBe(201);
   const { character } = (await protagonist.json()) as { character: { id: string } };
