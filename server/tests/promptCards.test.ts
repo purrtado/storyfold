@@ -18,48 +18,24 @@ describe("narrator prompt from cards", () => {
       const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Sable", description: "A smuggler." }))!;
       const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "At the docks." })!;
 
-      const defaults = chatSystemPrompt(db, chat, false);
-      expect(defaults.startsWith("You are the narrator of an ongoing interactive story.\n\nWorld — Veloria: A drowned city.")).toBe(true);
-      expect(defaults).toContain("Opening: At the docks.");
-      // No cast or relationships: their headings are not sent.
-      expect(defaults).not.toContain("Narrator-controlled cast:");
-      expect(defaults).not.toContain("Current directional relationships");
+      const defaults = chatSystemPrompt(db, chat);
+      expect(defaults.startsWith("<narrator_role>\nYou are the narrator of an ongoing interactive story.\n</narrator_role>\n\n")).toBe(true);
+      expect(defaults).toContain("<world>\nVeloria: A drowned city.\n</world>");
+      expect(defaults).not.toContain("At the docks.");
+      // No cast or relationships: their sections are not sent.
+      expect(defaults).not.toContain("<cast>");
+      expect(defaults).not.toContain("<relationships>");
       expect(defaults).toContain("never tag Sable.");
 
       const cards = listPromptCards(db);
       const role = cards.find((card) => card.title === "Narrator role")!;
       updatePromptCard(db, role.id, { enabled: false });
-      const style = createPromptCard(db, { title: "Style", body: "Write tersely for {{protagonist_name}}.", enabled: true });
+      const style = createPromptCard(db, { title: "Style & Tone", body: "Write tersely for {{protagonist_name}}.", enabled: true });
       reorderPromptCards(db, [style.id, ...cards.map((card) => card.id)]);
 
-      const edited = chatSystemPrompt(db, chat, false);
-      expect(edited.startsWith("Write tersely for Sable.\n\nWorld — Veloria")).toBe(true);
+      const edited = chatSystemPrompt(db, chat);
+      expect(edited.startsWith("<style_tone>\nWrite tersely for Sable.\n</style_tone>\n\n<world>")).toBe(true);
       expect(edited).not.toContain("You are the narrator");
-
-      const continued = chatSystemPrompt(db, chat, true);
-      expect(continued).not.toContain("Opening:");
-      expect(continued).not.toContain("At the docks.");
-    } finally {
-      db.close();
-    }
-  });
-
-  test("the opening card is read live from the chat and drops out when it is blank", () => {
-    const db = openDatabase(":memory:");
-    try {
-      const world = createWorld(db, { name: "Veloria", setting_brief: "A drowned city." });
-      const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Sable", description: "A smuggler." }))!;
-      const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "" })!;
-      expect(chat.opening).toBe("");
-      expect(chatSystemPrompt(db, chat, false)).toContain("No opening was given; open with a scene that fits the world.");
-      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain("Opening: Rain on the pier.");
-
-      const opening = listPromptCards(db).find((card) => card.title === "Opening")!;
-      updatePromptCard(db, opening.id, { body: "Start here: {{opening}}" });
-      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain(
-        "Start here: Opening: Rain on the pier.",
-      );
-      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, true)).not.toContain("Start here");
     } finally {
       db.close();
     }

@@ -3,7 +3,7 @@ import { EventType } from "@tanstack/ai";
 import { join } from "node:path";
 import type { Character, Chat, Message, World, WorldEntry } from "../../shared/domain";
 import type { CharacterPrompt } from "../../shared/narration";
-import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt } from "../../shared/narration";
+import { DEFAULT_PROMPT_CARDS, NARRATION_TOKEN_BUDGET, narratorSystemPrompt, openingMessage } from "../../shared/narration";
 import { countTokens } from "../../shared/tokens";
 import {
   configureProvider,
@@ -191,13 +191,11 @@ describe("opening prompt budget", () => {
     });
     const promptTokens = (descriptionLength: number) => countTokens(narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
       world: { name: "Boundary", setting_brief: brief, entries: [{ kind: "lore", name: "Compact", description: entryDescription, keywords: [] }] },
-      opening: "s",
       stats: [],
       protagonist: protagonistPrompt("d".repeat(descriptionLength)),
       cast: [],
       relationships: [],
-      has_history: false,
-    }));
+    })) + countTokens(openingMessage("s"));
     // Longest description whose prompt still fits; one more character passes the budget.
     let low = 1;
     let high = 100_000;
@@ -272,7 +270,7 @@ describe("live world grounding", () => {
       expect(system.content).toContain("Off-limits pier");
       expect(system.content).toContain("Veloria");
       expect(system.content).toContain("Sable");
-      expect(system.content).toContain("Sable docks at dawn.");
+      expect(history[1]).toEqual({ role: "user", content: openingMessage("Sable docks at dawn.") });
       expect(system.content).not.toContain("Dawn docking");
       expect(system.content).not.toContain("The ferry scrapes ashore.");
       expect(system.content).not.toContain("Another world's lore.");
@@ -318,19 +316,19 @@ describe("live world grounding", () => {
       const [opening, school, later] = calls;
       for (const messages of calls) {
         expect(messages[0]!.content).toContain("Always-known docks.");
-        expect(messages[0]!.content).toContain("Elsewhere — not in the current scene:\n- Ria\n");
+        expect(messages[0]!.content).toContain("<elsewhere>\n- Ria\nCharacters in <elsewhere>");
         expect(messages[0]!.content).not.toContain("The town's only high school.");
         expect(messages[0]!.content).not.toContain("always sketching");
       }
-      expect(opening!.at(-1)!.content).not.toContain("Context for this reply");
+      expect(opening!.at(-1)!.content).not.toContain("<reply_context>");
       expect(school!.at(-1)!.content).toBe(
-        "I walk to school with Ria.\n\n(Context for this reply, not part of the player's message:\n" +
-          "Characters present or mentioned:\n- Ria: Sable's lab partner, always sketching.\n" +
-          "World lore:\n- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
+        "I walk to school with Ria.\n\n<reply_context>\n" +
+          '<characters>\n<character name="Ria">\n  <description>Sable\'s lab partner, always sketching.</description>\n</character>\n</characters>\n' +
+          '<compendium>\n<entry kind="location" name="Widow High">The town\'s only high school.</entry>\n</compendium>\n</reply_context>\n\n<ooc>Keep it short.</ooc>',
       );
       // Ria stays for 4 more messages after her mention; the school does not.
       const laterText = later!.map((message) => message.content).join("\n");
-      expect(laterText).toContain("- Ria: Sable's lab partner, always sketching.");
+      expect(laterText).toContain("<description>Sable's lab partner, always sketching.</description>");
       expect(laterText).not.toContain("The town's only high school.");
 
       const response = await fetch(`${server.url}/api/chats/${chatId}/messages`, { headers: headersWith() });

@@ -30,20 +30,14 @@ export function chatGrounding(db: Database, chat: Pick<Chat, "world_id" | "prota
   };
 }
 
-/** The saved prompt cards filled from the live world and the chat's opening. */
-export function chatSystemPrompt(
-  db: Database,
-  chat: Pick<Chat, "world_id" | "protagonist_id" | "opening">,
-  hasHistory: boolean,
-): string {
+/** The saved prompt cards filled from the live world. */
+export function chatSystemPrompt(db: Database, chat: Pick<Chat, "world_id" | "protagonist_id">): string {
   const grounding = chatGrounding(db, chat);
   return narratorSystemPrompt(listPromptCards(db), {
     world: { name: grounding.world.name, setting_brief: grounding.world.setting_brief, entries: grounding.entries },
-    opening: chat.opening,
     stats: grounding.stats,
     protagonist: grounding.protagonist,
     cast: grounding.cast,
     relationships: grounding.relationships,
-    has_history: hasHistory,
   });
 }

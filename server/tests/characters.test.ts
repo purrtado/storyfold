@@ -272,7 +272,7 @@ describe("character edits reach narration", () => {
       expect(history[0]!.content).not.toContain("Stale Name");
       expect(history[0]!.content).toContain("Fearless, loudly.");
       expect(history[0]!.content).toContain("The played character.");
-      expect(history[0]!.content).toContain("Knows (in Current Name's own words): The ferry schedule by heart.");
+      expect(history[0]!.content).toContain("<knows>The ferry schedule by heart.</knows>");
 
       const transcriptResponse = await fetch(`${server.url}/api/chats/${chat.id}/messages`, { headers: headersWith() });
       const transcript = (await transcriptResponse.json()) as {
@@ -300,16 +300,16 @@ describe("knowledge in the system prompt", () => {
       updateCharacter(db, tamsin.id, { context_mode: "in_scene", summary: "Dockhand." });
       const chat = createChat(db, world.id, { protagonist_id: mira.id, opening: "Dawn." })!;
 
-      const prompt = chatSystemPrompt(db, chat, false);
-      expect(prompt).toContain("Mira of the harbor.; Knows (in Mira's own words): Where the ledger is hidden.");
-      expect(prompt).toContain("- Oren: Oren of the harbor.; Knows (in Oren's own words): The captain's real name.");
+      const prompt = chatSystemPrompt(db, chat);
+      expect(prompt).toContain('<character name="Mira">\n  <description>Mira of the harbor.</description>\n  <knows>Where the ledger is hidden.</knows>\n</character>');
+      expect(prompt).toContain('<character name="Oren">\n  <description>Oren of the harbor.</description>\n  <knows>The captain\'s real name.</knows>\n</character>');
       expect(prompt).toContain("- Tamsin: Dockhand.");
       expect(prompt).not.toContain("Who sank the Marigold.");
 
       const card = DEFAULT_PROMPT_CARDS.find((candidate) => candidate.title === "Knowledge boundaries");
       expect(card).toBeDefined();
       expect(prompt).toContain(card!.body);
-      expect(prompt.indexOf(card!.body)).toBeGreaterThan(prompt.indexOf("Knows (in Oren's own words): The captain's real name."));
+      expect(prompt.indexOf(card!.body)).toBeGreaterThan(prompt.indexOf("<knows>The captain's real name.</knows>"));
       db.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

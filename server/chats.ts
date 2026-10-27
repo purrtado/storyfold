@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Chat } from "../shared/domain";
-import { NARRATION_TOKEN_BUDGET } from "../shared/narration";
+import { NARRATION_TOKEN_BUDGET, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
 import { chatSystemPrompt } from "./grounding";
@@ -73,7 +73,7 @@ export function createChat(db: Database, worldId: string, input: ChatInput): Cha
     created_at: now,
     updated_at: now,
   };
-  const openingTokens = countTokens(chatSystemPrompt(db, chat, false));
+  const openingTokens = countTokens(chatSystemPrompt(db, chat)) + countTokens(openingMessage(chat.opening));
   if (openingTokens > NARRATION_TOKEN_BUDGET) {
     throw new ValidationError(`the opening prompt is ${openingTokens} tokens; the budget is ${NARRATION_TOKEN_BUDGET}`);
   }

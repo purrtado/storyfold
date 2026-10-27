@@ -29,20 +29,20 @@ export interface WorldEntry {
 }
 
 /**
- * The one character profile shape. `prompt` labels the field in narrator
- * grounding; name and description are rendered without a label. `voice`
+ * The one character profile shape. `tag` names the field's element inside the
+ * narrator's `<character>` block; name is the block's attribute instead. `voice`
  * "first" fields are authored in the character's own words, which teaches
  * the narrator how they speak; "third" fields are factual.
  */
 export const CHARACTER_PROFILE_FIELDS = [
-  { key: "name", label: "Name", prompt: "", voice: "third", required: true },
-  { key: "description", label: "Description", prompt: "", voice: "third", required: true },
-  { key: "appearance", label: "Appearance", prompt: "Appearance", voice: "third", required: false },
-  { key: "personality", label: "Personality", prompt: "Personality", voice: "third", required: false },
-  { key: "intimacy", label: "Intimacy", prompt: "Intimacy (sexual preferences and boundaries)", voice: "third", required: false },
-  { key: "knowledge", label: "Knowledge", prompt: "Knows", voice: "first", required: false },
-  { key: "memories", label: "Memories", prompt: "Remembers", voice: "first", required: false },
-  { key: "thoughts", label: "Inner thoughts", prompt: "Privately thinks", voice: "first", required: false },
+  { key: "name", label: "Name", tag: "", voice: "third", required: true },
+  { key: "description", label: "Description", tag: "description", voice: "third", required: true },
+  { key: "appearance", label: "Appearance", tag: "appearance", voice: "third", required: false },
+  { key: "personality", label: "Personality", tag: "personality", voice: "third", required: false },
+  { key: "intimacy", label: "Intimacy", tag: "intimacy", voice: "third", required: false },
+  { key: "knowledge", label: "Knowledge", tag: "knows", voice: "first", required: false },
+  { key: "memories", label: "Memories", tag: "remembers", voice: "first", required: false },
+  { key: "thoughts", label: "Inner thoughts", tag: "thinks", voice: "first", required: false },
 ] as const;
 
 export type CharacterProfileKey = (typeof CHARACTER_PROFILE_FIELDS)[number]["key"];
@@ -168,6 +168,8 @@ export interface Message {
    * triggered but did not fit the budget. Null when nothing was triggered.
    */
   lore: MessageLore | null;
+  /** What this narration was sent and what the provider reported; null on player messages and replies never sent. */
+  usage: MessageUsage | null;
   created_at: string;
   updated_at: string;
 }
@@ -178,8 +180,19 @@ export interface MessageLore {
 }
 
 /**
+ * Token accounting for one narration call. `estimate` splits what was sent,
+ * counted with shared/tokens: the system prompt, the chat history (the
+ * opening message included), and the one-reply notes (reply context and OOC).
+ * `provider` is what the provider reported, null when it reported nothing.
+ */
+export interface MessageUsage {
+  estimate: { system: number; history: number; context: number };
+  provider: { prompt_tokens: number; cached_tokens: number; completion_tokens: number } | null;
+}
+
+/**
  * One ordered piece of the global narrator prompt. Enabled bodies are sent in
- * `position` order; the title only labels the card in the editor.
+ * `position` order, each wrapped in a tag named after its title.
  */
 export interface PromptCard {
   id: string;

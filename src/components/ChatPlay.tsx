@@ -795,9 +795,10 @@ export function ChatPlay(props: {
     const kept = (trailingMessage.variant_ids ?? []).filter((id) => trailingMessage.status === "complete" || id !== trailingMessage.id);
     return [
       ...messages.slice(0, -1),
-      { ...trailingMessage, status: "pending" as const, content: "", direction: live?.direction ?? null, lore: null, variant_ids: [...kept, ""], variant_index: kept.length },
+      { ...trailingMessage, status: "pending" as const, content: "", direction: live?.direction ?? null, lore: null, usage: null, variant_ids: [...kept, ""], variant_index: kept.length },
     ];
   })() : messages;
+  const usageMessage = [...displayedMessages].reverse().find((message) => message.role === "assistant" && message.usage);
 
   useEffect(() => {
     const variantIds = trailingMessage?.role === "assistant" ? trailingMessage.variant_ids ?? [] : [];
@@ -1023,6 +1024,7 @@ export function ChatPlay(props: {
                     status: "complete",
                     direction: null,
                     lore: null,
+                    usage: null,
                     created_at: "",
                     updated_at: "",
                   }}
@@ -1098,6 +1100,7 @@ export function ChatPlay(props: {
             busy={busy || noModel || !hasCompletedNarration}
             showStop={stopAvailable}
             onStop={() => { void props.onStop(stopTarget); }}
+            usage={usageMessage?.usage ? { usage: usageMessage.usage, pending: usageMessage.status === "pending" } : null}
           />
         </>
       )}

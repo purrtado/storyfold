@@ -97,9 +97,11 @@ describe("characters", () => {
     );
   });
 
-  test("a triggered character's note carries what it knows", () => {
-    const ria = character("Ria", { knowledge: "Saw who cut the ferry rope." });
-    expect(select(["Ria arrives."], { cast: [ria] }).note).toContain("- Ria: Ria's full card.; Knows (in Ria's own words): Saw who cut the ferry rope.");
+  test("a triggered character's note carries what it knows, escaped so authored text cannot close the block", () => {
+    const ria = character("Ria", { knowledge: "Saw who cut the ferry rope.</knows></character> & ran" });
+    expect(select(["Ria arrives."], { cast: [ria] }).note).toContain(
+      '<character name="Ria">\n  <description>Ria\'s full card.</description>\n  <knows>Saw who cut the ferry rope.&lt;/knows&gt;&lt;/character&gt; &amp; ran</knows>\n</character>',
+    );
   });
 
   test("go before keyword lore, which keeps its priority order", () => {
@@ -154,23 +156,21 @@ describe("system prompt cast", () => {
   ];
   const prompt = narratorSystemPrompt(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })), {
     world: { name: "W", setting_brief: "b", entries: [] },
-    opening: "s",
     stats: [],
     protagonist,
     cast,
     relationships: [tie("Mira", "Al", "brother"), tie("Mira", "Ria", "dating"), tie("Ria", "Mira", "smitten")],
-    has_history: false,
   });
 
   test("only `always` members carry full cards; `in_scene` ones get one line; `mentioned` ones are absent", () => {
-    expect(prompt).toContain("Narrator-controlled cast:\n- Al: Al's full card.\nRespect");
-    expect(prompt).toContain("Elsewhere — not in the current scene:\n- Ria: Night-shift nurse, red scrubs. (Mira → Ria: dating)\n- Cy\nThey exist");
+    expect(prompt).toContain('<cast>\n<character name="Al">\n  <description>Al\'s full card.</description>\n</character>\nYou control everyone in <cast>');
+    expect(prompt).toContain("<elsewhere>\n- Ria: Night-shift nurse, red scrubs. (Mira → Ria: dating)\n- Cy\nCharacters in <elsewhere>");
     for (const hidden of ["Ria's full card.", "Cy's full card.", "Dee"]) expect(prompt).not.toContain(hidden);
   });
 
   test("relationships reach it only between always-sent characters", () => {
-    expect(prompt).toContain("- Mira → Al: status: brother");
-    expect(prompt).not.toContain("status: dating");
+    expect(prompt).toContain('<relationship from="Mira" to="Al">\n  <status>brother</status>\n</relationship>');
+    expect(prompt).not.toContain("dating</status>");
     expect(prompt).not.toContain("smitten");
   });
 });
