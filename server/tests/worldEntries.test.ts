@@ -318,15 +318,15 @@ describe("live world grounding", () => {
       const [opening, school, later] = calls;
       for (const messages of calls) {
         expect(messages[0]!.content).toContain("Always-known docks.");
-        expect(messages[0]!.content).toContain("Elsewhere — not in the current scene:\n- Ria\n");
+        expect(messages[0]!.content).toContain("<elsewhere>\n- Ria\n</elsewhere>");
         expect(messages[0]!.content).not.toContain("The town's only high school.");
         expect(messages[0]!.content).not.toContain("always sketching");
       }
-      expect(opening!.at(-1)!.content).not.toContain("Context for this reply");
+      expect(opening!.at(-1)!.content).not.toContain("<reply_context>");
       expect(school!.at(-1)!.content).toBe(
-        "I walk to school with Ria.\n\n(Context for this reply, not part of the player's message:\n" +
-          'Characters present or mentioned:\n<character name="Ria">\n  <description>Sable\'s lab partner, always sketching.</description>\n</character>\n' +
-          "World lore:\n- location: Widow High — The town's only high school.)\n\n(OOC: Keep it short.)",
+        "I walk to school with Ria.\n\n<reply_context>\n" +
+          '<characters>\n<character name="Ria">\n  <description>Sable\'s lab partner, always sketching.</description>\n</character>\n</characters>\n' +
+          '<compendium>\n<entry kind="location" name="Widow High">The town\'s only high school.</entry>\n</compendium>\n</reply_context>\n\n<ooc>Keep it short.</ooc>',
       );
       // Ria stays for 4 more messages after her mention; the school does not.
       const laterText = later!.map((message) => message.content).join("\n");

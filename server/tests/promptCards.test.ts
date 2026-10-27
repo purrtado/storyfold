@@ -19,11 +19,12 @@ describe("narrator prompt from cards", () => {
       const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "At the docks." })!;
 
       const defaults = chatSystemPrompt(db, chat, false);
-      expect(defaults.startsWith("You are the narrator of an ongoing interactive story.\n\nWorld — Veloria: A drowned city.")).toBe(true);
-      expect(defaults).toContain("Opening: At the docks.");
-      // No cast or relationships: their headings are not sent.
-      expect(defaults).not.toContain("Narrator-controlled cast:");
-      expect(defaults).not.toContain("Current directional relationships");
+      expect(defaults.startsWith("You are the narrator of an ongoing interactive story.")).toBe(true);
+      expect(defaults).toContain("<world>\n<name>Veloria</name>\n<brief>A drowned city.</brief>\n</world>");
+      expect(defaults).toContain("<opening>\nAt the docks.\n</opening>");
+      // No cast or relationships: their sections are not sent.
+      expect(defaults).not.toContain("<cast>");
+      expect(defaults).not.toContain("<relationships>");
       expect(defaults).toContain("never tag Sable.");
 
       const cards = listPromptCards(db);
@@ -33,11 +34,11 @@ describe("narrator prompt from cards", () => {
       reorderPromptCards(db, [style.id, ...cards.map((card) => card.id)]);
 
       const edited = chatSystemPrompt(db, chat, false);
-      expect(edited.startsWith("Write tersely for Sable.\n\nWorld — Veloria")).toBe(true);
+      expect(edited.startsWith("Write tersely for Sable.\n\n<world>")).toBe(true);
       expect(edited).not.toContain("You are the narrator");
 
       const continued = chatSystemPrompt(db, chat, true);
-      expect(continued).not.toContain("Opening:");
+      expect(continued).not.toContain("<opening>");
       expect(continued).not.toContain("At the docks.");
     } finally {
       db.close();
@@ -52,12 +53,12 @@ describe("narrator prompt from cards", () => {
       const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "" })!;
       expect(chat.opening).toBe("");
       expect(chatSystemPrompt(db, chat, false)).toContain("No opening was given; open with a scene that fits the world.");
-      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain("Opening: Rain on the pier.");
+      expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain("<opening>\nRain on the pier.\n</opening>");
 
       const opening = listPromptCards(db).find((card) => card.title === "Opening")!;
       updatePromptCard(db, opening.id, { body: "Start here: {{opening}}" });
       expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, false)).toContain(
-        "Start here: Opening: Rain on the pier.",
+        "Start here: Rain on the pier.",
       );
       expect(chatSystemPrompt(db, { ...chat, opening: "Rain on the pier." }, true)).not.toContain("Start here");
     } finally {

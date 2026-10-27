@@ -1234,10 +1234,10 @@ describe("regeneration, swipes, edits, and deletes", () => {
       (calls[index].messages as Array<{ role: string; content: string }>).at(-1);
     try {
       await readSse(await postOpening(server.url, chat.id, { direction: "  Open at night.  " }));
-      expect(lastUser(0)).toEqual({ role: "user", content: "Begin the opening scene.\n\n(OOC: Open at night.)" });
+      expect(lastUser(0)).toEqual({ role: "user", content: "Begin the opening scene.\n\n<ooc>Open at night.</ooc>" });
 
       await readSse(await postMessage(server.url, chat.id, { content: "I greet Vex.", direction: "Make Vex angry." }));
-      expect(lastUser(1)).toEqual({ role: "user", content: "I greet Vex.\n\n(OOC: Make Vex angry.)" });
+      expect(lastUser(1)).toEqual({ role: "user", content: "I greet Vex.\n\n<ooc>Make Vex angry.</ooc>" });
       const directed = (await transcript(server.url, chat.id)).at(-1)!;
       expect(directed.direction).toBe("Make Vex angry.");
 
@@ -1251,7 +1251,7 @@ describe("regeneration, swipes, edits, and deletes", () => {
       // Later turns never see earlier directions.
       await readSse(await postMessage(server.url, chat.id, { content: "I leave." }));
       const laterHistory = (calls[3].messages as Array<{ role: string; content: string }>).filter((message) => message.role !== "system");
-      expect(JSON.stringify(laterHistory)).not.toContain("(OOC:");
+      expect(JSON.stringify(laterHistory)).not.toContain("<ooc>");
 
       const invalid = await postRegenerate(server.url, chat.id, { direction: 7 });
       expect(invalid.status).toBe(400);

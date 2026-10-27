@@ -479,10 +479,10 @@ describe("narration prompt", () => {
       const chat = createChat(db, world.id, { protagonist_id: mira.id, opening: "A storm approaches." })!;
 
       const prompt = chatSystemPrompt(db, chat, false);
-      expect(prompt.match(/Stats \(scale and meaning\):/g)).toHaveLength(1);
-      expect(prompt).toContain(`- Health (character, 0–10): ${health.description} 0: dying · 10: unharmed`);
-      expect(prompt).toContain(`- Trust (relationship, 0–10): ${trust.description} 0: none · 10: complete`);
-      expect(prompt).toContain('The player controls their character, Mira:\n<character name="Mira">\n  <description>A careful sailor.</description>\n  <stats>Health 7/10</stats>\n</character>');
+      expect(prompt.match(/<stats_legend>/g)).toHaveLength(1);
+      expect(prompt).toContain(`<stat name="Health" applies_to="character" scale="0–10" low="0: dying" high="10: unharmed">${health.description}</stat>`);
+      expect(prompt).toContain(`<stat name="Trust" applies_to="relationship" scale="0–10" low="0: none" high="10: complete">${trust.description}</stat>`);
+      expect(prompt).toContain('<protagonist>\n<character name="Mira">\n  <description>A careful sailor.</description>\n  <stats>Health 7/10</stats>\n</character>\n</protagonist>');
       expect(prompt).toContain('<character name="Oren">\n  <description>A retired navigator.</description>\n</character>');
       expect(prompt).toContain(
         '<relationship from="Mira" to="Oren">\n  <status>wary</status>\n  <how_met>At sea.</how_met>\n  <known_facts>- Keeps a brass compass.</known_facts>\n  <stats>Trust 4/10</stats>\n</relationship>',

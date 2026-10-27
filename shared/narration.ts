@@ -49,13 +49,25 @@ function escapeMarkup(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** A block with one element per non-empty text; blank ones add no scaffold text. */
-function taggedBlock(tag: string, attributes: Record<string, string>, elements: ReadonlyArray<readonly [string, string]>): string {
-  const attributeText = Object.entries(attributes)
+function attributeText(attributes: Record<string, string>): string {
+  return Object.entries(attributes)
     .map(([name, value]) => ` ${name}="${escapeMarkup(value).replace(/"/g, "&quot;")}"`)
     .join("");
-  const lines = elements.filter(([, text]) => text.length > 0).map(([name, text]) => `  <${name}>${escapeMarkup(text)}</${name}>`);
-  return [`<${tag}${attributeText}>`, ...lines, `</${tag}>`].join("\n");
+}
+
+/** One element on a line: generated attributes plus escaped text. */
+function taggedElement(tag: string, attributes: Record<string, string>, text: string): string {
+  return `<${tag}${attributeText(attributes)}>${escapeMarkup(text)}</${tag}>`;
+}
+
+/** A block with one element per non-empty text; blank ones add no scaffold text. */
+function taggedBlock(tag: string, attributes: Record<string, string>, elements: ReadonlyArray<readonly [string, string]>): string {
+  const lines = elements.filter(([, text]) => text.length > 0).map(([name, text]) => `  ${taggedElement(name, {}, text)}`);
+  return [`<${tag}${attributeText(attributes)}>`, ...lines, `</${tag}>`].join("\n");
+}
+
+function entryElement(entry: Pick<WorldEntry, "kind" | "name" | "description">): string {
+  return taggedElement("entry", { kind: entry.kind, name: entry.name }, entry.description);
 }
 
 /** One authored character: an element per profile field, then stat values when the character carries stats. */
@@ -110,34 +122,42 @@ export function unknownPlaceholders(body: string): string[] {
 
 /** The cards a fresh workspace starts with, and what Reset to defaults restores. */
 export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "body">> = [
-  { title: "Narrator role", body: "You are the narrator of an ongoing interactive story." },
-  { title: "World", body: "World — {{world_name}}: {{world_brief}}" },
-  { title: "Opening", body: "{{opening}}" },
-  { title: "Stats legend", body: "Stats (scale and meaning):\n{{stats}}" },
+  {
+    title: "Narrator role",
+    body: "You are the narrator of an ongoing interactive story. The story's material is given in tagged sections; the instructions refer to them by tag.",
+  },
+  { title: "World", body: "<world>\n<name>{{world_name}}</name>\n<brief>{{world_brief}}</brief>\n</world>" },
+  { title: "Opening", body: "<opening>\n{{opening}}\n</opening>" },
+  { title: "Stats legend", body: "<stats_legend>\n{{stats}}\n</stats_legend>\nEach <stat> gives its scale and what its ends mean." },
   {
     title: "Protagonist",
-    body: "The player controls their character, {{protagonist_name}}:\n{{protagonist}}\nWhenever the player speaks or acts, it is {{protagonist_name}} acting.",
+    body: "<protagonist>\n{{protagonist}}\n</protagonist>\nThe player controls {{protagonist_name}}, the character in <protagonist>. Whenever the player speaks or acts, it is {{protagonist_name}} acting.",
   },
-  { title: "Cast", body: "Narrator-controlled cast:\n{{cast}}\nRespect these definitions as written." },
+  { title: "Cast", body: "<cast>\n{{cast}}\n</cast>\nYou control everyone in <cast>; respect these definitions as written." },
   {
     title: "Elsewhere",
     body: [
-      "Elsewhere — not in the current scene:",
+      "<elsewhere>",
       "{{offstage}}",
-      "They exist and the player may mention them. Do not bring them into a scene unless the player calls for them or the story clearly requires it; never just because they are listed.",
+      "</elsewhere>",
+      "Characters in <elsewhere> are not in the current scene. They exist and the player may mention them. Do not bring them into a scene unless the player calls for them or the story clearly requires it; never just because they are listed.",
     ].join("\n"),
   },
   {
     title: "Compendium",
-    body: "World compendium:\n{{compendium}}\nRespect these definitions as written.",
+    body: "<compendium>\n{{compendium}}\n</compendium>\nRespect these definitions as written.",
   },
   {
     title: "Relationships",
-    body: "Current directional relationships (use as canon, without inventing automatic changes):\n{{relationships}}",
+    body: "<relationships>\n{{relationships}}\n</relationships>\nThese directional relationships are canon; do not invent automatic changes to them.",
   },
   {
     title: "Knowledge boundaries",
-    body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. In a <relationship> block, first-person text is the from character's own words about the to character. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
+    body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. In a <relationship> block, first-person text is the from character's own words about the to character. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The <compendium> is narrator background, not something every character knows.",
+  },
+  {
+    title: "Reply context",
+    body: "The player's latest message may end with a <reply_context> block: characters, relationships, and compendium entries that just became relevant. Treat it like the sections above, as narrator background, not as something the player said.",
   },
   {
     title: "Narration boundaries",
@@ -154,17 +174,18 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "OOC notes",
-    body: "The player may end their latest message with an out-of-character note, (OOC: …). Follow it for this reply only, and never answer or mention it in the narration.",
+    body: "The player's latest message may end with an out-of-character <ooc> note. Follow it for this reply only, and never answer or mention it in the narration.",
   },
   { title: "Continuation", body: "{{continuation}}" },
 ];
 
 /**
  * Narrator grounding: the enabled cards in order, placeholders filled from
- * the world as it is now, separated by blank lines. A card is left out when
- * any placeholder it uses is empty, so a heading never introduces nothing.
- * The chat's opening is sent only until the chat has narration; after that
- * the transcript carries the story.
+ * the world as it is now, separated by blank lines. Every value is escaped
+ * text or generated markup, so authored text cannot close a card's tags. A
+ * card is left out when any placeholder it uses is empty, so a section never
+ * introduces nothing. The chat's opening is sent only until the chat has
+ * narration; after that the transcript carries the story.
  */
 export function narratorSystemPrompt(
   cards: ReadonlyArray<Pick<PromptCard, "body" | "enabled">>,
@@ -178,21 +199,23 @@ export function narratorSystemPrompt(
       .map((relationship) => [relationship.target_id, relationship.status]),
   );
   const values: Record<PromptPlaceholder, string> = {
-    world_name: world.name,
-    world_brief: world.setting_brief,
+    world_name: escapeMarkup(world.name),
+    world_brief: escapeMarkup(world.setting_brief),
     opening: context.has_history
       ? ""
-      : `Opening: ${
-          context.opening.trim().length > 0 ? context.opening : "No opening was given; open with a scene that fits the world."
-        }`,
+      : context.opening.trim().length > 0
+        ? escapeMarkup(context.opening)
+        : "No opening was given; open with a scene that fits the world.",
     stats: context.stats
-      .map(
-        (stat) =>
-          `- ${stat.label} (${stat.applies_to}, ${stat.min}–${stat.max}): ${stat.description} ` +
-          `${stat.min}: ${stat.low_label} · ${stat.max}: ${stat.high_label}`,
+      .map((stat) =>
+        taggedElement(
+          "stat",
+          { name: stat.label, applies_to: stat.applies_to, scale: `${stat.min}–${stat.max}`, low: `${stat.min}: ${stat.low_label}`, high: `${stat.max}: ${stat.high_label}` },
+          stat.description,
+        ),
       )
       .join("\n"),
-    protagonist_name: protagonist.name,
+    protagonist_name: escapeMarkup(protagonist.name),
     protagonist: characterBlock(protagonist, context.stats),
     cast: context.cast
       .filter((member) => member.context_mode === "always")
@@ -203,12 +226,12 @@ export function narratorSystemPrompt(
       .map((member) => {
         const status = protagonistStatus.get(member.id);
         const summary = member.summary === "" ? "" : `: ${member.summary}`;
-        return `- ${member.name}${summary}${status === undefined ? "" : ` (${protagonist.name} → ${member.name}: ${status})`}`;
+        return escapeMarkup(`- ${member.name}${summary}${status === undefined ? "" : ` (${protagonist.name} → ${member.name}: ${status})`}`);
       })
       .join("\n"),
     compendium: world.entries
       .filter((entry) => entry.keywords.length === 0)
-      .map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)
+      .map(entryElement)
       .join("\n"),
     relationships: context.relationships
       .filter((relationship) => always.has(relationship.source_id) && always.has(relationship.target_id))
@@ -236,7 +259,7 @@ export function narratorSystemPrompt(
 
 /** The out-of-character note appended to the latest player input for one reply. */
 export function directionNote(direction: string): string {
-  return `\n\n(OOC: ${direction})`;
+  return `\n\n<ooc>${escapeMarkup(direction)}</ooc>`;
 }
 
 export interface ReplyContext {
@@ -253,10 +276,10 @@ export interface ReplyContext {
  */
 export function contextNote(context: ReplyContext, stats: NarrationContext["stats"]): string {
   const sections = [
-    ["Characters present or mentioned:", context.characters.map((character) => characterBlock(character, stats))],
-    ["Their relationships:", context.relationships.map((relationship) => relationshipBlock(relationship, stats))],
-    ["World lore:", context.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)],
+    ["characters", context.characters.map((character) => characterBlock(character, stats))],
+    ["relationships", context.relationships.map((relationship) => relationshipBlock(relationship, stats))],
+    ["compendium", context.entries.map(entryElement)],
   ] as const;
-  const body = sections.filter(([, lines]) => lines.length > 0).map(([heading, lines]) => [heading, ...lines].join("\n"));
-  return `\n\n(Context for this reply, not part of the player's message:\n${body.join("\n")})`;
+  const body = sections.filter(([, items]) => items.length > 0).map(([tag, items]) => [`<${tag}>`, ...items, `</${tag}>`].join("\n"));
+  return `\n\n<reply_context>\n${body.join("\n")}\n</reply_context>`;
 }
