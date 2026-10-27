@@ -1,6 +1,8 @@
 import { chat, EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
+import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
+import type { ProviderApi } from "./providers";
 
 export const MAX_MESSAGE_CHARS = 100_000;
 
@@ -16,7 +18,7 @@ interface SafeErrorPayload {
 }
 
 const CONTEXT_HINTS =
-  /context(_| )?(length|window|limit)|maximum context|too many (tokens|messages)|input.*(too long|exceeds)|prompt too long|token limit/i;
+  /context(_| )?(length|window|limit)|maximum context|too many (tokens|messages)|input.*(too long|exceeds)|prompt (is )?too long|token limit/i;
 
 /**
  * Maps upstream failures to actionable-but-safe status classes. Messages are
@@ -30,6 +32,10 @@ function classifyUpstreamError(status?: number, code?: string, text?: string): S
   const statusFromCode = code !== undefined && /^\d{3}$/.test(code) ? Number(code) : undefined;
   const effectiveStatus = status ?? statusFromCode;
   const hint = `${code ?? ""} ${text ?? ""}`;
+  // Anthropic's max_tokens stop is a cut-off reply, not a context overflow.
+  if (code === "max_tokens") {
+    return { message: "The narrator's reply was cut off before it finished. Try again.", code: "incomplete_generation" };
+  }
   if (CONTEXT_HINTS.test(hint)) {
     return {
       message:
@@ -142,9 +148,10 @@ async function* sanitizeRunStream(
 export interface NarrationRunRequest {
   /** The chat id; the SDK's conversation id and prompt cache key. */
   threadId: string;
+  api: ProviderApi;
   baseUrl: string;
   model: string;
-  /** null for keyless local servers; no Authorization header is sent. */
+  /** null for keyless local servers; no credential header is sent. */
   apiKey: string | null;
   /** Fixed grounding instructions; prepended via the SDK's systemPrompts. */
   systemPrompt?: string;
@@ -163,15 +170,40 @@ export interface NarrationRun {
 }
 
 /** Strips the placeholder credential the SDK insists on for keyless providers. */
-function withoutAuthorization(upstreamFetch: typeof fetch): typeof fetch {
+function withoutCredentials(upstreamFetch: typeof fetch): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     headers.delete("authorization");
+    headers.delete("x-api-key");
     return upstreamFetch(input, { ...init, headers });
   }) as typeof fetch;
 }
 
-/** Starts a sanitized OpenAI-compatible chat-completions run for server-side consumption. */
+function textAdapter(request: NarrationRunRequest) {
+  const upstreamFetch = request.upstreamFetch ?? fetch;
+  // The SDKs fall back to ambient env keys when none is given; a placeholder
+  // keeps those secrets away from arbitrary provider hosts.
+  const apiKey = request.apiKey ?? "keyless";
+  const fetchImpl = request.apiKey === null ? withoutCredentials(upstreamFetch) : upstreamFetch;
+  if (request.api === "anthropic") {
+    return createAnthropicChat(request.model as Parameters<typeof createAnthropicChat>[0], apiKey, {
+      baseURL: request.baseUrl,
+      // Stored keys are API keys; never reinterpret one as an OAuth token.
+      auth: "api-key",
+      maxRetries: 0,
+      fetch: fetchImpl,
+    });
+  }
+  return openaiCompatibleText(request.model, {
+    baseURL: request.baseUrl,
+    apiKey,
+    api: "chat-completions",
+    maxRetries: 0,
+    fetch: fetchImpl,
+  });
+}
+
+/** Starts a sanitized chat-completions or Messages run for server-side consumption. */
 export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
   const abortController = request.abortController ?? new AbortController();
   const disconnectSignal = request.disconnectSignal;
@@ -182,16 +214,7 @@ export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
     disconnectSignal?.addEventListener("abort", abortFromDisconnect, { once: true });
   }
 
-  const upstreamFetch = request.upstreamFetch ?? fetch;
-  const adapter = openaiCompatibleText(request.model, {
-    baseURL: request.baseUrl,
-    // The SDK falls back to OPENAI_API_KEY when no key is given; a placeholder
-    // keeps that ambient secret away from arbitrary provider hosts.
-    apiKey: request.apiKey ?? "keyless",
-    api: "chat-completions",
-    maxRetries: 0,
-    fetch: request.apiKey === null ? withoutAuthorization(upstreamFetch) : upstreamFetch,
-  });
+  const adapter = textAdapter(request);
 
   const stream = chat({
     adapter,

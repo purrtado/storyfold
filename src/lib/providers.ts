@@ -1,6 +1,9 @@
+export type ProviderApi = "openai" | "anthropic";
+
 export type Provider = {
   id: string;
   name: string;
+  api: ProviderApi;
   base_url: string;
   has_api_key: boolean;
   disabled_models: string[];
@@ -33,6 +36,7 @@ export type ModelListing = {
 
 export type ProviderCreate = {
   name: string;
+  api: ProviderApi;
   base_url: string;
   api_key?: string;
 };

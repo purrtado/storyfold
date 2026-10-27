@@ -18,9 +18,14 @@ const LEGACY_PROVIDER_ID = "zai";
 const LEGACY_PROVIDER_NAME = "Z.AI Coding Plan";
 const LEGACY_MODELS = ["glm-5.3", "glm-5.3-flash"];
 
+/** Wire protocol: OpenAI chat completions, or Anthropic Messages. */
+export const PROVIDER_APIS = ["openai", "anthropic"] as const;
+export type ProviderApi = (typeof PROVIDER_APIS)[number];
+
 export interface StoredProvider {
   id: string;
   name: string;
+  api: ProviderApi;
   base_url: string;
   api_key: string | null;
   /** Sticky opt-outs: models the provider lists later stay enabled unless named here. */
@@ -43,6 +48,7 @@ export interface ProviderConfig {
 export interface PublicProvider {
   id: string;
   name: string;
+  api: ProviderApi;
   base_url: string;
   has_api_key: boolean;
   disabled_models: string[];
@@ -52,6 +58,7 @@ export interface PublicProvider {
 
 export interface ProviderCreate {
   name: string;
+  api: ProviderApi;
   base_url: string;
   api_key: string | null;
   manual_models: string[];
@@ -70,6 +77,7 @@ export function publicProvider(provider: StoredProvider): PublicProvider {
   return {
     id: provider.id,
     name: provider.name,
+    api: provider.api,
     base_url: provider.base_url,
     has_api_key: provider.api_key !== null,
     disabled_models: provider.disabled_models,
@@ -98,6 +106,13 @@ function parseName(value: unknown): string {
     throw new ValidationError(`name must be 1-${NAME_MAX_LENGTH} characters`);
   }
   return trimmed;
+}
+
+function parseApi(value: unknown): ProviderApi {
+  if (!PROVIDER_APIS.includes(value as ProviderApi)) {
+    throw new ValidationError(`api must be one of ${PROVIDER_APIS.join(", ")}`);
+  }
+  return value as ProviderApi;
 }
 
 /** http(s) only, no embedded credentials, query or fragment; trailing slashes dropped. */
@@ -142,6 +157,7 @@ function parseModelList(value: unknown, field: string): string[] {
 export function parseProviderCreate(body: Record<string, unknown>): ProviderCreate {
   return {
     name: parseName(body.name),
+    api: body.api === undefined ? "openai" : parseApi(body.api),
     base_url: parseBaseUrl(body.base_url),
     api_key: body.api_key === undefined || body.api_key === null ? null : parseApiKey(body.api_key),
     manual_models: body.manual_models === undefined ? [] : parseModelList(body.manual_models, "manual_models"),
@@ -188,6 +204,8 @@ function parseStoredProvider(value: unknown): StoredProvider | null {
     return {
       id: record.id,
       name: parseName(record.name),
+      // Providers saved before Anthropic support were all OpenAI-compatible.
+      api: record.api === undefined ? "openai" : parseApi(record.api),
       base_url: parseBaseUrl(record.base_url),
       api_key: record.api_key === null ? null : parseApiKey(record.api_key),
       disabled_models: parseModelList(record.disabled_models, "disabled_models"),
@@ -206,6 +224,7 @@ function migrateLegacyConfig(record: Record<string, unknown>): ProviderConfig | 
     const provider: StoredProvider = {
       id: LEGACY_PROVIDER_ID,
       name: LEGACY_PROVIDER_NAME,
+      api: "openai",
       base_url: parseBaseUrl(record.base_url),
       api_key: parseApiKey(record.api_key),
       disabled_models: [],
