@@ -1,11 +1,23 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useId, useState, type FormEvent, type RefObject } from "react";
-import type { CharacterContextMode, CharacterProfile } from "../../shared/domain";
+import type { CharacterContextMode, CharacterProfile, CharacterProfileKey } from "../../shared/domain";
 import { CHARACTER_PROFILE_FIELDS } from "../../shared/domain";
 import { AVATAR_ACCEPTED_TYPES, AVATAR_MAX_BYTES, type CharacterCreateInput, type CharacterInput, type CharacterPatch, type CharacterSceneFields } from "../lib/storyApi";
 import { Avatar } from "./Avatar";
 
 const optionalFields = CHARACTER_PROFILE_FIELDS.filter(({ required }) => !required);
+
+const fieldGroups = [
+  { voice: "third", title: "Facts", help: "Written as plain, third-person fact." },
+  { voice: "first", title: "In their own words", help: "Written in first person, in their voice: the narrator learns how they speak from these." },
+] as const;
+
+const placeholders: Partial<Record<CharacterProfileKey, string>> = {
+  intimacy: "Sexual preferences and boundaries.",
+  knowledge: "What I know that matters here. “My mother ran the smugglers' boats; I know every tide in this bay.”",
+  memories: "What happened to me that matters here. “The winter the mill burned, I…”",
+  thoughts: "What I want, fear, and keep to myself.",
+};
 
 function emptyProfileInput(): CharacterInput {
   return Object.fromEntries(CHARACTER_PROFILE_FIELDS.map(({ key }) => [key, ""])) as CharacterInput;
@@ -103,14 +115,7 @@ export function CharacterProfileDialog<T extends CharacterProfile & CharacterSce
     event.preventDefault();
     if (saving) return;
     const input: CharacterCreateInput = {
-      name: value.name.trim(),
-      description: value.description.trim(),
-      appearance: value.appearance?.trim() ?? "",
-      personality: value.personality?.trim() ?? "",
-      background: value.background?.trim() ?? "",
-      baseline_motivations: value.baseline_motivations?.trim() ?? "",
-      speaking_style: value.speaking_style?.trim() ?? "",
-      knowledge: value.knowledge?.trim() ?? "",
+      ...(Object.fromEntries(CHARACTER_PROFILE_FIELDS.map(({ key }) => [key, value[key]?.trim() ?? ""])) as CharacterInput),
       ...(props.sceneContext && {
         context_mode: contextMode,
         summary: summary.trim(),
@@ -195,11 +200,19 @@ export function CharacterProfileDialog<T extends CharacterProfile & CharacterSce
                     </div>
                   </div>
                 )}
-                {optionalFields.map(({ key, label }) => (
-                  <label key={key} className="grid gap-2 text-sm font-medium">
-                    {label} <span className="font-normal text-muted">Optional</span>
-                    <textarea rows={4} value={value[key] ?? ""} onChange={(event) => setValue({ ...value, [key]: event.target.value })} className="min-h-28 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
-                  </label>
+                {fieldGroups.map((group) => (
+                  <section key={group.voice} aria-label={group.title} className="grid gap-5 border-bs border-border pbs-6">
+                    <div className="grid gap-1">
+                      <h3 className="text-base font-semibold">{group.title}</h3>
+                      <p className="text-sm text-muted">{group.help}</p>
+                    </div>
+                    {optionalFields.filter((field) => field.voice === group.voice).map(({ key, label }) => (
+                      <label key={key} className="grid gap-2 text-sm font-medium">
+                        {label} <span className="font-normal text-muted">Optional</span>
+                        <textarea rows={4} placeholder={placeholders[key]} value={value[key] ?? ""} onChange={(event) => setValue({ ...value, [key]: event.target.value })} className="min-h-28 resize-y rounded-lg border border-border bg-background px-3 py-3 text-base font-normal leading-6 text-foreground placeholder:text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
+                      </label>
+                    ))}
+                  </section>
                 ))}
                 {props.sceneContext && (
                   <div className="grid gap-5 border-bs border-border pbs-6">
