@@ -171,8 +171,8 @@ describe("system prompt cast", () => {
   });
 
   test("relationships reach it only between always-sent characters", () => {
-    expect(prompt).toContain("- Mira → Al: status: brother");
-    expect(prompt).not.toContain("status: dating");
+    expect(prompt).toContain('<relationship from="Mira" to="Al">\n  <status>brother</status>\n</relationship>');
+    expect(prompt).not.toContain("dating</status>");
     expect(prompt).not.toContain("smitten");
   });
 });

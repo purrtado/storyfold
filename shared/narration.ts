@@ -49,32 +49,30 @@ function escapeMarkup(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/**
- * One authored character as a `<character>` block: one element per authored
- * field — blank fields add no scaffold text — then stat values when the
- * character carries stats.
- */
-function characterBlock(character: CharacterPrompt, stats: NarrationContext["stats"]): string {
-  const values = character.stats_enabled ? statValues(stats, character.stats) : "";
-  const elements = [
-    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.tag !== "" && character[field.key].length > 0).map(
-      (field) => [field.tag, character[field.key]] as const,
-    ),
-    ...(values ? [["stats", values] as const] : []),
-  ].map(([tag, text]) => `  <${tag}>${escapeMarkup(text)}</${tag}>`);
-  return [`<character name="${escapeMarkup(character.name).replace(/"/g, "&quot;")}">`, ...elements, "</character>"].join("\n");
+/** A block with one element per non-empty text; blank ones add no scaffold text. */
+function taggedBlock(tag: string, attributes: Record<string, string>, elements: ReadonlyArray<readonly [string, string]>): string {
+  const attributeText = Object.entries(attributes)
+    .map(([name, value]) => ` ${name}="${escapeMarkup(value).replace(/"/g, "&quot;")}"`)
+    .join("");
+  const lines = elements.filter(([, text]) => text.length > 0).map(([name, text]) => `  <${name}>${escapeMarkup(text)}</${name}>`);
+  return [`<${tag}${attributeText}>`, ...lines, `</${tag}>`].join("\n");
 }
 
-function relationshipLine(relationship: RelationshipPrompt, stats: NarrationContext["stats"]): string {
-  const values = statValues(stats, relationship.stats);
-  const voice = `(in ${relationship.source_name}'s own words)`;
-  const parts = [
-    ...(relationship.status ? [`status: ${relationship.status}`] : []),
-    ...(relationship.how_met ? [`how met ${voice}: ${relationship.how_met}`] : []),
-    ...(relationship.known_facts.length > 0 ? [`known facts ${voice}: ${relationship.known_facts.join("; ")}`] : []),
-    ...(values ? [values] : []),
-  ];
-  return `- ${relationship.source_name} → ${relationship.target_name}: ${parts.join("; ")}`;
+/** One authored character: an element per profile field, then stat values when the character carries stats. */
+function characterBlock(character: CharacterPrompt, stats: NarrationContext["stats"]): string {
+  return taggedBlock("character", { name: character.name }, [
+    ...CHARACTER_PROFILE_FIELDS.filter((field) => field.tag !== "").map((field) => [field.tag, character[field.key]] as const),
+    ["stats", character.stats_enabled ? statValues(stats, character.stats) : ""],
+  ]);
+}
+
+function relationshipBlock(relationship: RelationshipPrompt, stats: NarrationContext["stats"]): string {
+  return taggedBlock("relationship", { from: relationship.source_name, to: relationship.target_name }, [
+    ["status", relationship.status],
+    ["how_met", relationship.how_met],
+    ["known_facts", relationship.known_facts.map((fact) => `- ${fact}`).join("\n")],
+    ["stats", statValues(stats, relationship.stats)],
+  ]);
 }
 
 /** The protagonist and `always` cast: the characters whose full profiles live in the system prompt. */
@@ -139,7 +137,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "Knowledge boundaries",
-    body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
+    body: "Each <character> block describes one character; first-person text inside it is that character's own words, never yours or the player's. In a <relationship> block, first-person text is the from character's own words about the to character. <intimacy> holds their sexual preferences and boundaries. Characters speak and act only from what they themselves know: their <knows> and <remembers>, what they witnessed in this story, and what they were told. Their <thinks> is never said aloud unless they choose to. The compendium and world lore are narrator background, not something every character knows.",
   },
   {
     title: "Narration boundaries",
@@ -214,7 +212,7 @@ export function narratorSystemPrompt(
       .join("\n"),
     relationships: context.relationships
       .filter((relationship) => always.has(relationship.source_id) && always.has(relationship.target_id))
-      .map((relationship) => relationshipLine(relationship, context.stats))
+      .map((relationship) => relationshipBlock(relationship, context.stats))
       .join("\n"),
     continuation: context.has_history
       ? "Continue the established story from the player's latest input; do not restart or retell earlier events."
@@ -256,7 +254,7 @@ export interface ReplyContext {
 export function contextNote(context: ReplyContext, stats: NarrationContext["stats"]): string {
   const sections = [
     ["Characters present or mentioned:", context.characters.map((character) => characterBlock(character, stats))],
-    ["Their relationships:", context.relationships.map((relationship) => relationshipLine(relationship, stats))],
+    ["Their relationships:", context.relationships.map((relationship) => relationshipBlock(relationship, stats))],
     ["World lore:", context.entries.map((entry) => `- ${entry.kind}: ${entry.name} — ${entry.description}`)],
   ] as const;
   const body = sections.filter(([, lines]) => lines.length > 0).map(([heading, lines]) => [heading, ...lines].join("\n"));

@@ -485,7 +485,7 @@ describe("narration prompt", () => {
       expect(prompt).toContain('The player controls their character, Mira:\n<character name="Mira">\n  <description>A careful sailor.</description>\n  <stats>Health 7/10</stats>\n</character>');
       expect(prompt).toContain('<character name="Oren">\n  <description>A retired navigator.</description>\n</character>');
       expect(prompt).toContain(
-        "- Mira → Oren: status: wary; how met (in Mira's own words): At sea.; known facts (in Mira's own words): Keeps a brass compass.; Trust 4/10",
+        '<relationship from="Mira" to="Oren">\n  <status>wary</status>\n  <how_met>At sea.</how_met>\n  <known_facts>- Keeps a brass compass.</known_facts>\n  <stats>Trust 4/10</stats>\n</relationship>',
       );
       db.close();
     } finally {
