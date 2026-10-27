@@ -562,8 +562,8 @@ export function CharacterRoster(props: {
       )}
 
       <label className="grid gap-1 text-sm">
-        How they met
-        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3 placeholder:text-muted" rows={3} placeholder="In the source's own words. “I met her on the night ferry…”" value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
+        <span>How they met <span className="text-muted">In the source's own words</span></span>
+        <textarea className="min-h-20 rounded-lg border border-border bg-background p-3 placeholder:text-muted" rows={3} placeholder="“I met her on the night ferry…”" value={draft.how_met} onChange={(event) => updateDraft((current) => ({ ...current, how_met: event.target.value }))} />
       </label>
       <label className="grid gap-1 text-sm">
         Current status
