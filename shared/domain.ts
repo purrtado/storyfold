@@ -191,8 +191,8 @@ export interface MessageUsage {
 }
 
 /**
- * One ordered piece of the global narrator prompt. Enabled bodies are sent in
- * `position` order, each wrapped in a tag named after its title.
+ * One ordered piece of a prompt preset. The active preset's enabled bodies are
+ * sent in `position` order, each wrapped in a tag named after its title.
  */
 export interface PromptCard {
   id: string;
@@ -200,6 +200,15 @@ export interface PromptCard {
   body: string;
   enabled: boolean;
   position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A named set of prompt cards; exactly one is active and sent to every chat. */
+export interface PromptPreset {
+  id: string;
+  name: string;
+  active: boolean;
   created_at: string;
   updated_at: string;
 }

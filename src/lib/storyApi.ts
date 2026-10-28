@@ -1,4 +1,4 @@
-import type { Chat, Character, CharacterProfile, Message, PromptCard, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { Chat, Character, CharacterProfile, Message, PromptCard, PromptPreset, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 import type { ModelSelection } from "./providers";
 
 export type RelationshipInput = {
@@ -289,6 +289,32 @@ export async function resetPromptCards(): Promise<PromptCard[]> {
     method: "POST",
   })).cards;
 }
+
+export async function fetchPromptPresets(): Promise<PromptPreset[]> {
+  return (await request<{ presets: PromptPreset[] }>("/api/prompt-presets")).presets;
+}
+
+/** The new preset becomes active; `clone_of` copies that preset's cards, null starts from the defaults. */
+export async function createPromptPreset(input: { name: string; clone_of: string | null }): Promise<PromptPreset> {
+  return (await request<{ preset: PromptPreset }>("/api/prompt-presets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })).preset;
+}
+
+export async function renamePromptPreset(id: string, name: string): Promise<PromptPreset> {
+  return (await request<{ preset: PromptPreset }>(`/api/prompt-presets/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  })).preset;
+}
+
+export async function activatePromptPreset(id: string): Promise<PromptPreset> {
+  return (await request<{ preset: PromptPreset }>(`/api/prompt-presets/${encodeURIComponent(id)}/activate`, {
+    method: "POST",
+  })).preset;
+}
+
 export async function createStat(input: StatFields): Promise<StatDefinition> {
   return (
     await request<{ stat: StatDefinition }>("/api/stats", {

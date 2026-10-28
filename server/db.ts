@@ -137,8 +137,20 @@ CREATE UNIQUE INDEX messages_one_pending
 CREATE UNIQUE INDEX messages_one_selected
   ON messages(chat_id, position) WHERE selected = 1;
 
+CREATE TABLE prompt_presets (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL CHECK (active IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX prompt_presets_one_active
+  ON prompt_presets(active) WHERE active = 1;
+
 CREATE TABLE prompt_cards (
   id TEXT PRIMARY KEY,
+  preset_id TEXT NOT NULL REFERENCES prompt_presets(id),
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
@@ -157,7 +169,7 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -171,14 +183,14 @@ const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
   { applies_to: "relationship", label: "Tension", description: "Unresolved friction between them. High tension colors every exchange.", low_label: "at ease", high_label: "hostile", min: 0, max: 10, default_value: 0, color: "orange" },
 ];
 
-/** Replaces every prompt card with the defaults, in order and enabled. */
-export function insertDefaultPromptCards(db: Database): void {
+/** Replaces every card of `presetId` with the defaults, in order and enabled. */
+export function insertDefaultPromptCards(db: Database, presetId: string): void {
   const now = nowIso();
-  db.exec("DELETE FROM prompt_cards");
+  db.query("DELETE FROM prompt_cards WHERE preset_id = ?").run(presetId);
   const insert = db.query(
-    "INSERT INTO prompt_cards (id, title, body, enabled, position, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
+    "INSERT INTO prompt_cards (id, preset_id, title, body, enabled, position, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
   );
-  DEFAULT_PROMPT_CARDS.forEach((card, index) => insert.run(newId(), card.title, card.body, index + 1, now, now));
+  DEFAULT_PROMPT_CARDS.forEach((card, index) => insert.run(newId(), presetId, card.title, card.body, index + 1, now, now));
 }
 
 /**
@@ -211,7 +223,9 @@ export function openDatabase(path: string): Database {
     for (const stat of STAT_BANK_SEED) {
       insert.run(newId(), stat.applies_to, stat.label, stat.description, stat.low_label, stat.high_label, stat.min, stat.max, stat.default_value, stat.color, now, now);
     }
-    insertDefaultPromptCards(db);
+    const presetId = newId();
+    db.query("INSERT INTO prompt_presets (id, name, active, created_at, updated_at) VALUES (?, 'Default', 1, ?, ?)").run(presetId, now, now);
+    insertDefaultPromptCards(db, presetId);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   })();
   return db;
