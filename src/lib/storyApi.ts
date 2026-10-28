@@ -315,6 +315,11 @@ export async function activatePromptPreset(id: string): Promise<PromptPreset> {
   })).preset;
 }
 
+/** Deleting the active preset activates the oldest remaining one; the last preset is refused. */
+export async function deletePromptPreset(id: string): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/prompt-presets/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function createStat(input: StatFields): Promise<StatDefinition> {
   return (
     await request<{ stat: StatDefinition }>("/api/stats", {

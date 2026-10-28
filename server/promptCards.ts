@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { PromptCard, PromptPreset } from "../shared/domain";
 import { unknownPlaceholders } from "../shared/narration";
 import { insertDefaultPromptCards, newId, nowIso } from "./db";
-import { ValidationError, optionalText, requiredText } from "./worlds";
+import { ConflictError, ValidationError, optionalText, requiredText } from "./worlds";
 
 export type PromptCardPatch = Partial<Pick<PromptCard, "title" | "body" | "enabled">>;
 
@@ -193,5 +193,22 @@ export function activatePromptPreset(db: Database, id: string): PromptPreset | n
     if (!getPromptPreset(db, id)) return null;
     activate(db, id);
     return getPromptPreset(db, id);
+  }).immediate();
+}
+
+/**
+ * Deletes a preset and its cards; false when unknown. The last preset cannot
+ * go, and deleting the active one activates the oldest remaining preset.
+ */
+export function deletePromptPreset(db: Database, id: string): boolean {
+  return db.transaction((): boolean => {
+    const preset = getPromptPreset(db, id);
+    if (!preset) return false;
+    const remaining = listPromptPresets(db).filter((other) => other.id !== id);
+    if (remaining.length === 0) throw new ConflictError("The last preset cannot be deleted");
+    db.query("DELETE FROM prompt_cards WHERE preset_id = ?").run(id);
+    db.query("DELETE FROM prompt_presets WHERE id = ?").run(id);
+    if (preset.active) activate(db, remaining[0]!.id);
+    return true;
   }).immediate();
 }

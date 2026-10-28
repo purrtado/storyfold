@@ -8,6 +8,7 @@ import {
   createPromptCard,
   createPromptPreset,
   deletePromptCard,
+  deletePromptPreset,
   fetchPromptCards,
   fetchPromptPresets,
   orderPromptCards,
@@ -205,6 +206,11 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
     return runPresetAction(async () => { await createPromptPreset({ name, clone_of: cloneOf }); }, "Could not create the preset.");
   };
 
+  const deletePreset = (preset: PromptPreset) => {
+    if (!window.confirm(`Delete the preset “${preset.name}” and all its cards?`)) return;
+    return runPresetAction(async () => { await deletePromptPreset(preset.id); }, "Could not delete the preset.");
+  };
+
   const renamePreset = async () => {
     const name = presetForm?.name.trim();
     if (!active || !name) return;
@@ -337,6 +343,7 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
                 <div className="flex flex-wrap gap-2">
                   <button type="button" className={buttonClass} disabled={presetBusy} onClick={() => { setPresetError(""); setPresetForm({ kind: "rename", name: active.name }); }}><Pencil className="size-4" aria-hidden="true" />Rename</button>
                   <button type="button" className={buttonClass} disabled={presetBusy} onClick={() => { setPresetError(""); setPresetForm({ kind: "new", name: "" }); }}><Plus className="size-4" aria-hidden="true" />New preset</button>
+                  <button type="button" className="pressable inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm text-muted disabled:pointer-events-none disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={presetBusy || presets.length === 1} onClick={() => void deletePreset(active)}><Trash2 className="size-4" aria-hidden="true" />Delete</button>
                 </div>
               </div>
               <select aria-label="Active preset" className={inputClass} value={active.id} disabled={presetBusy || ordering} onChange={(event) => void switchPreset(event.target.value)}>

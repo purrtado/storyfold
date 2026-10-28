@@ -78,6 +78,7 @@ import {
   createPromptCard,
   createPromptPreset,
   deletePromptCard,
+  deletePromptPreset,
   listPromptCards,
   listPromptPresets,
   parsePromptCardInput,
@@ -570,6 +571,9 @@ async function handlePromptPresets(request: Request, id: string | undefined, act
       if (body instanceof Response) return body;
       const preset = renamePromptPreset(db, id, parsePromptPresetPatch(body).name);
       return preset ? jsonResponse({ preset }) : notFound("Unknown prompt preset");
+    }
+    if (request.method === "DELETE") {
+      return deletePromptPreset(db, id) ? jsonResponse({ ok: true }) : notFound("Unknown prompt preset");
     }
     return jsonError(405, "Method not allowed");
   } catch (error) {

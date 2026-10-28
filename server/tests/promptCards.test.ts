@@ -218,4 +218,25 @@ describe("prompt preset API", () => {
     expect((await call("PATCH", "/prompt-presets/missing", { name: "Ghost" })).status).toBe(404);
     expect(await presets()).toEqual(before);
   });
+
+  test("deleting the active preset activates the oldest one; the last preset is refused", async () => {
+    const [oldest, ...rest] = await presets();
+    const active = rest.find((preset) => preset.active)!;
+    expect((await call("POST", `/prompt-presets/${oldest!.id}/activate`)).status).toBe(200);
+    const oldestCards = await cards();
+    expect((await call("POST", `/prompt-presets/${active.id}/activate`)).status).toBe(200);
+
+    expect((await call("DELETE", `/prompt-presets/${active.id}`)).status).toBe(200);
+    expect((await presets()).find((preset) => preset.active)?.id).toBe(oldest!.id);
+    expect(await cards()).toEqual(oldestCards);
+
+    for (const preset of rest.filter((preset) => preset.id !== active.id)) {
+      expect((await call("DELETE", `/prompt-presets/${preset.id}`)).status).toBe(200);
+    }
+    const last = await call("DELETE", `/prompt-presets/${oldest!.id}`);
+    expect(last.status).toBe(409);
+    expect(((await last.json()) as { code: string }).code).toBe("conflict");
+    expect((await call("DELETE", "/prompt-presets/missing")).status).toBe(404);
+    expect((await presets()).map((preset) => preset.id)).toEqual([oldest!.id]);
+  });
 });
