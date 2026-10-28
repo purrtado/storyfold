@@ -146,7 +146,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
     title: "Elsewhere",
     body: [
       "{{offstage}}",
-      "Characters in <elsewhere> are not in the current scene. They exist and the player may mention them. Do not bring them into a scene unless the player calls for them or the story clearly requires it; never just because they are listed.",
+      "Characters in <elsewhere> are not in the current scene. They exist and the player may mention them. Bring them in when the player calls for them or the story needs them.",
     ].join("\n"),
   },
   {
@@ -155,7 +155,7 @@ export const DEFAULT_PROMPT_CARDS: ReadonlyArray<Pick<PromptCard, "title" | "bod
   },
   {
     title: "Relationships",
-    body: "{{relationships}}\nThese directional relationships are canon; do not invent automatic changes to them.",
+    body: "{{relationships}}\nThese directional relationships are canon.",
   },
   {
     title: "Knowledge boundaries",
