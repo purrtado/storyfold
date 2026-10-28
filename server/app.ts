@@ -74,11 +74,18 @@ import {
   updateRelationship,
 } from "./relationships";
 import {
+  activatePromptPreset,
   createPromptCard,
+  createPromptPreset,
   deletePromptCard,
+  deletePromptPreset,
   listPromptCards,
+  listPromptPresets,
   parsePromptCardInput,
   parsePromptCardPatch,
+  parsePromptPresetInput,
+  parsePromptPresetPatch,
+  renamePromptPreset,
   reorderPromptCards,
   resetPromptCards,
   updatePromptCard,
@@ -541,6 +548,39 @@ async function handlePromptCards(request: Request, id: string | undefined, db: D
   }
 }
 
+async function handlePromptPresets(request: Request, id: string | undefined, action: string | undefined, db: Database): Promise<Response> {
+  try {
+    if (id === undefined) {
+      if (request.method === "GET") return jsonResponse({ presets: listPromptPresets(db) });
+      if (request.method === "POST") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        const preset = createPromptPreset(db, parsePromptPresetInput(body));
+        return preset ? jsonResponse({ preset }, 201) : notFound("Unknown prompt preset");
+      }
+      return jsonError(405, "Method not allowed");
+    }
+    if (action === "activate") {
+      if (request.method !== "POST") return jsonError(405, "Method not allowed");
+      const preset = activatePromptPreset(db, id);
+      return preset ? jsonResponse({ preset }) : notFound("Unknown prompt preset");
+    }
+    if (action !== undefined) return notFound("Not found");
+    if (request.method === "PATCH") {
+      const body = await readObjectBody(request);
+      if (body instanceof Response) return body;
+      const preset = renamePromptPreset(db, id, parsePromptPresetPatch(body).name);
+      return preset ? jsonResponse({ preset }) : notFound("Unknown prompt preset");
+    }
+    if (request.method === "DELETE") {
+      return deletePromptPreset(db, id) ? jsonResponse({ ok: true }) : notFound("Unknown prompt preset");
+    }
+    return jsonError(405, "Method not allowed");
+  } catch (error) {
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+  }
+}
+
 /** `import` copies bank stats into the world; everything else is the world's own stat list. */
 async function handleWorldStats(
   request: Request,
@@ -772,6 +812,7 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
   if (resource === "model-selection") return handleModelSelection(request, ctx);
   if (resource === "stats") return handleStats(request, segments[2], ctx.db);
   if (resource === "prompt-cards") return handlePromptCards(request, segments[2], ctx.db);
+  if (resource === "prompt-presets") return handlePromptPresets(request, segments[2], segments[3], ctx.db);
   if (resource === "worlds") {
     if (segments[3] === "stats") return handleWorldStats(request, segments[2], segments[4], ctx.db);
     if (segments[3] === "entries") {

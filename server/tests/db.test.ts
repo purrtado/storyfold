@@ -55,7 +55,7 @@ describe("schema version", () => {
 
       const reopened = openDatabase(path);
       try {
-        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(10);
+        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(11);
         expect(listStatDefinitions(reopened, null)).toHaveLength(8);
         const cards = listPromptCards(reopened);
         expect(cards.map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));

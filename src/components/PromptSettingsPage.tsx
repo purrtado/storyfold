@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState, type Ref } from "react";
-import { GripVertical, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, GripVertical, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
-import type { PromptCard } from "../../shared/domain";
+import type { PromptCard, PromptPreset } from "../../shared/domain";
 import { PROMPT_PLACEHOLDERS } from "../../shared/narration";
 import {
+  activatePromptPreset,
   createPromptCard,
+  createPromptPreset,
   deletePromptCard,
+  deletePromptPreset,
   fetchPromptCards,
+  fetchPromptPresets,
   orderPromptCards,
+  renamePromptPreset,
   resetPromptCards,
   updatePromptCard,
 } from "../lib/storyApi";
@@ -142,19 +147,86 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
   const titleRef = useRef<HTMLInputElement>(null);
   const dragStartOrder = useRef<PromptCard[] | null>(null);
   const [addedId, setAddedId] = useState<string | null>(null);
+  const [presets, setPresets] = useState<PromptPreset[] | undefined>();
+  const [presetForm, setPresetForm] = useState<{ kind: "rename" | "new"; name: string } | null>(null);
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [presetError, setPresetError] = useState("");
+
+  const showCards = (result: PromptCard[]) => {
+    setCards(result);
+    setDrafts(Object.fromEntries(result.map((card) => [card.id, { title: card.title, body: card.body }])));
+    setExpandedId(null);
+    setSaveErrors({});
+  };
+
+  const fetchAll = async () => {
+    const [presetList, result] = await Promise.all([fetchPromptPresets(), fetchPromptCards()]);
+    setPresets(presetList);
+    showCards(result);
+  };
 
   const load = async () => {
     setLoadError("");
     try {
-      const result = await fetchPromptCards();
-      setCards(result);
-      setDrafts(Object.fromEntries(result.map((card) => [card.id, { title: card.title, body: card.body }])));
+      await fetchAll();
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not load prompt cards.");
     }
   };
 
   useEffect(() => { void load(); }, []);
+
+  const active = presets?.find((preset) => preset.active);
+  const hasUnsavedEdits = cards?.some((card) => {
+    const draft = drafts[card.id];
+    return draft !== undefined && (draft.title !== card.title || draft.body !== card.body);
+  }) ?? false;
+
+  const runPresetAction = async (action: () => Promise<void>, failure: string) => {
+    if (hasUnsavedEdits && !window.confirm("Discard unsaved card edits?")) return;
+    setPresetBusy(true);
+    setPresetError("");
+    try {
+      await action();
+      await fetchAll();
+      setPresetForm(null);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : failure);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const switchPreset = (id: string) =>
+    runPresetAction(async () => { await activatePromptPreset(id); }, "Could not switch presets.");
+
+  const createPreset = (cloneOf: string | null) => {
+    const name = presetForm?.name.trim();
+    if (!name) return;
+    return runPresetAction(async () => { await createPromptPreset({ name, clone_of: cloneOf }); }, "Could not create the preset.");
+  };
+
+  const deletePreset = (preset: PromptPreset) => {
+    if (!window.confirm(`Delete the preset “${preset.name}” and all its cards?`)) return;
+    return runPresetAction(async () => { await deletePromptPreset(preset.id); }, "Could not delete the preset.");
+  };
+
+  const renamePreset = async () => {
+    const name = presetForm?.name.trim();
+    if (!active || !name) return;
+    setPresetBusy(true);
+    setPresetError("");
+    try {
+      const renamed = await renamePromptPreset(active.id, name);
+      setPresets((current) => current?.map((preset) => preset.id === renamed.id ? renamed : preset));
+      setPresetForm(null);
+    } catch (error) {
+      setPresetError(error instanceof Error ? error.message : "Could not rename the preset.");
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (addedId) titleRef.current?.focus();
   }, [addedId]);
@@ -244,14 +316,10 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
   };
 
   const reset = async () => {
-    if (!window.confirm("Reset all prompt cards to defaults? This replaces the current cards and discards unsaved edits.")) return;
+    if (!window.confirm(`Reset the cards of “${active?.name ?? "this preset"}” to the defaults? This replaces its current cards and discards unsaved edits.`)) return;
     setActionError("");
     try {
-      const result = await resetPromptCards();
-      setCards(result);
-      setDrafts(Object.fromEntries(result.map((card) => [card.id, { title: card.title, body: card.body }])));
-      setExpandedId(null);
-      setSaveErrors({});
+      showCards(await resetPromptCards());
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not reset prompt cards.");
     }
@@ -265,6 +333,48 @@ export function PromptSettingsPage(props: { onOpenSidebar: () => void }) {
       <div className="chat-scroll settings-scroll">
         <main className="settings-main">
           <h2 className="settings-heading">Prompt</h2>
+          {presets && active && (
+            <section className="theme-group grid gap-4" aria-labelledby="prompt-preset-title">
+              <div className="theme-body">
+                <div className="theme-copy">
+                  <p id="prompt-preset-title" className="theme-label">Preset</p>
+                  <p className="theme-desc">Every chat is narrated with the selected preset, from its next reply. The cards below belong to it.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className={buttonClass} disabled={presetBusy} onClick={() => { setPresetError(""); setPresetForm({ kind: "rename", name: active.name }); }}><Pencil className="size-4" aria-hidden="true" />Rename</button>
+                  <button type="button" className={buttonClass} disabled={presetBusy} onClick={() => { setPresetError(""); setPresetForm({ kind: "new", name: "" }); }}><Plus className="size-4" aria-hidden="true" />New preset</button>
+                  <button type="button" className="pressable inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm text-muted disabled:pointer-events-none disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" disabled={presetBusy || presets.length === 1} onClick={() => void deletePreset(active)}><Trash2 className="size-4" aria-hidden="true" />Delete</button>
+                </div>
+              </div>
+              <select aria-label="Active preset" className={inputClass} value={active.id} disabled={presetBusy || ordering} onChange={(event) => void switchPreset(event.target.value)}>
+                {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+              </select>
+              {presetForm && (
+                <form
+                  className="grid gap-3 rounded-lg border border-border p-3"
+                  aria-label={presetForm.kind === "rename" ? "Rename preset" : "New preset"}
+                  onSubmit={(event) => { event.preventDefault(); void (presetForm.kind === "rename" ? renamePreset() : createPreset(null)); }}
+                >
+                  <label className="grid gap-1 text-sm font-medium" htmlFor="prompt-preset-name">
+                    {presetForm.kind === "rename" ? "New name" : "Name"}
+                    <input id="prompt-preset-name" autoFocus autoComplete="off" className={inputClass} value={presetForm.name} onChange={(event) => setPresetForm({ ...presetForm, name: event.target.value })} />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {presetForm.kind === "rename" ? (
+                      <button type="submit" className={buttonClass} disabled={presetBusy || !presetForm.name.trim()}>Save</button>
+                    ) : (
+                      <>
+                        <button type="submit" className={buttonClass} disabled={presetBusy || !presetForm.name.trim()}><RotateCcw className="size-4" aria-hidden="true" />Start from defaults</button>
+                        <button type="button" className={buttonClass} disabled={presetBusy || !presetForm.name.trim()} onClick={() => void createPreset(active.id)}><Copy className="size-4" aria-hidden="true" />Copy “{active.name}”</button>
+                      </>
+                    )}
+                    <button type="button" className={buttonClass} disabled={presetBusy} onClick={() => setPresetForm(null)}>Cancel</button>
+                  </div>
+                </form>
+              )}
+              {presetError && <p className="text-sm text-muted" role="alert">{presetError}</p>}
+            </section>
+          )}
           <section className="theme-group grid gap-4" aria-labelledby="prompt-cards-title">
             <div className="theme-body">
               <div className="theme-copy">

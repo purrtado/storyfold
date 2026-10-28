@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { PromptCard } from "../../shared/domain";
+import type { PromptCard, PromptPreset } from "../../shared/domain";
 import { DEFAULT_PROMPT_CARDS, PROMPT_PLACEHOLDERS } from "../../shared/narration";
 import { createChat } from "../chats";
 import { openDatabase } from "../db";
 import { chatSystemPrompt } from "../grounding";
-import { createPromptCard, listPromptCards, reorderPromptCards, updatePromptCard } from "../promptCards";
+import { activatePromptPreset, createPromptCard, createPromptPreset, listPromptCards, reorderPromptCards, updatePromptCard } from "../promptCards";
 import { createCharacter, createWorld, parseCharacterInput } from "../worlds";
 import { headersWith, startTestServer, type TestServer } from "./helpers";
 
@@ -36,6 +36,26 @@ describe("narrator prompt from cards", () => {
       const edited = chatSystemPrompt(db, chat);
       expect(edited.startsWith("<style_tone>\nWrite tersely for Sable.\n</style_tone>\n\n<world>")).toBe(true);
       expect(edited).not.toContain("You are the narrator");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("the narrator is sent the active preset's cards", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const world = createWorld(db, { name: "Veloria", setting_brief: "A drowned city." });
+      const hero = createCharacter(db, world.id, parseCharacterInput({ name: "Sable", description: "A smuggler." }))!;
+      const chat = createChat(db, world.id, { protagonist_id: hero.id, opening: "At the docks." })!;
+      const original = db.query<{ id: string }, []>("SELECT id FROM prompt_presets WHERE active = 1").get()!.id;
+
+      createPromptPreset(db, { name: "Terse", clone_of: null });
+      const role = listPromptCards(db).find((card) => card.title === "Narrator role")!;
+      updatePromptCard(db, role.id, { body: "Be terse." });
+      expect(chatSystemPrompt(db, chat).startsWith("<narrator_role>\nBe terse.\n</narrator_role>")).toBe(true);
+
+      activatePromptPreset(db, original);
+      expect(chatSystemPrompt(db, chat).startsWith("<narrator_role>\nYou are the narrator of an ongoing interactive story.\n</narrator_role>")).toBe(true);
     } finally {
       db.close();
     }
@@ -116,5 +136,107 @@ describe("prompt card API", () => {
     expect(restored.map(({ title, body, enabled }) => ({ title, body, enabled }))).toEqual(
       DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })),
     );
+  });
+});
+
+describe("prompt preset API", () => {
+  let server: TestServer;
+
+  beforeAll(async () => {
+    server = await startTestServer();
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  function call(method: string, path: string, body?: unknown): Promise<Response> {
+    return fetch(`${server.url}/api${path}`, {
+      method,
+      headers: headersWith({
+        origin: TRUSTED_ORIGIN,
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      }),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  }
+
+  async function presets(): Promise<PromptPreset[]> {
+    return ((await (await call("GET", "/prompt-presets")).json()) as { presets: PromptPreset[] }).presets;
+  }
+
+  async function cards(): Promise<PromptCard[]> {
+    return ((await (await call("GET", "/prompt-cards")).json()) as { cards: PromptCard[] }).cards;
+  }
+
+  const shape = (list: PromptCard[]) => list.map(({ title, body, enabled }) => ({ title, body, enabled }));
+
+  test("a fresh workspace has one active Default preset", async () => {
+    expect((await presets()).map(({ name, active }) => ({ name, active }))).toEqual([{ name: "Default", active: true }]);
+  });
+
+  test("a copy keeps cards, order and switches; edits and resets stay in their own preset", async () => {
+    const [source] = await presets();
+    const original = await cards();
+    await call("PATCH", `/prompt-cards/${original[0]!.id}`, { enabled: false });
+    await call("PUT", "/prompt-cards/order", { ids: original.map((card) => card.id).reverse() });
+    const sourceCards = await cards();
+
+    const created = await call("POST", "/prompt-presets", { name: "Experiment", clone_of: source!.id });
+    expect(created.status).toBe(201);
+    const copy = ((await created.json()) as { preset: PromptPreset }).preset;
+    expect(copy).toMatchObject({ name: "Experiment", active: true });
+    expect((await presets()).filter((preset) => preset.active).map((preset) => preset.id)).toEqual([copy.id]);
+
+    const copied = await cards();
+    expect(shape(copied)).toEqual(shape(sourceCards));
+    expect(copied.some((card) => sourceCards.some((other) => other.id === card.id))).toBe(false);
+
+    await call("PATCH", `/prompt-cards/${copied[0]!.id}`, { body: "Only in the copy." });
+    await call("POST", "/prompt-cards", { title: "Extra" });
+    expect((await call("POST", "/prompt-cards/reset")).status).toBe(200);
+
+    expect((await call("POST", `/prompt-presets/${source!.id}/activate`)).status).toBe(200);
+    expect(shape(await cards())).toEqual(shape(sourceCards));
+  });
+
+  test("a new preset from the defaults ignores the active preset's edits", async () => {
+    const response = await call("POST", "/prompt-presets", { name: "Fresh" });
+    expect(response.status).toBe(201);
+    expect(shape(await cards())).toEqual(DEFAULT_PROMPT_CARDS.map((card) => ({ ...card, enabled: true })));
+  });
+
+  test("rename needs a name; unknown presets answer 404 and create nothing", async () => {
+    const [first] = await presets();
+    expect((await call("PATCH", `/prompt-presets/${first!.id}`, { name: "  " })).status).toBe(400);
+    const renamed = await call("PATCH", `/prompt-presets/${first!.id}`, { name: "Renamed" });
+    expect(((await renamed.json()) as { preset: PromptPreset }).preset.name).toBe("Renamed");
+
+    const before = await presets();
+    expect((await call("POST", "/prompt-presets", { name: "Ghost", clone_of: "missing" })).status).toBe(404);
+    expect((await call("POST", "/prompt-presets/missing/activate")).status).toBe(404);
+    expect((await call("PATCH", "/prompt-presets/missing", { name: "Ghost" })).status).toBe(404);
+    expect(await presets()).toEqual(before);
+  });
+
+  test("deleting the active preset activates the oldest one; the last preset is refused", async () => {
+    const [oldest, ...rest] = await presets();
+    const active = rest.find((preset) => preset.active)!;
+    expect((await call("POST", `/prompt-presets/${oldest!.id}/activate`)).status).toBe(200);
+    const oldestCards = await cards();
+    expect((await call("POST", `/prompt-presets/${active.id}/activate`)).status).toBe(200);
+
+    expect((await call("DELETE", `/prompt-presets/${active.id}`)).status).toBe(200);
+    expect((await presets()).find((preset) => preset.active)?.id).toBe(oldest!.id);
+    expect(await cards()).toEqual(oldestCards);
+
+    for (const preset of rest.filter((preset) => preset.id !== active.id)) {
+      expect((await call("DELETE", `/prompt-presets/${preset.id}`)).status).toBe(200);
+    }
+    const last = await call("DELETE", `/prompt-presets/${oldest!.id}`);
+    expect(last.status).toBe(409);
+    expect(((await last.json()) as { code: string }).code).toBe("conflict");
+    expect((await call("DELETE", "/prompt-presets/missing")).status).toBe(404);
+    expect((await presets()).map((preset) => preset.id)).toEqual([oldest!.id]);
   });
 });
