@@ -11,6 +11,7 @@ import {
   updateProvider,
   type ModelListing,
   type Provider,
+  type ProviderApi,
   type ProviderPatch,
 } from "../lib/providers";
 import "./settings.css";
@@ -21,13 +22,24 @@ const buttonClass =
 const primaryButtonClass =
   "pressable inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg disabled:pointer-events-none disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90";
 
-const PRESETS = [
-  { label: "Custom", name: "", base_url: "" },
-  { label: "OpenAI", name: "OpenAI", base_url: "https://api.openai.com/v1" },
-  { label: "OpenRouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
-  { label: "Z.AI Coding Plan", name: "Z.AI Coding Plan", base_url: "https://api.z.ai/api/coding/paas/v4" },
-  { label: "Ollama", name: "Ollama", base_url: "http://localhost:11434/v1" },
-  { label: "LM Studio", name: "LM Studio", base_url: "http://localhost:1234/v1" },
+const API_LABELS: Record<ProviderApi, string> = {
+  openai: "OpenAI chat completions",
+  anthropic: "Anthropic Messages",
+};
+
+const BASE_URL_PLACEHOLDERS: Record<ProviderApi, string> = {
+  openai: "https://api.example.com/v1",
+  anthropic: "https://api.example.com",
+};
+
+const PRESETS: { label: string; name: string; api: ProviderApi; base_url: string }[] = [
+  { label: "Custom", name: "", api: "openai", base_url: "" },
+  { label: "Anthropic", name: "Anthropic", api: "anthropic", base_url: "https://api.anthropic.com" },
+  { label: "OpenAI", name: "OpenAI", api: "openai", base_url: "https://api.openai.com/v1" },
+  { label: "OpenRouter", name: "OpenRouter", api: "openai", base_url: "https://openrouter.ai/api/v1" },
+  { label: "Z.AI Coding Plan", name: "Z.AI Coding Plan", api: "openai", base_url: "https://api.z.ai/api/coding/paas/v4" },
+  { label: "Ollama", name: "Ollama", api: "openai", base_url: "http://localhost:11434/v1" },
+  { label: "LM Studio", name: "LM Studio", api: "openai", base_url: "http://localhost:1234/v1" },
 ];
 
 function errorText(error: unknown, fallback: string): string {
@@ -36,6 +48,7 @@ function errorText(error: unknown, fallback: string): string {
 
 function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCancel: () => void }) {
   const [name, setName] = useState("");
+  const [api, setApi] = useState<ProviderApi>("openai");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [pending, setPending] = useState(false);
@@ -48,7 +61,7 @@ function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCan
     setError("");
     try {
       props.onCreated(
-        await createProvider({ name, base_url: baseUrl, ...(apiKey.trim() ? { api_key: apiKey } : {}) }),
+        await createProvider({ name, api, base_url: baseUrl, ...(apiKey.trim() ? { api_key: apiKey } : {}) }),
       );
     } catch (cause) {
       setError(errorText(cause, "Could not add the provider."));
@@ -68,6 +81,7 @@ function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCan
             const preset = PRESETS.find((item) => item.label === event.target.value);
             if (!preset) return;
             setName(preset.name);
+            setApi(preset.api);
             setBaseUrl(preset.base_url);
           }}
         >
@@ -78,6 +92,19 @@ function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCan
         Name
         <input id={`${id}-name`} className={inputClass} value={name} required autoFocus onChange={(event) => setName(event.target.value)} />
       </label>
+      <label className="grid gap-1 text-sm font-medium" htmlFor={`${id}-api`}>
+        API
+        <select
+          id={`${id}-api`}
+          className={inputClass}
+          value={api}
+          onChange={(event) => setApi(event.target.value as ProviderApi)}
+        >
+          {(Object.keys(API_LABELS) as ProviderApi[]).map((value) => (
+            <option key={value} value={value}>{API_LABELS[value]}</option>
+          ))}
+        </select>
+      </label>
       <label className="grid gap-1 text-sm font-medium" htmlFor={`${id}-url`}>
         Base URL
         <input
@@ -86,7 +113,7 @@ function NewProviderForm(props: { onCreated: (provider: Provider) => void; onCan
           value={baseUrl}
           required
           inputMode="url"
-          placeholder="https://api.example.com/v1"
+          placeholder={BASE_URL_PLACEHOLDERS[api]}
           onChange={(event) => setBaseUrl(event.target.value)}
         />
       </label>
@@ -448,9 +475,9 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
           <section className="theme-group grid gap-4" aria-labelledby="providers-title">
             <div className="theme-body">
               <div className="theme-copy">
-                <p id="providers-title" className="theme-label">OpenAI-compatible providers</p>
+                <p id="providers-title" className="theme-label">AI providers</p>
                 <p className="theme-desc">
-                  Any chat-completions endpoint works. Choose which provider and model narrate from the composer.
+                  Any OpenAI chat-completions or Anthropic Messages endpoint works. Choose which provider and model narrate from the composer.
                 </p>
               </div>
               <button type="button" className={buttonClass} disabled={providers === null || adding} onClick={() => setAdding(true)}>
@@ -492,6 +519,7 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
                         <span className="min-w-0 flex-1">
                           <span className="block truncate font-medium">{provider.name}</span>
                           <span className="block truncate font-mono text-xs text-muted">{provider.base_url}</span>
+                          <span className="block truncate text-xs text-muted">{API_LABELS[provider.api]}</span>
                         </span>
                         <span className="flex-none text-xs text-muted">{provider.has_api_key ? "Key saved" : "No key"}</span>
                         <CollapsibleIndicator />

@@ -61,6 +61,7 @@ export function useChatGeneration(options: {
   onSettledRef.current = options.onSettled;
 
   const chat = useChat({
+    threadId: "storyfold-generation",
     fetcher: async (_input, { signal }) => {
       const request = requestRef.current;
       if (!request) throw new Error("No chat request was prepared.");

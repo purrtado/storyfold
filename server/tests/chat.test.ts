@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { startNarrationRun } from "../chat";
-import { openAiChatCompletionSseRaw } from "./helpers";
+import { anthropicMessagesSse, openAiChatCompletionSseRaw } from "./helpers";
 
 const API_KEY = "sk-zai-transport-test-key";
 
@@ -33,6 +33,8 @@ describe("provider transport (startNarrationRun)", () => {
           headers: { "content-type": "application/json" },
         })) as typeof fetch;
       const run = startNarrationRun({
+        threadId: "chat-test",
+        api: "openai",
         baseUrl: "https://provider.test/v1",
         model: "glm-5.3",
         apiKey: API_KEY,
@@ -58,6 +60,8 @@ describe("provider transport (startNarrationRun)", () => {
         { status: 400, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
     const contextRun = startNarrationRun({
+      threadId: "chat-test",
+      api: "openai",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -77,6 +81,8 @@ describe("provider transport (startNarrationRun)", () => {
         headers: { "content-type": "application/json" },
       })) as typeof fetch;
     const genericRun = startNarrationRun({
+      threadId: "chat-test",
+      api: "openai",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -103,6 +109,8 @@ describe("provider transport (startNarrationRun)", () => {
       return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
     }) as typeof fetch;
     const run = startNarrationRun({
+      threadId: "chat-test",
+      api: "openai",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -125,6 +133,8 @@ describe("completion evidence (raw protocol)", () => {
     const upstream = (async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
     const run = startNarrationRun({
+      threadId: "chat-test",
+      api: "openai",
       baseUrl: "https://provider.test/v1",
       model: "glm-5.3",
       apiKey: API_KEY,
@@ -158,5 +168,64 @@ describe("completion evidence (raw protocol)", () => {
     const events = await eventsFor(openAiChatCompletionSseRaw("glm-5.3", ["All quiet."], "stop"));
     expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
     expect(textOf(events)).toBe("All quiet.");
+  });
+});
+
+describe("Anthropic Messages transport", () => {
+  function anthropicRun(sse: string, apiKey: string | null) {
+    const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
+    const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+      return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const run = startNarrationRun({
+      threadId: "chat-test",
+      api: "anthropic",
+      baseUrl: "https://anthropic.test",
+      model: "claude-haiku-5-5",
+      apiKey,
+      systemPrompt: "You narrate.",
+      messages: [
+        { role: "user", content: "I open the door." },
+        { role: "assistant", content: "It creaks." },
+        { role: "user", content: "I step inside." },
+      ],
+      upstreamFetch: upstream,
+    });
+    return { calls, events: collect(run.stream) };
+  }
+
+  test("streams from /v1/messages with the key and caches the system prompt and conversation", async () => {
+    const { calls, events } = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["The hall", " is dark."]), API_KEY);
+    const received = await events;
+    expect(received.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+    expect(textOf(received)).toBe("The hall is dark.");
+
+    expect(calls[0].url.split("?")[0]).toBe("https://anthropic.test/v1/messages");
+    expect(calls[0].headers.get("x-api-key")).toBe(API_KEY);
+    expect(calls[0].headers.get("authorization")).toBeNull();
+    const body = calls[0].body as {
+      system: Array<{ type: string; text: string; cache_control?: unknown }>;
+      messages: Array<{ role: string; content: Array<{ text: string; cache_control?: unknown }> }>;
+    };
+    expect(body.system).toEqual([{ type: "text", text: "You narrate.", cache_control: { type: "ephemeral" } }]);
+    const last = body.messages.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(last.content.at(-1)).toMatchObject({ text: "I step inside.", cache_control: { type: "ephemeral" } });
+  });
+
+  test("keyless providers send no credential header", async () => {
+    const { calls, events } = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["Hi."]), null);
+    await events;
+    expect(calls[0].headers.get("x-api-key")).toBeNull();
+    expect(calls[0].headers.get("authorization")).toBeNull();
+  });
+
+  test("a max_tokens stop is an incomplete reply, not a context overflow", async () => {
+    const { events } = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["Once upon"], "max_tokens"), API_KEY);
+    const received = await events;
+    const last = received.at(-1) as Extract<StreamChunk, { type: typeof EventType.RUN_ERROR }>;
+    expect(last.type).toBe(EventType.RUN_ERROR);
+    expect(last.code).toBe("incomplete_generation");
   });
 });

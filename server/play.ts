@@ -10,6 +10,7 @@ import { getChat } from "./chats";
 import { chatGrounding, chatSystemPrompt } from "./grounding";
 import { UnknownEntityError, ValidationError } from "./worlds";
 import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import type { ProviderApi } from "./providers";
 
 
 export const NARRATOR_NAME = "Narrator";
@@ -83,6 +84,7 @@ function providerUsage(chunk: Extract<StreamChunk, { type: EventType.RUN_FINISHE
 }
 
 export interface PlaySettings {
+  api: ProviderApi;
   baseUrl: string;
   model: string;
   apiKey: string | null;
@@ -536,6 +538,8 @@ export class PlayService {
     }
 
     const { stream: upstream } = startNarrationRun({
+      threadId: chatId,
+      api: options.settings.api,
       baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,

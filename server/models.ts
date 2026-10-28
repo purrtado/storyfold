@@ -24,16 +24,38 @@ interface CachedList {
 
 class ModelFetchError extends Error {}
 
-/** Fixed messages only: upstream bodies, URLs and keys never reach the client. */
-async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof fetch): Promise<string[]> {
-  let response: Response;
-  try {
-    response = await upstreamFetch(`${provider.base_url}/models`, {
+/** Anthropic's documented Messages API version. */
+const ANTHROPIC_VERSION = "2023-06-01";
+
+function modelsRequest(provider: StoredProvider): { url: string; headers: Record<string, string> } {
+  if (provider.api === "anthropic") {
+    return {
+      // One page holds Anthropic's whole catalog; the API caps limit at 1000.
+      url: `${provider.base_url}/v1/models?limit=1000`,
       headers: {
         accept: "application/json",
-        ...(provider.api_key !== null ? { authorization: `Bearer ${provider.api_key}` } : {}),
+        "anthropic-version": ANTHROPIC_VERSION,
+        ...(provider.api_key !== null ? { "x-api-key": provider.api_key } : {}),
       },
-      // A redirect could carry the Authorization header to another host.
+    };
+  }
+  return {
+    url: `${provider.base_url}/models`,
+    headers: {
+      accept: "application/json",
+      ...(provider.api_key !== null ? { authorization: `Bearer ${provider.api_key}` } : {}),
+    },
+  };
+}
+
+/** Fixed messages only: upstream bodies, URLs and keys never reach the client. */
+async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof fetch): Promise<string[]> {
+  const { url, headers } = modelsRequest(provider);
+  let response: Response;
+  try {
+    response = await upstreamFetch(url, {
+      headers,
+      // A redirect could carry the credential header to another host.
       redirect: "error",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
@@ -56,7 +78,7 @@ async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof
     body = null;
   }
   const data = typeof body === "object" && body !== null && "data" in body ? body.data : undefined;
-  if (!Array.isArray(data)) throw new ModelFetchError("The provider's model list is not in OpenAI format.");
+  if (!Array.isArray(data)) throw new ModelFetchError("The provider's model list is not in the expected format.");
   const ids = new Set<string>();
   for (const item of data) {
     const id: unknown = typeof item === "object" && item !== null && "id" in item ? item.id : undefined;

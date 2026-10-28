@@ -657,7 +657,7 @@ async function handlePlayPost(
       chatId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
-      settings: { baseUrl: provider.base_url, model: selection.model, apiKey: provider.api_key },
+      settings: { api: provider.api, baseUrl: provider.base_url, model: selection.model, apiKey: provider.api_key },
       disconnectSignal: request.signal,
       upstreamFetch: ctx.upstreamFetch,
     });

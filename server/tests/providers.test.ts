@@ -19,7 +19,7 @@ async function withStore<T>(run: (store: ProviderStore, dir: string) => Promise<
 }
 
 function createInput(overrides: Partial<StoredProvider> = {}) {
-  return { name: "Example", base_url: BASE_URL, api_key: API_KEY, manual_models: [], ...overrides };
+  return { name: "Example", api: "openai" as const, base_url: BASE_URL, api_key: API_KEY, manual_models: [], ...overrides };
 }
 
 describe("ProviderStore", () => {
@@ -91,6 +91,14 @@ describe("ProviderStore", () => {
       const loaded = await store.load();
       expect(loaded.providers.map((provider) => provider.id)).toEqual(["ok"]);
       expect(loaded.selection).toBeNull();
+    });
+  });
+
+  test("providers saved before the api field load as OpenAI-compatible", async () => {
+    await withStore(async (store, dir) => {
+      const { api: _api, ...saved } = { id: "old", ...createInput(), disabled_models: [], updated_at: "2026-01-01T00:00:00.000Z" };
+      await writeFile(join(dir, "config.json"), JSON.stringify({ providers: [saved], selection: null }));
+      expect((await store.get("old"))?.api).toBe("openai");
     });
   });
 
@@ -266,6 +274,20 @@ describe("ModelCatalog", () => {
     const next = await catalog.list(provider);
     expect(next.models.map((model) => model.id)).toEqual(["fresh", "manual-1"]);
   });
+
+  test("Anthropic providers list from /v1/models with x-api-key and the API version", async () => {
+    const seen: Array<{ url: string; headers: Headers }> = [];
+    const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(input), headers: new Headers(init?.headers) });
+      return Response.json({ data: [{ id: "claude-haiku-5-5", type: "model" }], has_more: false });
+    }) as typeof fetch;
+    const listing = await new ModelCatalog(fetcher).list({ ...provider, api: "anthropic", base_url: "https://api.anthropic.test" });
+    expect(seen[0].url).toBe("https://api.anthropic.test/v1/models?limit=1000");
+    expect(seen[0].headers.get("x-api-key")).toBe(API_KEY);
+    expect(seen[0].headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(seen[0].headers.get("authorization")).toBeNull();
+    expect(listing.models.map((model) => model.id)).toEqual(["claude-haiku-5-5", "manual-1"]);
+  });
 });
 
 describe("Providers API", () => {
@@ -354,6 +376,7 @@ describe("Providers API", () => {
         expect((await post({ name: "Bad", base_url })).status).toBe(400);
       }
       expect((await post({ name: " ", base_url: BASE_URL })).status).toBe(400);
+      expect((await post({ name: "Bad api", api: "gemini", base_url: BASE_URL })).status).toBe(400);
       expect((await post({ name: "Blank key", base_url: BASE_URL, api_key: "  " })).status).toBe(400);
       expect((await post({ name: "Evil", base_url: BASE_URL }, headersWith({ ...TRUSTED, origin: "http://evil.example" }))).status).toBe(403);
 

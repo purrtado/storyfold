@@ -1,6 +1,6 @@
 # Storyfold
 
-Storyfold is a local, single-user interactive roleplay app built with React, TypeScript, Vite, Tailwind CSS, and Bun. A local Bun server persists worlds (with their characters, relationships, and stats), chats, and transcripts, and streams narrator replies from any OpenAI-compatible chat-completions provider using TanStack AI.
+Storyfold is a local, single-user interactive roleplay app built with React, TypeScript, Vite, Tailwind CSS, and Bun. A local Bun server persists worlds (with their characters, relationships, and stats), chats, and transcripts, and streams narrator replies from any OpenAI-compatible chat-completions or Anthropic Messages provider using TanStack AI.
 
 ## Getting started
 
@@ -43,19 +43,24 @@ Run server regression tests with `bun test`. To exercise a production build loca
 
 Open **Settings → Providers** (`/settings/providers`):
 
-1. **Add provider**, optionally starting from a preset (OpenAI, OpenRouter, Z.AI Coding Plan, Ollama, LM Studio) that fills in the name and base URL, and enter an API key if the provider needs one.
+1. **Add provider**, optionally starting from a preset (Anthropic, OpenAI, OpenRouter, Z.AI Coding Plan, Ollama, LM Studio) that fills in the name, API, and base URL, and enter an API key if the provider needs one.
 2. Expand the provider to edit it or manage its **Models**: switch off the ones you don't want in the composer (filter the list and use **Enable/Disable all** for long lists), **Refresh** the list from the provider, or add a model id by hand.
 3. Return to the app, pick the provider and model in the composer, and start or resume a chat.
 
-Each provider is an OpenAI-compatible chat-completions endpoint: a name, a base URL (requests go to `<base URL>/chat/completions`), and an optional API key (local servers such as Ollama or LM Studio need none; keyless requests send no `Authorization` header). The server lists a provider's models from `GET <base URL>/models` and caches each list in memory: a list younger than an hour is served as-is, an older one is served immediately while a background refresh runs, and a failed fetch keeps the last known list. Changing a provider's base URL or key drops its cached list. Every listed model is enabled by default; disabling one is sticky, so it stays hidden even if the provider stops and later resumes listing it. Model ids can also be added by hand for providers whose `/models` is missing or incomplete.
+Each provider is a name, an API, a base URL, and an optional API key (local servers such as Ollama or LM Studio need none; keyless requests send no credential header). The API is fixed when the provider is added:
+
+- **OpenAI chat completions** (`openai`): requests go to `<base URL>/chat/completions` with `Authorization: Bearer <key>`, and models are listed from `GET <base URL>/models`. Base URLs include the version, e.g. `https://api.openai.com/v1`.
+- **Anthropic Messages** (`anthropic`): requests go to `<base URL>/v1/messages` with `x-api-key: <key>`, and models are listed from `GET <base URL>/v1/models`. Base URLs omit the version, e.g. `https://api.anthropic.com`, matching `ANTHROPIC_BASE_URL` for Anthropic-compatible gateways. Prompt caching is on: each request marks the narrator system prompt and the latest player message with `cache_control`, so the next turn reads the shared prefix from Anthropic's 5-minute cache. Prompts shorter than the model's minimum cacheable length are not cached. Cache reads appear as cached tokens in the reply's prompt usage.
+
+The server caches each model list in memory: a list younger than an hour is served as-is, an older one is served immediately while a background refresh runs, and a failed fetch keeps the last known list. Changing a provider's base URL or key drops its cached list. Every listed model is enabled by default; disabling one is sticky, so it stays hidden even if the provider stops and later resumes listing it. Model ids can also be added by hand for providers whose model list is missing or incomplete. Providers saved before the API choice existed load as OpenAI chat completions.
 
 The selected provider and model is one global choice saved with the configuration, so it survives reloads and applies to every chat. Installs predating multiple providers are migrated on read: the saved Z.AI Coding Plan key becomes a provider with its GLM models listed by hand and its saved model selected. Z.AI's [Coding Plan usage policy](https://docs.z.ai/devpack/usage-policy) restricts subscription use to officially supported tools and products; verify eligibility for your use.
 
 Configuration belongs to this local installation, not a user account. The server saves it at `$XDG_CONFIG_HOME/storyfold/config.json`, or `~/.config/storyfold/config.json` when an absolute XDG path is not configured. The directory is created with mode `0700`, and the file with mode `0600`; API keys are stored in plaintext, protected by your OS user permissions, not encryption.
 
-Saved keys are never returned to the browser or stored in browser localStorage, and are never part of logs, error messages, or cache keys; upstream errors reach the browser only as fixed messages. Editing a provider's base URL keeps its saved key; use **Remove key** to delete it. `/models` fetches refuse redirects, so a key is only ever sent to the configured host.
+Saved keys are never returned to the browser or stored in browser localStorage, and are never part of logs, error messages, or cache keys; upstream errors reach the browser only as fixed messages. Editing a provider's base URL keeps its saved key; use **Remove key** to delete it. Model-list fetches refuse redirects, so a key is only ever sent to the configured host.
 
-API: `GET /api/providers` → `{providers, selection}` (each provider reports `has_api_key`, never the key), `POST /api/providers {name, base_url, api_key?, manual_models?}`, `PATCH /api/providers/:id {name?, base_url?, api_key? (null removes), disabled_models?, manual_models?}`, `DELETE /api/providers/:id`, `GET /api/providers/:id/models[?refresh=1]` → `{models: [{id, enabled, manual}], fetched_at, error}`, and `PUT /api/model-selection {provider_id, model}`.
+API: `GET /api/providers` → `{providers, selection}` (each provider reports `api` and `has_api_key`, never the key), `POST /api/providers {name, api? ("openai" default | "anthropic"), base_url, api_key?, manual_models?}`, `PATCH /api/providers/:id {name?, base_url?, api_key? (null removes), disabled_models?, manual_models?}`, `DELETE /api/providers/:id`, `GET /api/providers/:id/models[?refresh=1]` → `{models: [{id, enabled, manual}], fetched_at, error}`, and `PUT /api/model-selection {provider_id, model}`.
 
 The API accepts only loopback backend Host headers and frontend origins on localhost or this machine's interface IP addresses, requires JSON for chat/configuration bodies, and bounds request sizes. These safeguards reject unrelated browser origins and DNS rebinding; they do not authenticate LAN clients or other processes running as your OS user.
 

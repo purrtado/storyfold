@@ -163,3 +163,27 @@ export function openAiChatCompletionSseRaw(
   return parts.join("");
 }
 
+/** Protocol-real Anthropic Messages SSE body for one streamed reply. */
+export function anthropicMessagesSse(model: string, deltas: string[], stopReason: "end_turn" | "max_tokens" = "end_turn"): string {
+  const event = (type: string, body: unknown) => `event: ${type}\ndata: ${JSON.stringify({ type, ...(body as object) })}\n\n`;
+  return [
+    event("message_start", {
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 2, output_tokens: 1 },
+      },
+    }),
+    event("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+    ...deltas.map((text) => event("content_block_delta", { index: 0, delta: { type: "text_delta", text } })),
+    event("content_block_stop", { index: 0 }),
+    event("message_delta", { delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 3 } }),
+    event("message_stop", {}),
+  ].join("");
+}
+
