@@ -34,8 +34,8 @@ export function ModelPicker(props: { picker: ModelPickerState; disabled: boolean
     <div className="flex min-w-0 max-w-full flex-col items-start">
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild disabled={props.disabled}>
-          <button type="button" className={triggerClass} aria-label={`Model: ${label}`}>
-            <span className="truncate">{label}</span>
+          <button type="button" className={triggerClass} aria-label={`Model: ${label}`} title={label}>
+            <span className="truncate">{selection && selectedProvider ? selection.model : label}</span>
             <ChevronDown className="size-3.5 flex-none" aria-hidden="true" />
           </button>
         </DropdownMenu.Trigger>
