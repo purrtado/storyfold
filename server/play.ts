@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { EventType, fromSpecTokenUsage, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk, TokenUsage } from "@tanstack/ai";
-import type { Message, MessageLore, MessageUsage } from "../shared/domain";
+import type { Message, MessageLore, MessageUsage, ReasoningLevel } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
@@ -88,6 +88,7 @@ export interface PlaySettings {
   baseUrl: string;
   model: string;
   apiKey: string | null;
+  reasoning?: ReasoningLevel;
 }
 
 interface ActiveRun {
@@ -543,6 +544,7 @@ export class PlayService {
       baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,
+      reasoning: options.settings.reasoning,
       systemPrompt,
       messages: history,
       abortController: run.controller,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { REASONING_LEVELS, type ReasoningLevel } from "../shared/domain";
 import { defaultConfigDirectory } from "./config";
 import { ValidationError } from "./worlds";
 
@@ -32,6 +33,8 @@ export interface StoredProvider {
   disabled_models: string[];
   /** Hand-added ids for providers whose /models is missing or incomplete. */
   manual_models: string[];
+  /** Model id → thinking level; models absent here do not think. */
+  reasoning: Record<string, ReasoningLevel>;
   updated_at: string;
 }
 
@@ -53,6 +56,7 @@ export interface PublicProvider {
   has_api_key: boolean;
   disabled_models: string[];
   manual_models: string[];
+  reasoning: Record<string, ReasoningLevel>;
   updated_at: string;
 }
 
@@ -71,6 +75,7 @@ export interface ProviderPatch {
   api_key?: string | null;
   disabled_models?: string[];
   manual_models?: string[];
+  reasoning?: Record<string, ReasoningLevel>;
 }
 
 export function publicProvider(provider: StoredProvider): PublicProvider {
@@ -82,6 +87,7 @@ export function publicProvider(provider: StoredProvider): PublicProvider {
     has_api_key: provider.api_key !== null,
     disabled_models: provider.disabled_models,
     manual_models: provider.manual_models,
+    reasoning: provider.reasoning,
     updated_at: provider.updated_at,
   };
 }
@@ -154,6 +160,24 @@ function parseModelList(value: unknown, field: string): string[] {
   return [...new Set(value.map((item) => parseModel(item, field)))];
 }
 
+function parseReasoning(value: unknown): Record<string, ReasoningLevel> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ValidationError("reasoning must be an object of model ids to levels");
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MODEL_LIST_MAX) {
+    throw new ValidationError(`reasoning must name at most ${MODEL_LIST_MAX} models`);
+  }
+  const reasoning: Record<string, ReasoningLevel> = {};
+  for (const [model, level] of entries) {
+    if (!REASONING_LEVELS.includes(level as ReasoningLevel)) {
+      throw new ValidationError(`reasoning levels must be one of ${REASONING_LEVELS.join(", ")}`);
+    }
+    reasoning[parseModel(model, "reasoning")] = level as ReasoningLevel;
+  }
+  return reasoning;
+}
+
 export function parseProviderCreate(body: Record<string, unknown>): ProviderCreate {
   return {
     name: parseName(body.name),
@@ -175,6 +199,7 @@ export function parseProviderPatch(body: Record<string, unknown>): ProviderPatch
   if (body.manual_models !== undefined) {
     patch.manual_models = parseModelList(body.manual_models, "manual_models");
   }
+  if (body.reasoning !== undefined) patch.reasoning = parseReasoning(body.reasoning);
   return patch;
 }
 
@@ -210,6 +235,8 @@ function parseStoredProvider(value: unknown): StoredProvider | null {
       api_key: record.api_key === null ? null : parseApiKey(record.api_key),
       disabled_models: parseModelList(record.disabled_models, "disabled_models"),
       manual_models: parseModelList(record.manual_models, "manual_models"),
+      // Providers saved before reasoning support think on no model.
+      reasoning: record.reasoning === undefined ? {} : parseReasoning(record.reasoning),
       updated_at: record.updated_at,
     };
   } catch {
@@ -229,6 +256,7 @@ function migrateLegacyConfig(record: Record<string, unknown>): ProviderConfig | 
       api_key: parseApiKey(record.api_key),
       disabled_models: [],
       manual_models: [...new Set([...LEGACY_MODELS, record.model])],
+      reasoning: {},
       updated_at: record.updated_at,
     };
     return { providers: [provider], selection: { provider_id: provider.id, model: record.model } };
@@ -330,6 +358,7 @@ export class ProviderStore {
         id: randomUUID(),
         ...input,
         disabled_models: [],
+        reasoning: {},
         updated_at: new Date().toISOString(),
       };
       config.providers.push(provider);

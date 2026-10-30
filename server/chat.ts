@@ -2,6 +2,7 @@ import { chat, EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
+import type { ReasoningLevel } from "../shared/domain";
 import type { ProviderApi } from "./providers";
 
 export const MAX_MESSAGE_CHARS = 100_000;
@@ -153,6 +154,8 @@ export interface NarrationRunRequest {
   model: string;
   /** null for keyless local servers; no credential header is sent. */
   apiKey: string | null;
+  /** Anthropic only; omitted means the model does not think. */
+  reasoning?: ReasoningLevel;
   /** Fixed grounding instructions; prepended via the SDK's systemPrompts. */
   systemPrompt?: string;
   messages: NarrationMessage[];
@@ -221,6 +224,7 @@ export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
     threadId: request.threadId,
     messages: request.messages,
     ...(request.systemPrompt !== undefined ? { systemPrompts: [request.systemPrompt] } : {}),
+    ...(request.api === "anthropic" && request.reasoning !== undefined ? { reasoning: { level: request.reasoning, summary: true } } : {}),
     stream: true,
     abortController,
     debug: false,

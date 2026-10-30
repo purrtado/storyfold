@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReasoningLevel } from "../../shared/domain";
 import {
   fetchModels,
   fetchProviders,
   saveSelection,
+  updateProvider,
   type ModelListing,
   type ModelSelection,
   type Provider,
@@ -18,6 +20,10 @@ export type ModelPickerState = {
   /** The saved choice when still usable, else the first enabled model; null when nothing is usable. */
   selection: ModelSelection | null;
   select: (selection: ModelSelection) => void;
+  /** The selected model's thinking level; null when it does not think. */
+  reasoning: ReasoningLevel | null;
+  /** Present only when the selected provider takes a thinking level (Anthropic). */
+  setReasoning?: (level: ReasoningLevel | null) => void;
   saveError: string;
 };
 
@@ -63,19 +69,23 @@ export function useModelSelection(): ModelPickerState {
     return () => { active = false; };
   }, []);
 
-  // Saves are queued so the server applies them in pick order; only the newest
-  // pick may report a failure.
-  const select = useCallback((next: ModelSelection) => {
+  // Saves are queued so the server applies them in order; only the newest
+  // save may report a failure.
+  const queueSave = useCallback((save: () => Promise<unknown>, failure: string) => {
     const sequence = ++latestSave.current;
-    setSaved(next);
     setSaveError("");
-    const request = saveQueue.current.then(() => saveSelection(next));
+    const request = saveQueue.current.then(save);
     saveQueue.current = request.catch(() => {});
     request.catch((error: unknown) => {
       if (sequence !== latestSave.current) return;
-      setSaveError(error instanceof Error ? error.message : "Could not save the model choice.");
+      setSaveError(error instanceof Error ? error.message : failure);
     });
   }, []);
+
+  const select = useCallback((next: ModelSelection) => {
+    setSaved(next);
+    queueSave(() => saveSelection(next), "Could not save the model choice.");
+  }, [queueSave]);
 
   // A saved model whose provider is gone or that was switched off falls back to
   // the first enabled model, its own provider first; while its list is unknown
@@ -96,5 +106,17 @@ export function useModelSelection(): ModelPickerState {
     }
   }
 
-  return { status, providers, models, selection, select, saveError };
+  const selectedProvider = selection ? providers.find((provider) => provider.id === selection.provider_id) : undefined;
+  const reasoning = selection && selectedProvider ? selectedProvider.reasoning[selection.model] ?? null : null;
+  const setReasoning = selection && selectedProvider?.api === "anthropic"
+    ? (level: ReasoningLevel | null) => {
+      const next = { ...selectedProvider.reasoning };
+      if (level === null) delete next[selection.model];
+      else next[selection.model] = level;
+      setProviders((current) => current.map((provider) => provider.id === selectedProvider.id ? { ...provider, reasoning: next } : provider));
+      queueSave(() => updateProvider(selectedProvider.id, { reasoning: next }), "Could not save the thinking level.");
+    }
+    : undefined;
+
+  return { status, providers, models, selection, select, reasoning, setReasoning, saveError };
 }

@@ -8,7 +8,7 @@ import type { Character, Chat, MessageLore, World } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
 import { storedMessageControls, type MessageControls } from "../lib/messageControls";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, ReasoningPicker } from "./ModelPicker";
 import {
   branchChat,
   createWorldCharacter,
@@ -1093,7 +1093,7 @@ export function ChatPlay(props: {
             onSubmit={handleSend}
             direction={direction}
             onDirectionChange={setDirection}
-            modelControl={<ModelPicker picker={picker} disabled={busy} />}
+            modelControl={<><ModelPicker picker={picker} disabled={busy} /><ReasoningPicker picker={picker} disabled={busy} /></>}
             placeholder={`What does ${protagonist.name} do or say?`}
             inputLabel={`What does ${protagonist.name} do or say?`}
             sendLabel="Send action"

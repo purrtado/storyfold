@@ -84,6 +84,13 @@ export interface StatDefinition extends StatFields {
 export type StatValues = Record<string, number>;
 
 /**
+ * Thinking levels for Anthropic models; the adapter clamps each to the
+ * nearest level the model has. A model with no stored level does not think.
+ */
+export const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+/**
  * How a non-protagonist reaches the narrator. `always`: full profile in the
  * system prompt. `in_scene`: the one-line summary there, the full profile
  * only for replies whose recent messages name them. `mentioned`: nothing

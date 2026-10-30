@@ -195,6 +195,7 @@ describe("ModelCatalog", () => {
     ...createInput(),
     disabled_models: ["b"],
     manual_models: ["manual-1"],
+    reasoning: {},
     updated_at: "2026-01-01T00:00:00.000Z",
   };
 
