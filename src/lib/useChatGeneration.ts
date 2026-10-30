@@ -17,6 +17,8 @@ export type Generation = {
   direction?: string;
   text: string;
   reasoning?: string;
+  /** Set once the reply text starts after thinking: request to first reply text, as the server stores it. */
+  reasoningMs?: number;
   phase: GenerationPhase;
   error?: string;
   code?: string;
@@ -53,6 +55,7 @@ export function useChatGeneration(options: {
   const activeRequestRef = useRef<GenerationRequest | null>(null);
   const textRef = useRef("");
   const reasoningRef = useRef("");
+  const requestedAt = useRef(0);
   const busyRef = useRef(false);
   const requestSequence = useRef(0);
   const onAcceptedRef = useRef(options.onAccepted);
@@ -127,8 +130,9 @@ export function useChatGeneration(options: {
       if (!busyRef.current || !request) return;
       if (chunk.type === "TEXT_MESSAGE_CONTENT") {
         textRef.current += chunk.delta;
+        const thought = reasoningRef.current !== "" && textRef.current === chunk.delta;
         setGeneration((current) => current?.id === request.id
-          ? { ...current, text: textRef.current }
+          ? { ...current, text: textRef.current, ...(thought ? { reasoningMs: Date.now() - requestedAt.current } : {}) }
           : current,
         );
       } else if (chunk.type === "REASONING_MESSAGE_CONTENT") {
@@ -190,6 +194,7 @@ export function useChatGeneration(options: {
     activeRequestRef.current = request;
     textRef.current = "";
     reasoningRef.current = "";
+    requestedAt.current = Date.now();
     chat.setMessages([]);
     setGeneration({
       id: request.id,

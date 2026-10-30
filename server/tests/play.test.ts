@@ -581,6 +581,7 @@ describe("player turns", () => {
       const reply = (await transcript(server.url, chat.id)).at(-1)!;
       expect(reply.reasoning).toBe("Sable wants the docks.");
       expect(reply.content).toBe("The tide turns.");
+      expect(reply.reasoning_ms).toBeGreaterThanOrEqual(0);
 
       await readSse(await postMessage(server.url, chat.id, { content: "I wait." }));
       expect(JSON.stringify(calls[1].messages)).not.toContain("Sable wants");

@@ -128,6 +128,7 @@ CREATE TABLE messages (
   lore TEXT CHECK (lore IS NULL OR json_valid(lore)),
   usage TEXT CHECK (usage IS NULL OR json_valid(usage)),
   reasoning TEXT,
+  reasoning_ms INTEGER CHECK (reasoning_ms IS NULL OR reasoning_ms >= 0),
   CHECK (role != 'user' OR status = 'complete'),
   CHECK (role = 'assistant' OR selected = 1)
 );

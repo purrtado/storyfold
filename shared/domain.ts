@@ -179,6 +179,8 @@ export interface Message {
   usage: MessageUsage | null;
   /** The model's summarized thinking for this narration, as streamed; never part of model history. Null when it sent none. */
   reasoning: string | null;
+  /** How long the model thought before replying, in milliseconds; null when it sent no thinking or was stopped mid-thought. */
+  reasoning_ms: number | null;
   created_at: string;
   updated_at: string;
 }

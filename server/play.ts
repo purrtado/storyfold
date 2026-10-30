@@ -60,7 +60,7 @@ interface MessageRow extends MessageRecord {
 }
 
 const MESSAGE_COLUMNS =
-  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, reasoning, created_at, updated_at";
+  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, reasoning, reasoning_ms, created_at, updated_at";
 
 function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
   return {
@@ -583,11 +583,24 @@ export class PlayService {
     );
     const recordUsage = this.db.query("UPDATE messages SET usage = ? WHERE id = ?");
     const persistReasoning = this.db.query("UPDATE messages SET reasoning = ? WHERE id = ? AND status = 'pending'");
+    const recordReasoningTime = this.db.query("UPDATE messages SET reasoning_ms = ? WHERE id = ?");
+    // Providers and gateways may hold thinking back and send it in one burst
+    // just before the reply, so its time runs from the request to the first
+    // reply text (or the end of a run without any), not from its own deltas.
+    let requestedAt = 0;
+    let reasoningTimed = false;
+    const endReasoning = () => {
+      if (reasoningTimed || run.reasoning === "") return;
+      reasoningTimed = true;
+      recordReasoningTime.run(Date.now() - requestedAt, run.messageId);
+    };
     async function* generate(): AsyncGenerator<StreamChunk> {
+      requestedAt = Date.now();
       try {
         for await (const chunk of upstream) {
           if (run.settled) return; // Stop or disconnect settled already: swallow late chunks.
           if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
+            endReasoning();
             run.partial += chunk.delta;
             persist.run(run.partial, nowIso(), run.messageId);
             yield chunk;
@@ -600,6 +613,7 @@ export class PlayService {
             continue;
           }
           if (chunk.type === EventType.RUN_FINISHED) {
+            endReasoning();
             const usage: MessageUsage = { estimate: run.estimate, provider: providerUsage(chunk) };
             recordUsage.run(JSON.stringify(usage), run.messageId);
             if (run.partial.trim().length > 0) {

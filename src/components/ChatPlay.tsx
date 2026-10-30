@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, Brain, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
 import type { Character, Chat, MessageLore, World } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
@@ -49,7 +49,15 @@ function PendingDots() {
   );
 }
 
-function ThinkingDisclosure(props: { reasoning: string; answering: boolean }) {
+function thoughtLabel(thinking: boolean, ms: number | null | undefined): string {
+  if (thinking) return "Thinking…";
+  if (ms === null || ms === undefined) return "Thought";
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return `Thought for ${seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`}`;
+}
+
+/** Collapsed like the other notes above a reply; the body lines up under the label, its rule under the icon. */
+function ThinkingDisclosure(props: { reasoning: string; thinking: boolean; ms: number | null | undefined }) {
   const textRef = useRef<HTMLParagraphElement>(null);
   const pinned = useRef(true);
   useLayoutEffect(() => {
@@ -58,16 +66,20 @@ function ThinkingDisclosure(props: { reasoning: string; answering: boolean }) {
   }, [props.reasoning]);
   return (
     <details
-      className="mbe-2 text-sm text-muted"
+      className="group/thought mbs-0 mbe-2 text-xs leading-5 text-muted"
       onToggle={() => {
         const element = textRef.current;
-        if (element && pinned.current && !props.answering) element.scrollTop = element.scrollHeight;
+        if (element && pinned.current && props.thinking) element.scrollTop = element.scrollHeight;
       }}
     >
-      <summary className="cursor-pointer select-none">{props.answering ? "Thought process" : "Thinking…"}</summary>
+      <summary className="flex w-fit cursor-pointer list-none select-none items-start gap-1.5 [&::-webkit-details-marker]:hidden [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground">
+        <Brain className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
+        <span>{thoughtLabel(props.thinking, props.ms)}</span>
+        <ChevronRight className="mbs-0.5 size-3.5 flex-none group-open/thought:rotate-90 motion-safe:transition-transform" aria-hidden="true" />
+      </summary>
       <p
         ref={textRef}
-        className="mbs-2 max-h-48 overflow-y-auto whitespace-pre-wrap border-s-2 border-border ps-3 text-xs leading-5"
+        className="mbs-1 mbe-0 ms-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap border-s-2 border-border ps-3"
         onScroll={(event) => {
           const element = event.currentTarget;
           pinned.current = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
@@ -89,6 +101,7 @@ function MessageRow(props: {
   message: TranscriptMessage;
   liveText?: string;
   reasoning?: string;
+  reasoningMs?: number | null;
   characters: Character[];
   protagonistId: string;
   /** The protagonist speaks the player's turns. */
@@ -531,9 +544,9 @@ function MessageRow(props: {
           {menu}
         </div>
       </div>
-      {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} answering={Boolean(content)} />}
       {message.direction && <DirectionNote direction={message.direction} />}
       {message.lore && <ContextNote lore={message.lore} />}
+      {props.reasoning && <ThinkingDisclosure reasoning={props.reasoning} thinking={!content && message.status === "pending"} ms={props.reasoningMs} />}
       {editing && !editExpanded ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} protagonistId={props.protagonistId} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
@@ -990,6 +1003,7 @@ export function ChatPlay(props: {
                   message={message}
                   liveText={isLive && live?.text ? live.text : undefined}
                   reasoning={isLive ? live?.reasoning : message.reasoning ?? undefined}
+                  reasoningMs={isLive ? live?.reasoningMs : message.reasoning_ms}
                   streaming={isLive && live?.phase === "streaming"}
                   characters={characters}
                   protagonistAvatarId={protagonistAvatarId}
@@ -1026,6 +1040,7 @@ export function ChatPlay(props: {
                     lore: null,
                     usage: null,
                     reasoning: null,
+                    reasoning_ms: null,
                     created_at: "",
                     updated_at: "",
                   }}
@@ -1050,8 +1065,8 @@ export function ChatPlay(props: {
               {unmatchedLive && live && (
                 <article className="rounded-xl border border-dashed border-border bg-surface p-4">
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
-                  {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} answering={Boolean(live.text)} />}
                   {live.direction && <DirectionNote direction={live.direction} />}
+                  {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} thinking={!live.text && live.phase === "streaming"} ms={live.reasoningMs} />}
                   {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots /> : null}
                 </article>
               )}
