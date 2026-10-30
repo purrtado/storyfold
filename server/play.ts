@@ -60,7 +60,7 @@ interface MessageRow extends MessageRecord {
 }
 
 const MESSAGE_COLUMNS =
-  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, created_at, updated_at";
+  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, reasoning, created_at, updated_at";
 
 function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
   return {
@@ -95,6 +95,7 @@ interface ActiveRun {
   controller: AbortController;
   messageId: string;
   partial: string;
+  reasoning: string;
   settled: boolean;
   /** Bound during streamNarration; Stop uses the same first-wins settlement. */
   settle: (status: "complete" | "interrupted" | "failed") => void;
@@ -518,6 +519,7 @@ export class PlayService {
       controller: new AbortController(),
       messageId: options.pendingId,
       partial: "",
+      reasoning: "",
       settled: false,
       settle(status) {
         if (run.settled) return;
@@ -580,6 +582,7 @@ export class PlayService {
       "UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
     );
     const recordUsage = this.db.query("UPDATE messages SET usage = ? WHERE id = ?");
+    const persistReasoning = this.db.query("UPDATE messages SET reasoning = ? WHERE id = ? AND status = 'pending'");
     async function* generate(): AsyncGenerator<StreamChunk> {
       try {
         for await (const chunk of upstream) {
@@ -587,6 +590,12 @@ export class PlayService {
           if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
             run.partial += chunk.delta;
             persist.run(run.partial, nowIso(), run.messageId);
+            yield chunk;
+            continue;
+          }
+          if (chunk.type === EventType.REASONING_MESSAGE_CONTENT) {
+            run.reasoning += chunk.delta;
+            persistReasoning.run(run.reasoning, run.messageId);
             yield chunk;
             continue;
           }

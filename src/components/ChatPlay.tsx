@@ -61,7 +61,7 @@ function ThinkingDisclosure(props: { reasoning: string; answering: boolean }) {
       className="mbe-2 text-sm text-muted"
       onToggle={() => {
         const element = textRef.current;
-        if (element && pinned.current) element.scrollTop = element.scrollHeight;
+        if (element && pinned.current && !props.answering) element.scrollTop = element.scrollHeight;
       }}
     >
       <summary className="cursor-pointer select-none">{props.answering ? "Thought process" : "Thinking…"}</summary>
@@ -989,7 +989,7 @@ export function ChatPlay(props: {
                   key={message.id}
                   message={message}
                   liveText={isLive && live?.text ? live.text : undefined}
-                  reasoning={isLive ? live?.reasoning : undefined}
+                  reasoning={isLive ? live?.reasoning : message.reasoning ?? undefined}
                   streaming={isLive && live?.phase === "streaming"}
                   characters={characters}
                   protagonistAvatarId={protagonistAvatarId}
@@ -1025,6 +1025,7 @@ export function ChatPlay(props: {
                     direction: null,
                     lore: null,
                     usage: null,
+                    reasoning: null,
                     created_at: "",
                     updated_at: "",
                   }}

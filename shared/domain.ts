@@ -177,6 +177,8 @@ export interface Message {
   lore: MessageLore | null;
   /** What this narration was sent and what the provider reported; null on player messages and replies never sent. */
   usage: MessageUsage | null;
+  /** The model's summarized thinking for this narration, as streamed; never part of model history. Null when it sent none. */
+  reasoning: string | null;
   created_at: string;
   updated_at: string;
 }

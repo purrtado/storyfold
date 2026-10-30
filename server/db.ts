@@ -127,6 +127,7 @@ CREATE TABLE messages (
   direction TEXT,
   lore TEXT CHECK (lore IS NULL OR json_valid(lore)),
   usage TEXT CHECK (usage IS NULL OR json_valid(usage)),
+  reasoning TEXT,
   CHECK (role != 'user' OR status = 'complete'),
   CHECK (role = 'assistant' OR selected = 1)
 );
@@ -169,7 +170,7 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [

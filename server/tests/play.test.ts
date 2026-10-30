@@ -564,6 +564,31 @@ describe("player turns", () => {
     }
   });
 
+  test("streamed reasoning is stored on the reply and never sent back as history", async () => {
+    const { chat } = await seedStory(base.url);
+    const calls: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const [first, ...rest] = openAiChatCompletionSse("deepseek-reasoner", ["The tide turns."]).split("\n\n");
+    const thinking = ["Sable wants", " the docks."].map((reasoning_content) =>
+      `data: ${JSON.stringify({ id: "chatcmpl-test", object: "chat.completion.chunk", created: 1_700_000_000, model: "deepseek-reasoner", choices: [{ index: 0, delta: { reasoning_content }, finish_reason: null }] })}`);
+    const sse = [first, ...thinking, ...rest].join("\n\n");
+    const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      await readSse(await postMessage(server.url, chat.id, { content: "I watch the docks." }));
+      const reply = (await transcript(server.url, chat.id)).at(-1)!;
+      expect(reply.reasoning).toBe("Sable wants the docks.");
+      expect(reply.content).toBe("The tide turns.");
+
+      await readSse(await postMessage(server.url, chat.id, { content: "I wait." }));
+      expect(JSON.stringify(calls[1].messages)).not.toContain("Sable wants");
+    } finally {
+      await server.stop();
+    }
+  });
+
   test("busy rejects concurrent submissions without saving the extra input", async () => {
     const { chat } = await seedStory(base.url);
     const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Slow"]]);
