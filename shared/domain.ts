@@ -84,10 +84,10 @@ export interface StatDefinition extends StatFields {
 export type StatValues = Record<string, number>;
 
 /**
- * Thinking levels for Anthropic models; the adapter clamps each to the
- * nearest level the model has. A model with no stored level does not think.
+ * Thinking levels for Anthropic Messages models, as providers and the adapter
+ * name them. A model with no stored level is sent no thinking fields.
  */
-export const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
 /**

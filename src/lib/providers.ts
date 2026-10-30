@@ -29,6 +29,8 @@ export type ModelEntry = {
   id: string;
   enabled: boolean;
   manual: boolean;
+  /** Thinking levels the model takes; empty hides the thinking control. */
+  reasoning_levels: ReasoningLevel[];
 };
 
 export type ModelListing = {

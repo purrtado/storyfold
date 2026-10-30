@@ -22,7 +22,9 @@ export type ModelPickerState = {
   select: (selection: ModelSelection) => void;
   /** The selected model's thinking level; null when it does not think. */
   reasoning: ReasoningLevel | null;
-  /** Present only when the selected provider takes a thinking level (Anthropic). */
+  /** The levels the selected model takes; empty when it takes none or they are unknown. */
+  reasoningLevels: ReasoningLevel[];
+  /** Present only when the selected model has thinking levels. */
   setReasoning?: (level: ReasoningLevel | null) => void;
   saveError: string;
 };
@@ -108,7 +110,11 @@ export function useModelSelection(): ModelPickerState {
 
   const selectedProvider = selection ? providers.find((provider) => provider.id === selection.provider_id) : undefined;
   const reasoning = selection && selectedProvider ? selectedProvider.reasoning[selection.model] ?? null : null;
-  const setReasoning = selection && selectedProvider?.api === "anthropic"
+  const listing = selectedProvider ? models[selectedProvider.id] : undefined;
+  const reasoningLevels = selection && typeof listing === "object"
+    ? listing.models.find((model) => model.id === selection.model)?.reasoning_levels ?? []
+    : [];
+  const setReasoning = selection && selectedProvider && reasoningLevels.length > 0
     ? (level: ReasoningLevel | null) => {
       const next = { ...selectedProvider.reasoning };
       if (level === null) delete next[selection.model];
@@ -118,5 +124,5 @@ export function useModelSelection(): ModelPickerState {
     }
     : undefined;
 
-  return { status, providers, models, selection, select, reasoning, setReasoning, saveError };
+  return { status, providers, models, selection, select, reasoning, reasoningLevels, setReasoning, saveError };
 }

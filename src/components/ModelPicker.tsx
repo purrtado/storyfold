@@ -1,7 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Brain, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { REASONING_LEVELS, type ReasoningLevel } from "../../shared/domain";
+import type { ReasoningLevel } from "../../shared/domain";
 import type { ModelPickerState } from "../lib/useModelSelection";
 import "./message-menu.css";
 
@@ -98,6 +98,7 @@ export function ModelPicker(props: { picker: ModelPickerState; disabled: boolean
 }
 
 const REASONING_LABELS: Record<ReasoningLevel, string> = {
+  minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -105,9 +106,9 @@ const REASONING_LABELS: Record<ReasoningLevel, string> = {
   max: "Max",
 };
 
-/** The selected model's thinking level; hidden for providers that take none. */
+/** The selected model's thinking level; hidden for models with no known levels. */
 export function ReasoningPicker(props: { picker: ModelPickerState; disabled: boolean }) {
-  const { reasoning, setReasoning } = props.picker;
+  const { reasoning, reasoningLevels, setReasoning } = props.picker;
   if (!setReasoning) return null;
   const label = reasoning === null ? "Off" : REASONING_LABELS[reasoning];
 
@@ -127,7 +128,7 @@ export function ReasoningPicker(props: { picker: ModelPickerState; disabled: boo
             value={reasoning ?? "off"}
             onValueChange={(value) => setReasoning(value === "off" ? null : value as ReasoningLevel)}
           >
-            {(["off", ...REASONING_LEVELS] as const).map((level) => (
+            {(["off", ...reasoningLevels] as const).map((level) => (
               <DropdownMenu.RadioItem key={level} value={level} className="message-menu-item gap-2">
                 <span className="min-w-0 flex-1">{level === "off" ? "Off" : REASONING_LABELS[level]}</span>
                 <DropdownMenu.ItemIndicator>

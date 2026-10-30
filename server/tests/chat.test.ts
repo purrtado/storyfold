@@ -173,7 +173,7 @@ describe("completion evidence (raw protocol)", () => {
 });
 
 describe("Anthropic Messages transport", () => {
-  function anthropicRun(sse: string, apiKey: string | null, reasoning?: ReasoningLevel) {
+  function anthropicRun(sse: string, apiKey: string | null, reasoning?: ReasoningLevel, model = "claude-haiku-5-5") {
     const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
     const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
@@ -183,7 +183,7 @@ describe("Anthropic Messages transport", () => {
       threadId: "chat-test",
       api: "anthropic",
       baseUrl: "https://anthropic.test",
-      model: "claude-haiku-5-5",
+      model,
       apiKey,
       reasoning,
       systemPrompt: "You narrate.",
@@ -239,5 +239,12 @@ describe("Anthropic Messages transport", () => {
     const plain = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["Hi."]), API_KEY);
     await plain.events;
     expect(plain.calls[0].body).not.toHaveProperty("thinking");
+  });
+
+  test("a model outside the adapter's table gets adaptive thinking at the stored effort", async () => {
+    const run = anthropicRun(anthropicMessagesSse("gemini-4-argon-medium", ["Hi."]), API_KEY, "medium", "gemini-4-argon-medium");
+    await run.events;
+    expect(run.calls[0].body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(run.calls[0].body.output_config).toEqual({ effort: "medium" });
   });
 });

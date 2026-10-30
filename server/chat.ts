@@ -4,6 +4,7 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
 import type { ReasoningLevel } from "../shared/domain";
 import type { ProviderApi } from "./providers";
+import { adapterThinks } from "./reasoning";
 
 export const MAX_MESSAGE_CHARS = 100_000;
 
@@ -182,6 +183,23 @@ function withoutCredentials(upstreamFetch: typeof fetch): typeof fetch {
   }) as typeof fetch;
 }
 
+/**
+ * Adaptive thinking for models outside the adapter's reasoning table: the
+ * adapter ignores `chat({ reasoning })` for them and drops `thinking` from
+ * modelOptions, so the fields go onto the Messages request body here.
+ */
+function withAdaptiveThinking(upstreamFetch: typeof fetch, effort: ReasoningLevel): typeof fetch {
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body !== "string") return upstreamFetch(input, init);
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    const outputConfig = typeof body.output_config === "object" ? body.output_config : {};
+    return upstreamFetch(input, {
+      ...init,
+      body: JSON.stringify({ ...body, thinking: { type: "adaptive", display: "summarized" }, output_config: { ...outputConfig, effort } }),
+    });
+  }) as typeof fetch;
+}
+
 function textAdapter(request: NarrationRunRequest) {
   const upstreamFetch = request.upstreamFetch ?? fetch;
   // The SDKs fall back to ambient env keys when none is given; a placeholder
@@ -189,21 +207,28 @@ function textAdapter(request: NarrationRunRequest) {
   const apiKey = request.apiKey ?? "keyless";
   const fetchImpl = request.apiKey === null ? withoutCredentials(upstreamFetch) : upstreamFetch;
   if (request.api === "anthropic") {
-    return createAnthropicChat(request.model as Parameters<typeof createAnthropicChat>[0], apiKey, {
+    const adapterReasoning = adapterThinks(request.model);
+    return {
+      adapter: createAnthropicChat(request.model as Parameters<typeof createAnthropicChat>[0], apiKey, {
+        baseURL: request.baseUrl,
+        // Stored keys are API keys; never reinterpret one as an OAuth token.
+        auth: "api-key",
+        maxRetries: 0,
+        fetch: request.reasoning !== undefined && !adapterReasoning ? withAdaptiveThinking(fetchImpl, request.reasoning) : fetchImpl,
+      }),
+      reasoning: adapterReasoning ? request.reasoning : undefined,
+    };
+  }
+  return {
+    adapter: openaiCompatibleText(request.model, {
       baseURL: request.baseUrl,
-      // Stored keys are API keys; never reinterpret one as an OAuth token.
-      auth: "api-key",
+      apiKey,
+      api: "chat-completions",
       maxRetries: 0,
       fetch: fetchImpl,
-    });
-  }
-  return openaiCompatibleText(request.model, {
-    baseURL: request.baseUrl,
-    apiKey,
-    api: "chat-completions",
-    maxRetries: 0,
-    fetch: fetchImpl,
-  });
+    }),
+    reasoning: undefined,
+  };
 }
 
 /** Starts a sanitized chat-completions or Messages run for server-side consumption. */
@@ -217,14 +242,14 @@ export function startNarrationRun(request: NarrationRunRequest): NarrationRun {
     disconnectSignal?.addEventListener("abort", abortFromDisconnect, { once: true });
   }
 
-  const adapter = textAdapter(request);
+  const { adapter, reasoning } = textAdapter(request);
 
   const stream = chat({
     adapter,
     threadId: request.threadId,
     messages: request.messages,
     ...(request.systemPrompt !== undefined ? { systemPrompts: [request.systemPrompt] } : {}),
-    ...(request.api === "anthropic" && request.reasoning !== undefined ? { reasoning: { level: request.reasoning, summary: true } } : {}),
+    ...(reasoning !== undefined ? { reasoning: { level: reasoning, summary: true } } : {}),
     stream: true,
     abortController,
     debug: false,
