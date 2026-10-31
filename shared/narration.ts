@@ -1,4 +1,4 @@
-import type { Character, CharacterProfile, PromptCard, StatFields, StatValues, WorldEntry } from "./domain";
+import type { Character, CharacterProfile, Message, PromptCard, StatFields, StatValues, WorldEntry } from "./domain";
 import { CHARACTER_PROFILE_FIELDS } from "./domain";
 
 /**
@@ -7,6 +7,12 @@ import { CHARACTER_PROFILE_FIELDS } from "./domain";
  * Nothing is ever truncated — a request that would pass it is refused.
  */
 export const NARRATION_TOKEN_BUDGET = 40_000;
+
+/**
+ * Size budget for one scratchpad call: the world, the chat's transcript, and
+ * the scratchpad thread. Like narration, a request past it is refused.
+ */
+export const SCRATCHPAD_TOKEN_BUDGET = 60_000;
 
 export interface RelationshipPrompt {
   source_id: string;
@@ -88,6 +94,19 @@ function relationshipBlock(relationship: RelationshipPrompt, stats: NarrationCon
 /** The protagonist and `always` cast: the characters whose full profiles live in the system prompt. */
 function alwaysSentIds(context: Pick<NarrationContext, "protagonist" | "cast">): Set<string> {
   return new Set([context.protagonist.id, ...context.cast.filter((member) => member.context_mode === "always").map((member) => member.id)]);
+}
+
+/** The stats legend: one element per stat with its scale and what both ends mean. */
+function statsLegend(stats: NarrationContext["stats"]): string {
+  return stats
+    .map((stat) =>
+      taggedElement(
+        "stat",
+        { name: stat.label, applies_to: stat.applies_to, scale: `${stat.min}–${stat.max}`, low: `${stat.min}: ${stat.low_label}`, high: `${stat.max}: ${stat.high_label}` },
+        stat.description,
+      ),
+    )
+    .join("\n");
 }
 
 /** Every `{{name}}` a prompt card body may use; anything else is refused on save. */
@@ -207,15 +226,7 @@ export function narratorSystemPrompt(
   const values: Record<PromptPlaceholder, string> = {
     world_name: escapeMarkup(world.name),
     world_brief: escapeMarkup(world.setting_brief),
-    stats: context.stats
-      .map((stat) =>
-        taggedElement(
-          "stat",
-          { name: stat.label, applies_to: stat.applies_to, scale: `${stat.min}–${stat.max}`, low: `${stat.min}: ${stat.low_label}`, high: `${stat.max}: ${stat.high_label}` },
-          stat.description,
-        ),
-      )
-      .join("\n"),
+    stats: statsLegend(context.stats),
     protagonist_name: escapeMarkup(protagonist.name),
     protagonist: characterBlock(protagonist, context.stats),
     cast: context.cast
@@ -293,4 +304,37 @@ export function contextNote(context: ReplyContext, stats: NarrationContext["stat
   ] as const;
   const body = sections.filter(([, items]) => items.length > 0).map(([tag, items]) => [`<${tag}>`, ...items, `</${tag}>`].join("\n"));
   return `\n\n<reply_context>\n${body.join("\n")}\n</reply_context>`;
+}
+
+const SCRATCHPAD_ROLE = `You are the player's writing partner for an interactive story they are playing with an AI narrator. The player plays the protagonist; the narrator writes everyone and everything else. You are not the narrator: talk about the story, never continue it, and never speak as its characters unless the player asks for an example line.
+
+Help the player think: recap what happened, check continuity against the world and the transcript, read characters' motives, spot loose threads, and suggest where the story could go. Ground every claim in the world or the transcript and say where it comes from; say so when something is not established. Be concise.
+
+When you suggest what should happen, put it in its own paragraph as a direction the player could give the narrator, in one or two sentences.`;
+
+/**
+ * The scratchpad's system prompt: its role, then the whole world — every
+ * character in full, every relationship and non-scene entry, keyword ones
+ * included — then the chat's selected transcript after its opening. Rebuilt
+ * on every call, so it always reads the story as it is now.
+ */
+export function scratchpadSystemPrompt(
+  context: NarrationContext,
+  opening: string,
+  transcript: ReadonlyArray<Pick<Message, "role" | "speaker_name" | "content" | "direction">>,
+): string {
+  const block = (tag: string, items: string[]) => (items.length === 0 ? [] : [`<${tag}>\n${items.join("\n")}\n</${tag}>`]);
+  const turns = transcript.map((turn) =>
+    taggedElement("turn", { speaker: turn.speaker_name, ...(turn.role === "user" ? { role: "player" } : {}), ...(turn.direction ? { direction: turn.direction } : {}) }, turn.content),
+  );
+  return [
+    `<scratchpad_role>\n${SCRATCHPAD_ROLE}\n</scratchpad_role>`,
+    taggedElement("world", { name: context.world.name }, context.world.setting_brief),
+    ...block("stats", context.stats.length === 0 ? [] : [statsLegend(context.stats)]),
+    ...block("protagonist", [characterBlock(context.protagonist, context.stats)]),
+    ...block("characters", context.cast.map((member) => characterBlock(member, context.stats))),
+    ...block("relationships", context.relationships.map((relationship) => relationshipBlock(relationship, context.stats))),
+    ...block("compendium", context.world.entries.map(entryElement)),
+    ...block("transcript", [...(opening.trim() ? [taggedElement("opening", {}, opening)] : []), ...turns]),
+  ].join("\n\n");
 }

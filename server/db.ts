@@ -139,6 +139,25 @@ CREATE UNIQUE INDEX messages_one_pending
 CREATE UNIQUE INDEX messages_one_selected
   ON messages(chat_id, position) WHERE selected = 1;
 
+CREATE TABLE scratch_messages (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL REFERENCES chats(id),
+  position INTEGER NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'interrupted', 'failed')),
+  reasoning TEXT,
+  reasoning_ms INTEGER CHECK (reasoning_ms IS NULL OR reasoning_ms >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (role != 'user' OR status = 'complete')
+);
+
+CREATE UNIQUE INDEX scratch_messages_position ON scratch_messages(chat_id, position);
+
+CREATE UNIQUE INDEX scratch_messages_one_pending
+  ON scratch_messages(chat_id) WHERE status = 'pending';
+
 CREATE TABLE prompt_presets (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -171,7 +190,7 @@ export function newId(): string {
 }
 
 /** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -236,13 +255,18 @@ export function openDatabase(path: string): Database {
 /**
  * Startup-only: one Bun backend means any surviving pending assistant reply is
  * abandoned (the process that streamed it is gone), so it settles as
- * interrupted. Never resumes generation.
+ * interrupted. Never resumes generation. Counts narration and scratchpad replies.
  */
 export function sweepAbandonedPending(db: Database): number {
-  return db
+  const now = nowIso();
+  const narration = db
     .query(
       `UPDATE messages SET status = 'interrupted', updated_at = ?
        WHERE role = 'assistant' AND status = 'pending'`,
     )
-    .run(nowIso()).changes;
+    .run(now).changes;
+  const scratch = db
+    .query("UPDATE scratch_messages SET status = 'interrupted', updated_at = ? WHERE status = 'pending'")
+    .run(now).changes;
+  return narration + scratch;
 }

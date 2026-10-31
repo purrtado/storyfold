@@ -55,7 +55,7 @@ describe("schema version", () => {
 
       const reopened = openDatabase(path);
       try {
-        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(12);
+        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(13);
         expect(listStatDefinitions(reopened, null)).toHaveLength(8);
         const cards = listPromptCards(reopened);
         expect(cards.map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
@@ -71,7 +71,7 @@ describe("schema version", () => {
   test("a workspace from an older schema is refused with its path and left untouched", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
-      for (const version of [1, 3, 8]) {
+      for (const version of [1, 8, 12]) {
         const path = join(directory, `v${version}.db`);
         const stale = new Database(path, { create: true });
         stale.exec("CREATE TABLE campaigns (id TEXT PRIMARY KEY)");
@@ -197,12 +197,17 @@ describe("schema invariants", () => {
 });
 
 describe("startup sweep", () => {
-  test("settles only the pending draft interrupted and preserves partial, input and identity", () => {
+  test("settles only pending drafts interrupted, scratchpad replies included, and preserves partial, input and identity", () => {
     const { chatId } = seedChat();
     const draftId = insertMessage(chatId, 1, "assistant", "pending", "partial text");
     const inputId = insertMessage(chatId, 2, "user", "complete", "accepted input");
+    db.query(
+      `INSERT INTO scratch_messages (id, chat_id, position, role, content, status, created_at, updated_at)
+       VALUES ('s1', ?, 1, 'assistant', 'half a thought', 'pending', ?, ?)`,
+    ).run(chatId, NOW, NOW);
 
-    expect(sweepAbandonedPending(db)).toBe(1);
+    expect(sweepAbandonedPending(db)).toBe(2);
+    expect(db.query("SELECT content, status FROM scratch_messages WHERE id = 's1'").get()).toEqual({ content: "half a thought", status: "interrupted" });
     const rows = db
       .query<
         { id: string; position: number; role: string; speaker_name: string; content: string; status: string },
