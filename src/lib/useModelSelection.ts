@@ -4,6 +4,7 @@ import {
   fetchModels,
   fetchProviders,
   saveSelection,
+  saveSummarySelection,
   updateProvider,
   type ModelListing,
   type ModelSelection,
@@ -20,6 +21,9 @@ export type ModelPickerState = {
   /** The saved choice when still usable, else the first enabled model; null when nothing is usable. */
   selection: ModelSelection | null;
   select: (selection: ModelSelection) => void;
+  /** The saved chapter summary model; null summarizes with `selection`. */
+  summarySelection: ModelSelection | null;
+  selectSummary: (selection: ModelSelection | null) => void;
   /** The selected model's thinking level; null when it does not think. */
   reasoning: ReasoningLevel | null;
   /** The levels the selected model takes; empty when it takes none or they are unknown. */
@@ -42,6 +46,7 @@ export function useModelSelection(): ModelPickerState {
   const [status, setStatus] = useState<ModelPickerState["status"]>("loading");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [saved, setSaved] = useState<ModelSelection | null>(null);
+  const [summarySelection, setSummarySelection] = useState<ModelSelection | null>(null);
   const [models, setModels] = useState<Record<string, ProviderModels>>({});
   const [saveError, setSaveError] = useState("");
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -54,6 +59,7 @@ export function useModelSelection(): ModelPickerState {
         if (!active) return;
         setProviders(list.providers);
         setSaved(list.selection);
+        setSummarySelection(list.summary_selection);
         setStatus("ready");
         for (const provider of list.providers) {
           fetchModels(provider.id).then(
@@ -87,6 +93,11 @@ export function useModelSelection(): ModelPickerState {
   const select = useCallback((next: ModelSelection) => {
     setSaved(next);
     queueSave(() => saveSelection(next), "Could not save the model choice.");
+  }, [queueSave]);
+
+  const selectSummary = useCallback((next: ModelSelection | null) => {
+    setSummarySelection(next);
+    queueSave(() => saveSummarySelection(next), "Could not save the summary model.");
   }, [queueSave]);
 
   // A saved model whose provider is gone or that was switched off falls back to
@@ -124,5 +135,5 @@ export function useModelSelection(): ModelPickerState {
     }
     : undefined;
 
-  return { status, providers, models, selection, select, reasoning, reasoningLevels, setReasoning, saveError };
+  return { status, providers, models, selection, select, summarySelection, selectSummary, reasoning, reasoningLevels, setReasoning, saveError };
 }

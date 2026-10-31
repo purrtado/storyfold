@@ -14,6 +14,7 @@ import {
   type ProviderApi,
   type ProviderPatch,
 } from "../lib/providers";
+import { useModelSelection } from "../lib/useModelSelection";
 import "./settings.css";
 
 const inputClass = "min-h-10 w-full rounded-lg border border-border bg-background px-3 text-sm";
@@ -443,6 +444,62 @@ function ProviderModels(props: {
   );
 }
 
+/** Which model writes chapter summaries: the narrator's, or a cheaper one chosen here. */
+function SummaryModelSetting() {
+  const picker = useModelSelection();
+  const id = useId();
+  const saved = picker.summarySelection;
+  const savedValue = saved ? JSON.stringify([saved.provider_id, saved.model]) : "";
+  const savedListed = !saved || picker.providers.some((provider) => {
+    const listing = picker.models[provider.id];
+    return provider.id === saved.provider_id && typeof listing === "object" && listing.models.some((model) => model.enabled && model.id === saved.model);
+  });
+
+  return (
+    <section className="theme-group grid gap-3" aria-labelledby={`${id}-title`}>
+      <div className="theme-copy">
+        <p id={`${id}-title`} className="theme-label">Chapter summaries</p>
+        <p className="theme-desc">The model that summarizes older messages into chapters. A cheaper model keeps long chats affordable.</p>
+      </div>
+      {picker.status === "loading" ? (
+        <p className="m-0 text-sm text-muted" role="status">Loading models…</p>
+      ) : picker.status === "error" ? (
+        <p className="m-0 text-sm text-muted" role="alert">Could not load providers.</p>
+      ) : (
+        <>
+          <select
+            aria-labelledby={`${id}-title`}
+            className={`${inputClass} max-w-md`}
+            value={savedValue}
+            onChange={(event) => {
+              const value = event.target.value;
+              const [provider_id, model] = value === "" ? [] : (JSON.parse(value) as [string, string]);
+              picker.selectSummary(provider_id && model ? { provider_id, model } : null);
+            }}
+          >
+            <option value="">Same as the narrator</option>
+            {!savedListed && saved && (
+              <option value={savedValue}>{picker.providers.find((provider) => provider.id === saved.provider_id)?.name} · {saved.model} (not enabled)</option>
+            )}
+            {picker.providers.map((provider) => {
+              const listing = picker.models[provider.id];
+              const enabled = typeof listing === "object" ? listing.models.filter((model) => model.enabled) : [];
+              return enabled.length === 0 ? null : (
+                <optgroup key={provider.id} label={provider.name}>
+                  {enabled.map((model) => (
+                    <option key={model.id} value={JSON.stringify([provider.id, model.id])}>{model.id}</option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+          {picker.saveError && <p className="m-0 text-sm text-muted" role="alert">{picker.saveError}</p>}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function ProvidersPage(props: { onOpenSidebar: () => void }) {
   const [providers, setProviders] = useState<Provider[] | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -550,6 +607,11 @@ export function ProvidersPage(props: { onOpenSidebar: () => void }) {
               </ul>
             )}
           </section>
+
+          {providers !== null && providers.length > 0 && (
+            // Remounts whenever providers change, so its model lists follow them.
+            <SummaryModelSetting key={providers.map((provider) => `${provider.id}@${provider.updated_at}`).join(",")} />
+          )}
 
           <p className="theme-desc [margin-block-start:1rem] max-w-prose">
             Storyfold is a local, single-user install. Providers and their API keys are stored by the Storyfold

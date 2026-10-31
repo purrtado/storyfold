@@ -80,17 +80,19 @@ describe("ProviderStore", () => {
   test("corrupt files load empty; malformed entries and dangling selections are dropped", async () => {
     await withStore(async (store, dir) => {
       await writeFile(join(dir, "config.json"), "{ not json !!!");
-      expect(await store.load()).toEqual({ providers: [], selection: null });
+      expect(await store.load()).toEqual({ providers: [], selection: null, summary_selection: null });
 
       const valid = { id: "ok", ...createInput(), disabled_models: [], updated_at: "2026-01-01T00:00:00.000Z" };
       const document: Record<string, unknown> = {
         providers: [valid, { ...valid, id: "bad", base_url: "ftp://nope" }],
         selection: { provider_id: "bad", model: "m" },
+        summary_selection: { provider_id: "bad", model: "m" },
       };
       await writeFile(join(dir, "config.json"), JSON.stringify(document));
       const loaded = await store.load();
       expect(loaded.providers.map((provider) => provider.id)).toEqual(["ok"]);
       expect(loaded.selection).toBeNull();
+      expect(loaded.summary_selection).toBeNull();
     });
   });
 
@@ -102,13 +104,14 @@ describe("ProviderStore", () => {
     });
   });
 
-  test("removing the selected provider clears the selection", async () => {
+  test("removing the selected provider clears the selection and the summary model", async () => {
     await withStore(async (store) => {
       const kept = await store.create(createInput());
       const doomed = await store.create(createInput({ name: "Doomed" }));
       await store.setSelection({ provider_id: doomed.id, model: "m" });
+      await store.setSummarySelection({ provider_id: doomed.id, model: "cheap" });
       await store.remove(doomed.id);
-      expect(await store.load()).toEqual({ providers: [kept], selection: null });
+      expect(await store.load()).toEqual({ providers: [kept], selection: null, summary_selection: null });
     });
   });
 
@@ -325,7 +328,7 @@ describe("Providers API", () => {
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     try {
-      expect(await (await call("GET", "/api/providers")).json()).toEqual({ providers: [], selection: null });
+      expect(await (await call("GET", "/api/providers")).json()).toEqual({ providers: [], selection: null, summary_selection: null });
 
       const created = await call("POST", "/api/providers", { name: "Example", base_url: `${BASE_URL}/`, api_key: API_KEY });
       expect(created.status).toBe(201);
