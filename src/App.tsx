@@ -19,6 +19,7 @@ import {
   selectChatVariant,
   type TranscriptMessage,
 } from "./lib/storyApi";
+import type { ModelSelection } from "./lib/providers";
 import { refreshChats, refreshLibraries, warmLibraries } from "./lib/libraryCache";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
@@ -143,12 +144,11 @@ export default function App() {
   }, [activeChatId, refreshChat, refreshChatMessages]);
 
   const { generation, send, open, regenerate, attach, stop, dismiss } = useChatGeneration({
-    onAccepted: (chatId, _ids, content) => {
-      setDrafts((current) => {
-        if ((current[chatId] ?? "").trim() !== content) return current;
-        return { ...current, [chatId]: "" };
-      });
+    onAccepted: (chatId) => {
       void refreshChatMessages(chatId);
+    },
+    onRefused: (chatId, content) => {
+      setDrafts((current) => current[chatId] ? current : { ...current, [chatId]: content });
     },
     onSettled: async (chatId) => {
       refreshChats();
@@ -200,6 +200,10 @@ export default function App() {
   const changeDraft = useCallback((chatId: string, value: string) => {
     setDrafts((current) => ({ ...current, [chatId]: value }));
   }, []);
+
+  const sendMessage = useCallback((chatId: string, content: string, direction?: string, model?: ModelSelection) => {
+    if (send(chatId, content, direction, model)) setDrafts((current) => ({ ...current, [chatId]: "" }));
+  }, [send]);
 
   const activeChat = activeChatId ? chats[activeChatId] : undefined;
   const openSidebar = () => setMobileOpen(true);
@@ -285,7 +289,7 @@ export default function App() {
               draft={drafts[activeChatId] ?? ""}
               onOpenSidebar={openSidebar}
               onDraftChange={changeDraft}
-              onSend={send}
+              onSend={sendMessage}
               onOpen={open}
               onRegenerate={regenerate}
               onSelectVariant={selectVariant}

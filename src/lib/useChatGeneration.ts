@@ -47,7 +47,9 @@ type ErrorEnvelope = {
 };
 
 export function useChatGeneration(options: {
-  onAccepted: (chatId: string, ids: AcceptedMessageIds, content: string) => void;
+  onAccepted: (chatId: string) => void;
+  /** A sent message the server never accepted, so the player can send it again. */
+  onRefused: (chatId: string, content: string) => void;
   onSettled: (chatId: string) => void | Promise<void>;
 }) {
   const [generation, setGeneration] = useState<Generation | null>(null);
@@ -63,8 +65,10 @@ export function useChatGeneration(options: {
   const busyRef = useRef(false);
   const requestSequence = useRef(0);
   const onAcceptedRef = useRef(options.onAccepted);
+  const onRefusedRef = useRef(options.onRefused);
   const onSettledRef = useRef(options.onSettled);
   onAcceptedRef.current = options.onAccepted;
+  onRefusedRef.current = options.onRefused;
   onSettledRef.current = options.onSettled;
 
   const chat = useChat({
@@ -114,7 +118,7 @@ export function useChatGeneration(options: {
       if (accepted) {
         acceptedRef.current = true;
         setGeneration((current) => current?.id === request.id ? { ...current, ...ids } : current);
-        if (request.kind !== "attach") onAcceptedRef.current(request.chatId, ids, request.content);
+        if (request.kind !== "attach") onAcceptedRef.current(request.chatId);
       }
 
       if (!response.ok || !response.body) {
@@ -190,6 +194,7 @@ export function useChatGeneration(options: {
           }
         : current,
       );
+      if (request.kind === "message" && !acceptedRef.current) onRefusedRef.current(request.chatId, request.content);
       void onSettledRef.current(request.chatId);
     },
   });
