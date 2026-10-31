@@ -237,10 +237,13 @@ export function CharacterProfileDialog<T extends CharacterProfile & CharacterSce
                           <input id={aliasesId} aria-describedby={`${aliasesId}-help`} autoComplete="off" value={aliases} onChange={(event) => setAliases(event.target.value)} className={fieldClass} />
                           <p id={`${aliasesId}-help`} className="text-sm text-muted">Comma-separated. Any of these also brings them into the scene.</p>
                         </div>
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                          <label htmlFor={stickyId}>Stays active for</label>
-                          <input id={stickyId} type="number" required min={0} max={50} step={1} inputMode="numeric" value={sticky} onChange={(event) => setSticky(event.target.value)} className={`${fieldClass} w-24`} />
-                          <span aria-hidden="true">more messages</span>
+                        <div className="grid content-start gap-2">
+                          <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                            <label htmlFor={stickyId}>Remembered for</label>
+                            <input id={stickyId} type="number" required min={0} max={50} step={1} inputMode="numeric" aria-describedby={`${stickyId}-help`} value={sticky} onChange={(event) => setSticky(event.target.value)} className={`${fieldClass} w-24`} />
+                            <span aria-hidden="true">messages after a mention</span>
+                          </div>
+                          <p id={`${stickyId}-help`} className="text-sm text-muted">A mention brings them into the narrator's context; this keeps them there for that many more messages, yours and the narrator's. With 0 they leave once the mention is more than 2 messages old.</p>
                         </div>
                       </>
                     )}

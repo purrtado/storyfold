@@ -689,37 +689,41 @@ export function CharacterRoster(props: {
             toggleRef={(element) => { if (element) cardRefs.current.set(character.id, element); else cardRefs.current.delete(character.id); }}
           >
             <>
-              {character.avatar_id && (
-                <img
-                  src={imageUrl(character.avatar_id)}
-                  alt={`Portrait of ${character.name}`}
-                  className="aspect-[3/4] max-h-[60dvh] w-full rounded-xl bg-raised object-contain"
-                />
-              )}
-              <Profile character={character} />
-              <CharacterStatsSection
-                character={character}
-                stats={characterStats}
-                busy={characterBusyId === character.id}
-                onToggle={() => { void patchCharacter(character, { stats_enabled: !character.stats_enabled }, "Could not update stat tracking."); }}
-                onValueChange={(statId, value) => { void patchCharacter(character, { stats: { [statId]: value } }, "Could not save this stat value."); }}
-              />
-              {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor({ character })} disabled={characterBusyId !== null}>Edit</button>
-                {!you && (
-                  <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setDeleteConfirmId(character.id); setCharacterAction(null); }} disabled={characterBusyId !== null}>Delete</button>
+              <div className="flex flex-wrap items-start gap-4">
+                {character.avatar_id && (
+                  <img
+                    src={imageUrl(character.avatar_id)}
+                    alt={`Portrait of ${character.name}`}
+                    className="h-auto max-h-[60dvh] max-w-full flex-none rounded-xl object-contain [inline-size:13rem]"
+                  />
                 )}
-              </div>
-              {deleteConfirmId === character.id && (
-                <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${character.name}`}>
-                  <p className="text-sm">Delete “{character.name}” from {props.world.name}? Their relationships are deleted too.</p>
+                <div className="grid grow-[999] basis-0 content-start gap-3 [min-inline-size:50%]!">
+                  <Profile character={character} />
+                  <CharacterStatsSection
+                    character={character}
+                    stats={characterStats}
+                    busy={characterBusyId === character.id}
+                    onToggle={() => { void patchCharacter(character, { stats_enabled: !character.stats_enabled }, "Could not update stat tracking."); }}
+                    onValueChange={(statId, value) => { void patchCharacter(character, { stats: { [statId]: value } }, "Could not save this stat value."); }}
+                  />
+                  {characterAction?.id === character.id && <p className="text-sm text-muted" role="alert">{characterAction.message}</p>}
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void removeCharacter(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Deleting…" : "Delete character"}</button>
-                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setDeleteConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
+                    <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => setEditor({ character })} disabled={characterBusyId !== null}>Edit</button>
+                    {!you && (
+                      <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised" onClick={() => { setDeleteConfirmId(character.id); setCharacterAction(null); }} disabled={characterBusyId !== null}>Delete</button>
+                    )}
                   </div>
+                  {deleteConfirmId === character.id && (
+                    <div className="grid gap-2 rounded-lg border border-border p-3" role="group" aria-label={`Confirm deleting ${character.name}`}>
+                      <p className="text-sm">Delete “{character.name}” from {props.world.name}? Their relationships are deleted too.</p>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => { void removeCharacter(character); }} disabled={characterBusyId !== null}>{characterBusyId === character.id ? "Deleting…" : "Delete character"}</button>
+                        <button type="button" className="pressable min-h-10 rounded-lg border border-border px-3 text-sm" onClick={() => setDeleteConfirmId(null)} disabled={characterBusyId !== null}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
               {owned.length > 0 && (
                 <section className="grid min-w-0 gap-2" aria-label={`${character.name} relationships`}>
                   <p className="text-xs font-semibold tracking-wide text-muted uppercase">Relationships</p>
