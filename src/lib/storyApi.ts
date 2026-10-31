@@ -447,6 +447,11 @@ export async function requestChatGeneration(
   });
 }
 
+/** The chat's reply still generating on the server as SSE, or `204` when there is none. */
+export async function attachChatGeneration(chatId: string, signal: AbortSignal): Promise<Response> {
+  return fetch(`/api/chats/${encodeURIComponent(chatId)}/generation`, { signal });
+}
+
 export async function stopChatGeneration(chatId: string): Promise<{ pending: boolean; message: Message | null }> {
   return request<{ pending: boolean; message: Message | null }>(
     `/api/chats/${encodeURIComponent(chatId)}/stop`,
