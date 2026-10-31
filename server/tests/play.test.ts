@@ -171,6 +171,10 @@ async function stopRun(serverBase: string, chatId: string): Promise<{ pending: b
   return (await response.json()) as { pending: boolean; message: Message | null };
 }
 
+function attachRun(serverBase: string, chatId: string): Promise<Response> {
+  return fetch(`${serverBase}/api/chats/${chatId}/generation`, { headers: headersWith() });
+}
+
 function sseStub(frames: string[]): typeof fetch {
   return (async (_input: string | URL | Request, _init?: RequestInit) =>
     new Response(frames.join(""), {
@@ -676,7 +680,61 @@ describe("player turns", () => {
     }
   });
 
-  test("client disconnect settles interrupted promptly even when the upstream ignores aborts", async () => {
+  test("a client disconnect leaves the run generating to completion without aborting the upstream", async () => {
+    const { chat } = await seedStory(base.url);
+    const { fetch: upstream, calls, aborts } = gatedUpstream("glm-5.3", [["Kept "]]);
+    let aborted = false;
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      const response = await postMessage(server.url, chat.id, { content: "I lock my phone." });
+      void aborts[0].then(() => {
+        aborted = true;
+      });
+      const reader = response.body!.getReader();
+      await reader.read();
+      await reader.cancel();
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.content === "Kept ", "partial to persist");
+      expect((await transcript(server.url, chat.id))[1].status).toBe("pending");
+
+      calls[0].release([...partialFrames("glm-5.3", ["going."]).slice(1), ...finishFrames("glm-5.3")]);
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.status === "complete", "run to complete");
+      expect((await transcript(server.url, chat.id))[1].content).toBe("Kept going.");
+      expect(aborted).toBe(false);
+    } finally {
+      for (const call of calls) call.release();
+      await server.stop();
+    }
+  });
+
+  test("attaching mid-run replays the reply so far, then streams the rest to every reader", async () => {
+    const { chat } = await seedStory(base.url);
+    const { fetch: upstream, calls } = gatedUpstream("glm-5.3", [["Fog "]]);
+    const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: upstream });
+    try {
+      const idle = await attachRun(server.url, chat.id);
+      expect(idle.status).toBe(204);
+
+      const posted = await postMessage(server.url, chat.id, { content: "I wait." });
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.content === "Fog ", "partial to persist");
+      const attached = await attachRun(server.url, chat.id);
+      expect(attached.status).toBe(200);
+      expect(attached.headers.get("x-storyfold-pending-message-id")).toBe(posted.headers.get("x-storyfold-pending-message-id"));
+
+      calls[0].release([...partialFrames("glm-5.3", ["lifts."]).slice(1), ...finishFrames("glm-5.3")]);
+      const [postedEvents, attachedEvents] = await Promise.all([readSse(posted), readSse(attached)]);
+      for (const events of [postedEvents, attachedEvents]) {
+        expect(events.flatMap((event) => event.type === EventType.TEXT_MESSAGE_CONTENT ? [event.delta] : []).join("")).toBe("Fog lifts.");
+        expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+      }
+      expect((await transcript(server.url, chat.id))[1].content).toBe("Fog lifts.");
+      expect((await attachRun(server.url, chat.id)).status).toBe(204);
+    } finally {
+      for (const call of calls) call.release();
+      await server.stop();
+    }
+  });
+
+  test("Stop ends every reader promptly even when the upstream ignores aborts", async () => {
     const { chat } = await seedStory(base.url);
     const encoder = new TextEncoder();
     const ignoresAbort = (async (_input: string | URL | Request, _init?: RequestInit) => {
@@ -690,28 +748,15 @@ describe("player turns", () => {
     }) as typeof fetch;
     const server = await startTestServer({ configDirectory, databasePath, upstreamFetch: ignoresAbort });
     try {
-      const response = await postMessage(server.url, chat.id, { content: "I cut the line." });
-      const reader = response.body!.getReader();
-      await reader.read();
-      await reader.cancel();
-      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.status === "interrupted", "disconnect to settle interrupted");
+      const posted = await postMessage(server.url, chat.id, { content: "I cut the line." });
+      await waitFor(async () => (await transcript(server.url, chat.id))[1]?.content === "Ignores ", "partial to persist");
+      const attached = await attachRun(server.url, chat.id);
+      expect((await stopRun(server.url, chat.id)).pending).toBe(true);
+      await Promise.all([posted.text(), attached.text()]);
       const rows = await transcript(server.url, chat.id);
+      expect(rows[1].status).toBe("interrupted");
       expect(rows[1].content).toBe("Ignores ");
-      expect(rows[0].role).toBe("user");
-
-      // The slot is free: a normal run completes right after.
-      const next = await startTestServer({
-        configDirectory,
-        databasePath,
-        upstreamFetch: sseStub(replyFrames("glm-5.3", ["Fresh."])),
-      });
-      try {
-        const follow = await postMessage(next.url, chat.id, { content: "I try again." });
-        expect(follow.status).toBe(200);
-        await waitFor(async () => (await transcript(next.url, chat.id)).at(-1)?.status === "complete", "follow-up run to complete");
-      } finally {
-        await next.stop();
-      }
+      expect((await attachRun(server.url, chat.id)).status).toBe(204);
     } finally {
       await server.stop();
     }

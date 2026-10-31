@@ -101,6 +101,16 @@ interface ActiveRun {
   settle: (status: "complete" | "interrupted" | "failed") => void;
   /** Written when the call starts; the provider's counts join it on a normal finish. */
   estimate: MessageUsage["estimate"];
+  /** Every chunk forwarded so far, replayed to readers that attach mid-run. */
+  log: StreamChunk[];
+  readers: Set<RunReader>;
+  /** Ends every reader's stream. */
+  end: () => void;
+}
+
+interface RunReader {
+  push: (chunk: StreamChunk) => void;
+  end: () => void;
 }
 
 /**
@@ -473,18 +483,19 @@ export class PlayService {
   }
 
   /**
-   * Streams one narration run through a single lifecycle generator that
-   * persists and settles before yielding each chunk onward to the SSE
-   * response. Deltas persist into the pending row as they arrive, so partial
-   * text survives disconnects, Stop and crashes. The response carries the
-   * acceptance headers the browser needs before the first byte of narration.
+   * Starts one narration run that the server owns until it settles: a single
+   * lifecycle generator persists and settles before each chunk is forwarded,
+   * and deltas persist into the pending row as they arrive, so partial text
+   * survives Stop and crashes. Browsers only read the run: closing one leaves
+   * it generating, and only Stop cancels it. The returned response is the
+   * first reader and carries the acceptance headers the browser needs before
+   * the first byte of narration.
    */
   streamNarration(options: {
     chatId: string;
     pendingId: string;
     playerId: string | null;
     settings: PlaySettings;
-    disconnectSignal?: AbortSignal;
     upstreamFetch?: typeof fetch;
   }): Response {
     const service = this;
@@ -508,13 +519,6 @@ export class PlayService {
 
     // First terminal settlement wins and releases the exclusivity slot, so a
     // stalled upstream can never hold a chat hostage.
-    function onDisconnect(): void {
-      run.settle("interrupted");
-      run.controller.abort(options.disconnectSignal?.reason);
-    }
-    function detachDisconnect(): void {
-      options.disconnectSignal?.removeEventListener("abort", onDisconnect);
-    }
     const run: ActiveRun = {
       controller: new AbortController(),
       messageId: options.pendingId,
@@ -525,20 +529,17 @@ export class PlayService {
         if (run.settled) return;
         run.settled = true;
         service.settlePending(run.messageId, status, run.partial);
-        detachDisconnect();
         service.unregister(chatId, run);
       },
       estimate,
+      log: [],
+      readers: new Set(),
+      end() {
+        for (const reader of run.readers) reader.end();
+        run.readers.clear();
+      },
     };
     this.runs.set(chatId, run);
-
-    // Disconnect must settle synchronously and abort the shared controller:
-    // it cannot depend on a stalled upstream noticing the abort.
-    if (options.disconnectSignal?.aborted) {
-      onDisconnect();
-    } else {
-      options.disconnectSignal?.addEventListener("abort", onDisconnect, { once: true });
-    }
 
     const { stream: upstream } = startNarrationRun({
       threadId: chatId,
@@ -553,17 +554,88 @@ export class PlayService {
       upstreamFetch: options.upstreamFetch,
     });
 
-    const headers: Record<string, string> = {
-      "x-storyfold-accepted": "true",
-      "x-storyfold-pending-message-id": options.pendingId,
-      "access-control-expose-headers":
-        "x-storyfold-accepted, x-storyfold-player-message-id, x-storyfold-pending-message-id",
-    };
-    if (options.playerId !== null) headers["x-storyfold-player-message-id"] = options.playerId;
+    void (async () => {
+      try {
+        for await (const chunk of this.lifecycle(run, upstream)) {
+          run.log.push(chunk);
+          for (const reader of run.readers) reader.push(chunk);
+        }
+      } catch (error) {
+        // Nothing awaits this task: an escaping error would be an unhandled rejection.
+        console.error("Narration run failed", error);
+      } finally {
+        run.end();
+      }
+    })();
 
-    return toServerSentEventsResponse(this.lifecycle(run, upstream), {
-      headers,
-      abortController: run.controller,
+    const headers: Record<string, string> = { "x-storyfold-accepted": "true" };
+    if (options.playerId !== null) headers["x-storyfold-player-message-id"] = options.playerId;
+    return this.readerResponse(run, headers);
+  }
+
+  /**
+   * Joins the chat's live run from any browser: every chunk forwarded so
+   * far, then the rest as they arrive. `null` when nothing is generating.
+   */
+  attach(chatId: string): Response | null {
+    const run = this.runs.get(chatId);
+    return run ? this.readerResponse(run, {}) : null;
+  }
+
+  /**
+   * One SSE reader of a run. Copying the log and registering happen in the
+   * same synchronous step, so no chunk is missed or repeated; cancelling the
+   * response removes only this reader.
+   */
+  private readerResponse(run: ActiveRun, headers: Record<string, string>): Response {
+    const queue = [...run.log];
+    let ended = false;
+    let wake: (() => void) | undefined;
+    const reader: RunReader = {
+      push(chunk) {
+        queue.push(chunk);
+        wake?.();
+      },
+      end() {
+        ended = true;
+        wake?.();
+      },
+    };
+    run.readers.add(reader);
+    const cancel = new AbortController();
+    const detach = () => {
+      run.readers.delete(reader);
+      reader.end();
+    };
+    cancel.signal.addEventListener("abort", detach, { once: true });
+
+    async function* read(): AsyncGenerator<StreamChunk> {
+      try {
+        while (true) {
+          const next = queue.shift();
+          if (next) {
+            yield next;
+            continue;
+          }
+          if (ended) return;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          wake = resolve;
+          await promise;
+          wake = undefined;
+        }
+      } finally {
+        detach();
+      }
+    }
+
+    return toServerSentEventsResponse(read(), {
+      headers: {
+        ...headers,
+        "x-storyfold-pending-message-id": run.messageId,
+        "access-control-expose-headers":
+          "x-storyfold-accepted, x-storyfold-player-message-id, x-storyfold-pending-message-id",
+      },
+      abortController: cancel,
       debug: false,
     });
   }
@@ -598,7 +670,7 @@ export class PlayService {
       requestedAt = Date.now();
       try {
         for await (const chunk of upstream) {
-          if (run.settled) return; // Stop or disconnect settled already: swallow late chunks.
+          if (run.settled) return; // Stop settled already: swallow late chunks.
           if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
             endReasoning();
             run.partial += chunk.delta;
@@ -642,7 +714,7 @@ export class PlayService {
         // Ended without any terminal event and not aborted: a failed draft.
         if (!run.controller.signal.aborted) run.settle("failed");
       } catch {
-        // Abort from Stop or disconnect; those paths settle synchronously.
+        // Abort from Stop, which settles synchronously.
         run.settle("interrupted");
       } finally {
         run.settle("interrupted");
@@ -657,15 +729,17 @@ export class PlayService {
   }
 
   /**
-   * Server-owned Stop, usable from any browser: settles the pending row first
-   * (releasing the exclusivity slot even if the upstream never notices the
-   * abort), unregisters, then cancels the shared controller — aborting the
-   * real provider call. Late chunks land on a settled run and are dropped.
+   * Server-owned Stop, usable from any browser and the only way to cancel a
+   * run: settles the pending row first (releasing the exclusivity slot even
+   * if the upstream never notices the abort), ends every reader, then
+   * cancels the shared controller — aborting the real provider call. Late
+   * chunks land on a settled run and are dropped.
    */
   stop(chatId: string): { pending: boolean; message: Message | null } {
     const run = this.runs.get(chatId);
     if (!run) return { pending: false, message: null };
     run.settle("interrupted");
+    run.end();
     run.controller.abort();
     return { pending: true, message: this.getMessage(run.messageId) };
   }

@@ -120,8 +120,16 @@ export default function App() {
         void refreshChatMessages(activeChatId);
       }
     };
+    // Phones resume a backgrounded tab without a window focus event.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") onFocus();
+    };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [activeChatId, refreshChat, refreshChatMessages]);
 
   useEffect(() => setMobileOpen(false), [pathname]);
@@ -134,7 +142,7 @@ export default function App() {
     void refreshChatMessages(activeChatId);
   }, [activeChatId, refreshChat, refreshChatMessages]);
 
-  const { generation, send, open, regenerate, stop, dismiss } = useChatGeneration({
+  const { generation, send, open, regenerate, attach, stop, dismiss } = useChatGeneration({
     onAccepted: (chatId, _ids, content) => {
       setDrafts((current) => {
         if ((current[chatId] ?? "").trim() !== content) return current;
@@ -147,6 +155,19 @@ export default function App() {
       await refreshChatMessages(chatId);
     },
   });
+
+  // A reply still generating on the server (sent from another tab, or before
+  // this page was closed or suspended) streams here once its pending row
+  // shows. One attach per loaded transcript: a failed refresh cannot repeat it.
+  const activeMessages = activeChatId ? messages[activeChatId] : undefined;
+  const attachedTranscript = useRef<TranscriptMessage[] | undefined>(undefined);
+  useEffect(() => {
+    const trailing = activeMessages?.at(-1);
+    if (!activeChatId || generation || trailing?.role !== "assistant" || trailing.status !== "pending") return;
+    if (attachedTranscript.current === activeMessages) return;
+    attachedTranscript.current = activeMessages;
+    attach(activeChatId);
+  }, [activeChatId, activeMessages, generation, attach]);
 
   const selectVariant = useCallback(async (chatId: string, messageId: string) => {
     try {
