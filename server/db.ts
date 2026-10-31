@@ -1,9 +1,31 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { StatFields } from "../shared/domain";
 import { DEFAULT_PROMPT_CARDS } from "../shared/narration";
+
+/**
+ * A chapter stands in for the selected messages at positions
+ * start_position..end_position in model history. A chat's chapters cover a
+ * contiguous run of positions from its first message on.
+ */
+const CHAPTERS_SCHEMA = `
+CREATE TABLE chapters (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL REFERENCES chats(id),
+  start_position INTEGER NOT NULL,
+  end_position INTEGER NOT NULL CHECK (end_position >= start_position),
+  summary TEXT NOT NULL,
+  edited INTEGER NOT NULL CHECK (edited IN (0, 1)),
+  model TEXT NOT NULL,
+  usage TEXT CHECK (usage IS NULL OR json_valid(usage)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX chapters_end ON chapters(chat_id, end_position);
+`;
 
 const SCHEMA = `
 CREATE TABLE worlds (
@@ -160,7 +182,7 @@ CREATE TABLE prompt_cards (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-`;
+${CHAPTERS_SCHEMA}`;
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -170,8 +192,16 @@ export function newId(): string {
   return randomUUID();
 }
 
-/** Bumped whenever SCHEMA changes; there are no upgrades, an older workspace is refused. */
-const SCHEMA_VERSION = 12;
+/** Bumped whenever SCHEMA changes, with a migration from the previous version. */
+const SCHEMA_VERSION = 13;
+
+/** The oldest workspace that migrations can upgrade; anything older is refused. */
+const OLDEST_MIGRATABLE_VERSION = 12;
+
+/** SQL that upgrades a workspace from the keyed version to the next one. */
+const MIGRATIONS: Readonly<Record<number, string>> = {
+  12: CHAPTERS_SCHEMA,
+};
 
 /** Ready-made stats a fresh workspace's bank starts with; deleting one is permanent. */
 const STAT_BANK_SEED: ReadonlyArray<StatFields> = [
@@ -197,23 +227,31 @@ export function insertDefaultPromptCards(db: Database, presetId: string): void {
 
 /**
  * Opens the workspace database with foreign keys and the schema in place. A
- * fresh one gets the stat bank and prompt card seeds. Any other version is
- * refused: there are no migrations.
+ * fresh one gets the stat bank and prompt card seeds. An older workspace is
+ * copied to `backups/` next to it and then migrated in one transaction;
+ * one too old to migrate, or from a newer Storyfold, is refused untouched.
  */
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path, { create: true });
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const populated = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get() !== null;
-  if (populated && version !== SCHEMA_VERSION) {
+  if (populated && version < OLDEST_MIGRATABLE_VERSION) {
     db.close();
     throw new Error(
-      `${path} predates the world-as-save model (schema ${version}, expected ${SCHEMA_VERSION}); delete it to start fresh (there are no migrations)`,
+      `${path} predates the world-as-save model (schema ${version}, expected ${SCHEMA_VERSION}); delete it to start fresh (it cannot be migrated)`,
     );
+  }
+  if (populated && version > SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`${path} was written by a newer Storyfold (schema ${version}, expected ${SCHEMA_VERSION}); update Storyfold to open it`);
   }
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
-  if (populated) return db;
+  if (populated) {
+    if (version < SCHEMA_VERSION) migrate(db, path, version);
+    return db;
+  }
   db.transaction(() => {
     db.exec(SCHEMA);
     const now = nowIso();
@@ -231,6 +269,25 @@ export function openDatabase(path: string): Database {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   })();
   return db;
+}
+
+/**
+ * Snapshots the workspace into `backups/storyfold-schema<version>-<time>.db`
+ * (an in-memory database has nothing to keep), then applies every migration
+ * from `version` up in one transaction, so a failure leaves it as it was.
+ */
+function migrate(db: Database, path: string, version: number): void {
+  if (path !== ":memory:") {
+    const directory = join(dirname(path), "backups");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stamp = nowIso().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
+    const backup = join(directory, `storyfold-schema${version}-${stamp}.db`);
+    db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
+  }
+  db.transaction(() => {
+    for (let from = version; from < SCHEMA_VERSION; from++) db.exec(MIGRATIONS[from]!);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  })();
 }
 
 /**
