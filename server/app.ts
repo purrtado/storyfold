@@ -704,7 +704,6 @@ async function handlePlayPost(
         apiKey: provider.api_key,
         reasoning: provider.reasoning[selection.model],
       },
-      disconnectSignal: request.signal,
       upstreamFetch: ctx.upstreamFetch,
     });
   } catch (error) {
@@ -712,7 +711,7 @@ async function handlePlayPost(
   }
 }
 
-/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop]]`. */
+/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop|generation]]`. */
 async function handleChats(request: Request, path: string[], ctx: AppContext): Promise<Response> {
   const [chatId, action, messageId, messageAction] = path;
   if (chatId === undefined) {
@@ -798,6 +797,9 @@ async function handleChats(request: Request, path: string[], ctx: AppContext): P
   if (action === "regenerate" && request.method === "POST") return handlePlayPost(request, "regenerate", chatId, ctx);
   if (action === "opening" && request.method === "POST") return handlePlayPost(request, "opening", chatId, ctx);
   if (action === "stop" && request.method === "POST") return jsonResponse(ctx.play.stop(chatId));
+  if (action === "generation" && request.method === "GET") {
+    return ctx.play.attach(chatId) ?? new Response(null, { status: 204 });
+  }
   return jsonError(404, "Not found");
 }
 
