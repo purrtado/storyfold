@@ -147,7 +147,7 @@ Presets are named sets of cards; exactly one is active, and selecting one in Set
 
 ## Development workspace
 
-The schema carries a version (`PRAGMA user_version`, currently 11). There are no migrations or compatibility layer: a workspace database created by an older schema is refused at startup with an error naming the file and telling you to delete it, and the Vite proxy answers every `/api` request with 500 meanwhile. Point `STORYFOLD_DATA_DIR` at a fresh directory to use the current schema; this does not delete, reset, or overwrite the existing database, which remains untouched:
+The schema carries a version (`PRAGMA user_version`, currently 12). There are no migrations or compatibility layer: a workspace database created by an older schema is refused at startup with an error naming the file and telling you to delete it, and the Vite proxy answers every `/api` request with 500 meanwhile. Point `STORYFOLD_DATA_DIR` at a fresh directory to use the current schema; this does not delete, reset, or overwrite the existing database, which remains untouched:
 
 ```sh
 STORYFOLD_DATA_DIR=$HOME/.local/share/storyfold-m5 bun run dev --host
