@@ -293,7 +293,7 @@ export function WorldCompendium(props: { world: World }) {
                           <span id="compendium-entry-priority-help" className="text-xs font-normal text-muted">Higher goes first when space runs out.</span>
                         </label>
                         <label className="grid content-start gap-2 text-sm font-medium">
-                          Stays active for N more messages
+                          Remembered for N messages after a mention
                           <input
                             type="number"
                             inputMode="numeric"
@@ -303,8 +303,10 @@ export function WorldCompendium(props: { world: World }) {
                             step={1}
                             value={editor.sticky}
                             onChange={(event) => setEditor({ ...editor, sticky: event.target.value })}
+                            aria-describedby="compendium-entry-sticky-help"
                             className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base font-normal text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                           />
+                          <span id="compendium-entry-sticky-help" className="text-xs font-normal text-muted">Keeps the entry in the narrator's context for that many more messages once a keyword comes up. With 0 it leaves once the mention is more than 2 messages old.</span>
                         </label>
                       </div>
                     </div>
