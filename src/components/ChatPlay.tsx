@@ -75,6 +75,8 @@ function MessageRow(props: {
   controls: MessageControls;
   /** Opens the regenerate-with-direction form prefilled; a new `key` reopens it. */
   directRequest?: { text: string; key: number } | null;
+  /** Called once the request is applied, so a later row mount cannot replay it. */
+  onDirectRequestConsumed?: () => void;
 }) {
   const { message } = props;
   const isDraft = message.status !== "complete";
@@ -143,6 +145,7 @@ function MessageRow(props: {
     if (!props.directRequest || !canDirect) return;
     setDirectionValue(props.directRequest.text);
     setDirecting(true);
+    props.onDirectRequestConsumed?.();
   }, [props.directRequest]);
   const startEdit = () => {
     keepMenuFocus.current = true;
@@ -997,6 +1000,7 @@ export function ChatPlay(props: {
                   onBranchMessage={handleBranchFromMessage}
                   controls={messageControls}
                   directRequest={index === messages.length - 1 ? directRequest : null}
+                  onDirectRequestConsumed={() => setDirectRequest(null)}
                 />
                 );
               })}
