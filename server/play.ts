@@ -560,6 +560,9 @@ export class PlayService {
           run.log.push(chunk);
           for (const reader of run.readers) reader.push(chunk);
         }
+      } catch (error) {
+        // Nothing awaits this task: an escaping error would be an unhandled rejection.
+        console.error("Narration run failed", error);
       } finally {
         run.end();
       }
