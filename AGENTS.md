@@ -14,6 +14,7 @@
 ## Code conventions
 
 - JSON API is snake_case with ISO timestamps
+- Schema changes bump `SCHEMA_VERSION` in `server/db.ts` and add a migration from the previous version
 
 ## Tech Stack
 
