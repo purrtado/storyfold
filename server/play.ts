@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { EventType, fromSpecTokenUsage, toServerSentEventsResponse } from "@tanstack/ai";
 import type { StreamChunk, TokenUsage } from "@tanstack/ai";
-import type { Message, MessageLore, MessageUsage } from "../shared/domain";
+import type { Message, MessageLore, MessageUsage, ReasoningLevel } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
@@ -60,7 +60,7 @@ interface MessageRow extends MessageRecord {
 }
 
 const MESSAGE_COLUMNS =
-  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, created_at, updated_at";
+  "id, chat_id, position, role, speaker_name, content, status, direction, lore, usage, reasoning, reasoning_ms, created_at, updated_at";
 
 function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selected?: number }): Message {
   return {
@@ -88,12 +88,14 @@ export interface PlaySettings {
   baseUrl: string;
   model: string;
   apiKey: string | null;
+  reasoning?: ReasoningLevel;
 }
 
 interface ActiveRun {
   controller: AbortController;
   messageId: string;
   partial: string;
+  reasoning: string;
   settled: boolean;
   /** Bound during streamNarration; Stop uses the same first-wins settlement. */
   settle: (status: "complete" | "interrupted" | "failed") => void;
@@ -517,6 +519,7 @@ export class PlayService {
       controller: new AbortController(),
       messageId: options.pendingId,
       partial: "",
+      reasoning: "",
       settled: false,
       settle(status) {
         if (run.settled) return;
@@ -543,6 +546,7 @@ export class PlayService {
       baseUrl: options.settings.baseUrl,
       model: options.settings.model,
       apiKey: options.settings.apiKey,
+      reasoning: options.settings.reasoning,
       systemPrompt,
       messages: history,
       abortController: run.controller,
@@ -578,17 +582,38 @@ export class PlayService {
       "UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
     );
     const recordUsage = this.db.query("UPDATE messages SET usage = ? WHERE id = ?");
+    const persistReasoning = this.db.query("UPDATE messages SET reasoning = ? WHERE id = ? AND status = 'pending'");
+    const recordReasoningTime = this.db.query("UPDATE messages SET reasoning_ms = ? WHERE id = ?");
+    // Providers and gateways may hold thinking back and send it in one burst
+    // just before the reply, so its time runs from the request to the first
+    // reply text (or the end of a run without any), not from its own deltas.
+    let requestedAt = 0;
+    let reasoningTimed = false;
+    const endReasoning = () => {
+      if (reasoningTimed || run.reasoning === "") return;
+      reasoningTimed = true;
+      recordReasoningTime.run(Date.now() - requestedAt, run.messageId);
+    };
     async function* generate(): AsyncGenerator<StreamChunk> {
+      requestedAt = Date.now();
       try {
         for await (const chunk of upstream) {
           if (run.settled) return; // Stop or disconnect settled already: swallow late chunks.
           if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
+            endReasoning();
             run.partial += chunk.delta;
             persist.run(run.partial, nowIso(), run.messageId);
             yield chunk;
             continue;
           }
+          if (chunk.type === EventType.REASONING_MESSAGE_CONTENT) {
+            run.reasoning += chunk.delta;
+            persistReasoning.run(run.reasoning, run.messageId);
+            yield chunk;
+            continue;
+          }
           if (chunk.type === EventType.RUN_FINISHED) {
+            endReasoning();
             const usage: MessageUsage = { estimate: run.estimate, provider: providerUsage(chunk) };
             recordUsage.run(JSON.stringify(usage), run.messageId);
             if (run.partial.trim().length > 0) {

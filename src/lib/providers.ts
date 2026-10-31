@@ -1,3 +1,5 @@
+import type { ReasoningLevel } from "../../shared/domain";
+
 export type ProviderApi = "openai" | "anthropic";
 
 export type Provider = {
@@ -8,6 +10,8 @@ export type Provider = {
   has_api_key: boolean;
   disabled_models: string[];
   manual_models: string[];
+  /** Model id → thinking level (Anthropic providers); absent models do not think. */
+  reasoning: Record<string, ReasoningLevel>;
   updated_at: string;
 };
 
@@ -25,6 +29,8 @@ export type ModelEntry = {
   id: string;
   enabled: boolean;
   manual: boolean;
+  /** Thinking levels the model takes; empty hides the thinking control. */
+  reasoning_levels: ReasoningLevel[];
 };
 
 export type ModelListing = {
@@ -48,6 +54,7 @@ export type ProviderPatch = {
   api_key?: string | null;
   disabled_models?: string[];
   manual_models?: string[];
+  reasoning?: Record<string, ReasoningLevel>;
 };
 
 async function errorText(response: Response): Promise<string> {

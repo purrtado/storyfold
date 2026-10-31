@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventType } from "@tanstack/ai";
 import type { StreamChunk } from "@tanstack/ai";
+import type { ReasoningLevel } from "../../shared/domain";
 import { startNarrationRun } from "../chat";
 import { anthropicMessagesSse, openAiChatCompletionSseRaw } from "./helpers";
 
@@ -172,7 +173,7 @@ describe("completion evidence (raw protocol)", () => {
 });
 
 describe("Anthropic Messages transport", () => {
-  function anthropicRun(sse: string, apiKey: string | null) {
+  function anthropicRun(sse: string, apiKey: string | null, reasoning?: ReasoningLevel, model = "claude-haiku-5-5") {
     const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
     const upstream = (async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
@@ -182,8 +183,9 @@ describe("Anthropic Messages transport", () => {
       threadId: "chat-test",
       api: "anthropic",
       baseUrl: "https://anthropic.test",
-      model: "claude-haiku-5-5",
+      model,
       apiKey,
+      reasoning,
       systemPrompt: "You narrate.",
       messages: [
         { role: "user", content: "I open the door." },
@@ -227,5 +229,22 @@ describe("Anthropic Messages transport", () => {
     const last = received.at(-1) as Extract<StreamChunk, { type: typeof EventType.RUN_ERROR }>;
     expect(last.type).toBe(EventType.RUN_ERROR);
     expect(last.code).toBe("incomplete_generation");
+  });
+
+  test("a thinking level asks for summarized thinking; none sends no thinking field", async () => {
+    const thinking = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["Hi."]), API_KEY, "high");
+    await thinking.events;
+    expect(thinking.calls[0].body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+
+    const plain = anthropicRun(anthropicMessagesSse("claude-haiku-5-5", ["Hi."]), API_KEY);
+    await plain.events;
+    expect(plain.calls[0].body).not.toHaveProperty("thinking");
+  });
+
+  test("a model outside the adapter's table gets adaptive thinking at the stored effort", async () => {
+    const run = anthropicRun(anthropicMessagesSse("gemini-4-argon-medium", ["Hi."]), API_KEY, "medium", "gemini-4-argon-medium");
+    await run.events;
+    expect(run.calls[0].body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(run.calls[0].body.output_config).toEqual({ effort: "medium" });
   });
 });

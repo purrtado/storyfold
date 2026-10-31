@@ -1,6 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, ChevronRight } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import type { ReasoningLevel } from "../../shared/domain";
 import type { ModelPickerState } from "../lib/useModelSelection";
 import "./message-menu.css";
 
@@ -33,8 +34,8 @@ export function ModelPicker(props: { picker: ModelPickerState; disabled: boolean
     <div className="flex min-w-0 max-w-full flex-col items-start">
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild disabled={props.disabled}>
-          <button type="button" className={triggerClass} aria-label={`Model: ${label}`}>
-            <span className="truncate">{label}</span>
+          <button type="button" className={triggerClass} aria-label={`Model: ${label}`} title={label}>
+            <span className="truncate">{selection && selectedProvider ? selection.model : label}</span>
             <ChevronDown className="size-3.5 flex-none" aria-hidden="true" />
           </button>
         </DropdownMenu.Trigger>
@@ -93,5 +94,51 @@ export function ModelPicker(props: { picker: ModelPickerState; disabled: boolean
       </DropdownMenu.Root>
       {saveError && <p className="m-0 px-2 text-xs text-muted" role="alert">{saveError}</p>}
     </div>
+  );
+}
+
+const REASONING_LABELS: Record<ReasoningLevel, string> = {
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/** The selected model's thinking level; hidden for models with no known levels. */
+export function ReasoningPicker(props: { picker: ModelPickerState; disabled: boolean }) {
+  const { reasoning, reasoningLevels, setReasoning } = props.picker;
+  if (!setReasoning) return null;
+  const label = reasoning === null ? "Off" : REASONING_LABELS[reasoning];
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild disabled={props.disabled}>
+        <button type="button" className={`${triggerClass} flex-none`} aria-label={`Thinking: ${label}`}>
+          <Brain className="size-3.5 flex-none" aria-hidden="true" />
+          <span>{label}</span>
+          <ChevronDown className="size-3.5 flex-none" aria-hidden="true" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content side="top" align="start" sideOffset={4} collisionPadding={12} className="message-menu-content">
+          <DropdownMenu.Label className="message-menu-item text-xs text-muted">Thinking</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup
+            value={reasoning ?? "off"}
+            onValueChange={(value) => setReasoning(value === "off" ? null : value as ReasoningLevel)}
+          >
+            {(["off", ...reasoningLevels] as const).map((level) => (
+              <DropdownMenu.RadioItem key={level} value={level} className="message-menu-item gap-2">
+                <span className="min-w-0 flex-1">{level === "off" ? "Off" : REASONING_LABELS[level]}</span>
+                <DropdownMenu.ItemIndicator>
+                  <Check className="size-3.5 text-accent" aria-hidden="true" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }

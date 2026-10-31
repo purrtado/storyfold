@@ -84,6 +84,13 @@ export interface StatDefinition extends StatFields {
 export type StatValues = Record<string, number>;
 
 /**
+ * Thinking levels for Anthropic Messages models, as providers and the adapter
+ * name them. A model with no stored level is sent no thinking fields.
+ */
+export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+/**
  * How a non-protagonist reaches the narrator. `always`: full profile in the
  * system prompt. `in_scene`: the one-line summary there, the full profile
  * only for replies whose recent messages name them. `mentioned`: nothing
@@ -170,6 +177,10 @@ export interface Message {
   lore: MessageLore | null;
   /** What this narration was sent and what the provider reported; null on player messages and replies never sent. */
   usage: MessageUsage | null;
+  /** The model's summarized thinking for this narration, as streamed; never part of model history. Null when it sent none. */
+  reasoning: string | null;
+  /** How long the model thought before replying, in milliseconds; null when it sent no thinking or was stopped mid-thought. */
+  reasoning_ms: number | null;
   created_at: string;
   updated_at: string;
 }

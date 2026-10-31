@@ -142,12 +142,14 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
           status: string;
           direction: string | null;
           lore: string | null;
+          reasoning: string | null;
+          reasoning_ms: number | null;
           created_at: string;
           updated_at: string;
         },
         [string, number]
       >(
-        `SELECT role, speaker_name, content, status, direction, lore, created_at, updated_at FROM messages
+        `SELECT role, speaker_name, content, status, direction, lore, reasoning, reasoning_ms, created_at, updated_at FROM messages
          WHERE chat_id = ? AND selected = 1 AND position <= ?
            AND (role = 'user' OR status = 'complete')
          ORDER BY position`,
@@ -155,8 +157,8 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
       .all(chatId, message.position);
     const insert = db.query(
       `INSERT INTO messages
-         (id, chat_id, position, role, speaker_name, content, status, direction, lore, selected, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+         (id, chat_id, position, role, speaker_name, content, status, direction, lore, reasoning, reasoning_ms, selected, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     );
     history.forEach((row, index) => {
       insert.run(
@@ -169,6 +171,8 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
         row.status,
         row.direction,
         row.lore,
+        row.reasoning,
+        row.reasoning_ms,
         row.created_at,
         row.updated_at,
       );

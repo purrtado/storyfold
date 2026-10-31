@@ -195,6 +195,7 @@ describe("ModelCatalog", () => {
     ...createInput(),
     disabled_models: ["b"],
     manual_models: ["manual-1"],
+    reasoning: {},
     updated_at: "2026-01-01T00:00:00.000Z",
   };
 
@@ -217,9 +218,9 @@ describe("ModelCatalog", () => {
     const first = await catalog.list(provider);
     expect(calls[0]).toEqual({ url: `${BASE_URL}/models`, authorization: `Bearer ${API_KEY}` });
     expect(first.models).toEqual([
-      { id: "a", enabled: true, manual: false },
-      { id: "b", enabled: false, manual: false },
-      { id: "manual-1", enabled: true, manual: true },
+      { id: "a", enabled: true, manual: false, reasoning_levels: [] },
+      { id: "b", enabled: false, manual: false, reasoning_levels: [] },
+      { id: "manual-1", enabled: true, manual: true, reasoning_levels: [] },
     ]);
 
     now = 30 * 60 * 1000;
@@ -235,7 +236,7 @@ describe("ModelCatalog", () => {
     // refresh joins the in-flight background fetch instead of starting another.
     const refreshed = await catalog.list(provider, { refresh: true });
     expect(calls).toHaveLength(2);
-    expect(refreshed.models.find((model) => model.id === "c")).toEqual({ id: "c", enabled: true, manual: false });
+    expect(refreshed.models.find((model) => model.id === "c")).toEqual({ id: "c", enabled: true, manual: false, reasoning_levels: [] });
     expect(refreshed.models.find((model) => model.id === "b")?.enabled).toBe(false);
   });
 
@@ -287,6 +288,29 @@ describe("ModelCatalog", () => {
     expect(seen[0].headers.get("anthropic-version")).toBe("2023-06-01");
     expect(seen[0].headers.get("authorization")).toBeNull();
     expect(listing.models.map((model) => model.id)).toEqual(["claude-haiku-5-5", "manual-1"]);
+  });
+
+  test("thinking levels come from the listing, then the adapter's table, else none; only for Anthropic providers", async () => {
+    const data = [
+      { id: "gemini-4-argon-medium", supported_reasoning_levels: ["none", "low", "medium", "high"] },
+      { id: "claude-sonnet-4-6", supported_reasoning_levels: ["none", "low"] },
+      { id: "claude-opus-5-5" },
+      { id: "gpt-oss-120b-medium" },
+    ];
+    const fetcher = (async () => Response.json({ data })) as unknown as typeof fetch;
+    const levels = (listing: { models: Array<{ id: string; reasoning_levels: string[] }> }) =>
+      Object.fromEntries(listing.models.map((model) => [model.id, model.reasoning_levels]));
+
+    const anthropic = await new ModelCatalog(fetcher).list({ ...provider, api: "anthropic", manual_models: [] });
+    expect(levels(anthropic)).toEqual({
+      "gemini-4-argon-medium": ["low", "medium", "high"],
+      "claude-sonnet-4-6": ["low"],
+      "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+      "gpt-oss-120b-medium": [],
+    });
+
+    const openai = await new ModelCatalog(fetcher).list({ ...provider, manual_models: [] });
+    expect(Object.values(levels(openai)).flat()).toEqual([]);
   });
 });
 

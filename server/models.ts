@@ -1,4 +1,6 @@
+import type { ReasoningLevel } from "../shared/domain";
 import { MODEL_LIST_MAX, isValidModel, type StoredProvider } from "./providers";
+import { knownLevels, reasoningLevels } from "./reasoning";
 
 /** A listing younger than this is served as-is; older ones are served while a refresh runs. */
 const FRESH_MS = 60 * 60 * 1000;
@@ -8,6 +10,8 @@ export interface ModelEntry {
   id: string;
   enabled: boolean;
   manual: boolean;
+  /** Thinking levels the model takes (Anthropic providers); empty when it takes none or they are unknown. */
+  reasoning_levels: ReasoningLevel[];
 }
 
 export interface ModelListing {
@@ -17,8 +21,13 @@ export interface ModelListing {
   error: string | null;
 }
 
-interface CachedList {
+interface RemoteList {
   ids: string[];
+  /** Levels from a provider listing that names them (some gateways add `supported_reasoning_levels`). */
+  listedLevels: Map<string, ReasoningLevel[]>;
+}
+
+interface CachedList extends RemoteList {
   fetchedAt: number;
 }
 
@@ -49,7 +58,7 @@ function modelsRequest(provider: StoredProvider): { url: string; headers: Record
 }
 
 /** Fixed messages only: upstream bodies, URLs and keys never reach the client. */
-async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof fetch): Promise<string[]> {
+async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof fetch): Promise<RemoteList> {
   const { url, headers } = modelsRequest(provider);
   let response: Response;
   try {
@@ -80,12 +89,17 @@ async function fetchRemoteModels(provider: StoredProvider, upstreamFetch: typeof
   const data = typeof body === "object" && body !== null && "data" in body ? body.data : undefined;
   if (!Array.isArray(data)) throw new ModelFetchError("The provider's model list is not in the expected format.");
   const ids = new Set<string>();
+  const listedLevels = new Map<string, ReasoningLevel[]>();
   for (const item of data) {
-    const id: unknown = typeof item === "object" && item !== null && "id" in item ? item.id : undefined;
-    if (isValidModel(id)) ids.add(id);
+    if (typeof item !== "object" || item === null) continue;
+    const id: unknown = "id" in item ? item.id : undefined;
+    if (!isValidModel(id)) continue;
+    ids.add(id);
+    const levels: unknown = "supported_reasoning_levels" in item ? item.supported_reasoning_levels : undefined;
+    if (Array.isArray(levels)) listedLevels.set(id, knownLevels(levels));
     if (ids.size >= MODEL_LIST_MAX) break;
   }
-  return [...ids].sort((a, b) => a.localeCompare(b));
+  return { ids: [...ids].sort((a, b) => a.localeCompare(b)), listedLevels };
 }
 
 /**
@@ -111,8 +125,8 @@ export class ModelCatalog {
     const running = this.inflight.get(provider.id);
     if (running) return running;
     const request = fetchRemoteModels(provider, this.upstreamFetch).then(
-      (ids) => {
-        const entry = { ids, fetchedAt: this.now() };
+      (remote) => {
+        const entry = { ...remote, fetchedAt: this.now() };
         if (this.inflight.get(provider.id) === request) this.cache.set(provider.id, entry);
         return entry;
       },
@@ -145,7 +159,12 @@ export class ModelCatalog {
     const ids = [...remote, ...provider.manual_models].sort((a, b) => a.localeCompare(b));
     const disabled = new Set(provider.disabled_models);
     return {
-      models: ids.map((id) => ({ id, enabled: !disabled.has(id), manual: manual.has(id) })),
+      models: ids.map((id) => ({
+        id,
+        enabled: !disabled.has(id),
+        manual: manual.has(id),
+        reasoning_levels: provider.api === "anthropic" ? reasoningLevels(id, entry?.listedLevels.get(id)) : [],
+      })),
       fetched_at: entry ? new Date(entry.fetchedAt).toISOString() : null,
       error,
     };
