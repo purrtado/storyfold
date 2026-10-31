@@ -210,6 +210,30 @@ describe("scratchpad", () => {
     throw new Error("the budget was never reached");
   });
 
+  test("a reply keeps generating after its reader leaves, and another reader can join it", async () => {
+    const chat = await seedChat();
+    expect((await call("GET", `${scratchpad(chat.id)}/generation`)).status).toBe(204);
+    answer = () => ({ text: "Held.", hold: true });
+
+    const leaver = new AbortController();
+    const first = await fetch(`${server.url}${scratchpad(chat.id)}`, {
+      method: "POST",
+      headers: headersWith({ origin: ORIGIN, "content-type": "application/json" }),
+      body: JSON.stringify({ content: "Still there?" }),
+      signal: leaver.signal,
+    });
+    expect(first.status).toBe(200);
+    leaver.abort();
+    await first.text().catch(() => "");
+    expect((await thread(chat.id)).at(-1)!.status).toBe("pending");
+
+    const joined = await call("GET", `${scratchpad(chat.id)}/generation`);
+    expect(joined.status).toBe(200);
+    for (const held of calls) held.release();
+    expect(await joined.text()).toContain("Held.");
+    expect((await thread(chat.id)).at(-1)).toMatchObject({ content: "Held.", status: "complete" });
+  });
+
   test("discarding a chat deletes its thread", async () => {
     const chat = await seedChat();
     await (await call("POST", scratchpad(chat.id), { content: "Hello?" })).text();
