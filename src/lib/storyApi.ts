@@ -1,4 +1,4 @@
-import type { Chat, Character, CharacterProfile, Message, PromptCard, PromptPreset, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { Chapter, Chat, Character, CharacterProfile, Message, PromptCard, PromptPreset, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 import type { ModelSelection } from "./providers";
 
 export type RelationshipInput = {
@@ -481,4 +481,36 @@ export async function deleteChatMessage(
   const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
   const path = `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}${query}`;
   return (await request<{ messages: TranscriptMessage[] }>(path, { method: "DELETE" })).messages;
+}
+
+function chaptersPath(chatId: string, chapterId?: string): string {
+  return `/api/chats/${encodeURIComponent(chatId)}/chapters${chapterId === undefined ? "" : `/${encodeURIComponent(chapterId)}`}`;
+}
+
+export async function fetchChapters(chatId: string): Promise<Chapter[]> {
+  return (await request<{ chapters: Chapter[] }>(chaptersPath(chatId))).chapters;
+}
+
+/** Summarizes everything after the last chapter through `throughMessageId`; resolves once the summary is written. */
+export async function createChapter(chatId: string, throughMessageId: string, model: ModelSelection | undefined): Promise<Chapter> {
+  const body = { through_message_id: throughMessageId, ...(model ? { provider_id: model.provider_id, model: model.model } : {}) };
+  return (await request<{ chapter: Chapter }>(chaptersPath(chatId), { method: "POST", body: JSON.stringify(body) })).chapter;
+}
+
+export async function regenerateChapter(chatId: string, chapterId: string, model: ModelSelection | undefined): Promise<Chapter> {
+  const body = model ? { provider_id: model.provider_id, model: model.model } : {};
+  return (
+    await request<{ chapter: Chapter }>(`${chaptersPath(chatId, chapterId)}/regenerate`, { method: "POST", body: JSON.stringify(body) })
+  ).chapter;
+}
+
+export async function updateChapter(chatId: string, chapterId: string, summary: string): Promise<Chapter> {
+  return (
+    await request<{ chapter: Chapter }>(chaptersPath(chatId, chapterId), { method: "PATCH", body: JSON.stringify({ summary }) })
+  ).chapter;
+}
+
+/** Deletes the chapter and every later one; resolves to the chapters left. */
+export async function deleteChapter(chatId: string, chapterId: string): Promise<Chapter[]> {
+  return (await request<{ chapters: Chapter[] }>(chaptersPath(chatId, chapterId), { method: "DELETE" })).chapters;
 }

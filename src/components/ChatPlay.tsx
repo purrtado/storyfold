@@ -1,23 +1,29 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, Brain, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, Brain, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, ScrollText, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
-import type { Character, Chat, MessageLore, World } from "../../shared/domain";
+import type { Chapter, Character, Chat, MessageLore, World } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
 import { storedMessageControls, type MessageControls } from "../lib/messageControls";
 import { ModelPicker, ReasoningPicker } from "./ModelPicker";
 import {
   branchChat,
+  createChapter,
   createWorldCharacter,
+  deleteChapter,
   deleteChat,
   deleteCharacterAvatar,
+  fetchChapters,
+  regenerateChapter,
+  updateChapter,
   updateCharacter,
   uploadCharacterAvatar,
   type TranscriptMessage,
 } from "../lib/storyApi";
+import { ChapterCard } from "./ChapterCard";
 import { applyWorldCharacterSaved, ensureWorldCharacters, refreshChats, refreshWorldChats, useWorldCharacters } from "../lib/libraryCache";
 import type { Generation } from "../lib/useChatGeneration";
 import { CharacterProfileDialog } from "./CharacterProfileDialog";
@@ -122,6 +128,10 @@ function MessageRow(props: {
   onEditMessage: (messageId: string, content: string, andRegenerate: boolean) => Promise<void>;
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
   onBranchMessage: (messageId: string) => Promise<void>;
+  /** Offered on a completed narration after the last chapter: the chapter it would close. */
+  summarize?: { chapterNumber: number; messageCount: number; onSummarize: (messageId: string) => Promise<void> };
+  /** The chapter whose summary stands in for this message; changing the message clears it. */
+  coveredBy?: number;
   controls: MessageControls;
 }) {
   const { message } = props;
@@ -141,6 +151,8 @@ function MessageRow(props: {
   const [confirmDelete, setConfirmDelete] = useState<"message" | "after" | null>(null);
   const [confirmBranch, setConfirmBranch] = useState(false);
   const [branching, setBranching] = useState(false);
+  const [confirmSummarize, setConfirmSummarize] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
   const [directing, setDirecting] = useState(false);
   const [directionValue, setDirectionValue] = useState("");
 
@@ -156,7 +168,8 @@ function MessageRow(props: {
   const canRetry = props.canGenerate && trailingNarration && (message.status === "failed" || message.status === "interrupted");
   const canDirect = props.canGenerate && props.trailing;
   // Controls stay visible while something on the row needs attention (pending draft, editor, confirmation).
-  const reveal = canAct && !editing && !confirmDelete && !confirmBranch && !directing ? ` ${REVEAL_CLASSES}` : "";
+  const reveal = canAct && !editing && !confirmDelete && !confirmBranch && !confirmSummarize && !directing ? ` ${REVEAL_CLASSES}` : "";
+  const clearsChapter = props.coveredBy === undefined ? "" : ` This clears chapter ${props.coveredBy}'s summary and any later ones; their messages go back to the narrator.`;
 
   // Radix returns focus to the trigger on close; skip that when an item opens
   // an inline form, so it keeps focus and scrolls into view.
@@ -172,6 +185,13 @@ function MessageRow(props: {
   const deleteConfirmRef = useRef<HTMLDivElement>(null);
   const branchConfirmRef = useRef<HTMLDivElement>(null);
   const directFormRef = useRef<HTMLFormElement>(null);
+  const summarizeConfirmRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!confirmSummarize) return;
+    summarizeConfirmRef.current?.scrollIntoView({ block: "nearest" });
+    const frame = requestAnimationFrame(() => summarizeConfirmRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [confirmSummarize]);
   useEffect(() => {
     if (!confirmDelete) return;
     deleteConfirmRef.current?.scrollIntoView({ block: "nearest" });
@@ -227,6 +247,21 @@ function MessageRow(props: {
     setDirectionValue(message.role === "assistant" ? message.direction ?? "" : "");
     setDirecting(true);
   };
+  const startSummarize = () => {
+    keepMenuFocus.current = true;
+    setConfirmSummarize(true);
+  };
+  const runSummarize = () => {
+    if (summarizing || !props.summarize) return;
+    setSummarizing(true);
+    props.summarize.onSummarize(message.id).then(
+      () => {
+        setSummarizing(false);
+        setConfirmSummarize(false);
+      },
+      () => setSummarizing(false), // the parent surfaces the error banner
+    );
+  };
 
   const submitEdit = (event: FormEvent) => {
     event.preventDefault();
@@ -279,9 +314,11 @@ function MessageRow(props: {
       </button>
     </div>
   );
+  const editNote = clearsChapter && <p className="text-sm text-muted">{clearsChapter.trim()}</p>;
   const editForm = (
     <form className="grid gap-2" onSubmit={submitEdit}>
       {editField(false)}
+      {editNote}
       {editButtons(false)}
     </form>
   );
@@ -299,6 +336,7 @@ function MessageRow(props: {
           <form className="flex [min-block-size:0] flex-1 flex-col gap-3 p-4 [padding-block-end:calc(1rem+env(safe-area-inset-bottom,0px))] md:p-5" onSubmit={submitEdit}>
             <DialogPrimitive.Title className="text-base font-semibold">Edit message</DialogPrimitive.Title>
             {editField(true)}
+            {editNote}
             {editButtons(true)}
           </form>
         </DialogPrimitive.Content>
@@ -315,8 +353,8 @@ function MessageRow(props: {
     >
       <span className="text-sm text-muted">
         {confirmDelete === "after"
-          ? `Delete this message and everything after it? This removes ${props.deleteCount} messages; the world is unchanged.`
-          : "Delete this message? The world is unchanged."}
+          ? `Delete this message and everything after it? This removes ${props.deleteCount} messages; the world is unchanged.${clearsChapter}`
+          : `Delete this message? The world is unchanged.${clearsChapter}`}
       </span>
       <button
         type="button"
@@ -357,6 +395,37 @@ function MessageRow(props: {
           className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
           onClick={() => setConfirmBranch(false)}
           disabled={branching}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  const summarizeConfirm = confirmSummarize && props.summarize && (
+    <div
+      ref={summarizeConfirmRef}
+      className="mbs-2 grid gap-2 rounded-lg border border-border bg-surface p-3"
+      role="group"
+      aria-label="Confirm summarizing up to this message"
+    >
+      <p className="text-sm text-muted">
+        Summarize {props.summarize.messageCount === 1 ? "this message" : `these ${props.summarize.messageCount} messages`} into chapter {props.summarize.chapterNumber}? The narrator gets the summary instead of them; the transcript keeps them.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="pressable min-h-9 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent/90 disabled:pointer-events-none disabled:opacity-50"
+          onClick={runSummarize}
+          disabled={summarizing}
+        >
+          {summarizing ? "Summarizing…" : "Summarize"}
+        </button>
+        <button
+          type="button"
+          className="pressable min-h-9 rounded-lg border border-border px-3 text-sm"
+          onClick={() => setConfirmSummarize(false)}
+          disabled={summarizing}
         >
           Cancel
         </button>
@@ -412,7 +481,7 @@ function MessageRow(props: {
     </form>
   );
 
-  const hasActions = canAct || canBranch;
+  const hasActions = canAct || canBranch || Boolean(props.summarize);
   const menu = props.controls === "menu" && hasActions && (
     <DropdownMenu.Root onOpenChange={resetMenuFocus}>
       <DropdownMenu.Trigger asChild>
@@ -461,6 +530,11 @@ function MessageRow(props: {
               Branch from here
             </DropdownMenu.Item>
           )}
+          {props.summarize && (
+            <DropdownMenu.Item className="message-menu-item" onSelect={startSummarize}>
+              Summarize up to here…
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -476,6 +550,7 @@ function MessageRow(props: {
       {canDirect && iconButton("Regenerate with direction", MessageSquareQuote, startDirect)}
       {canEdit && iconButton("Edit", Pencil, startEdit)}
       {canBranch && iconButton("Branch from here", GitBranch, startBranch)}
+      {props.summarize && iconButton("Summarize up to here", ScrollText, startSummarize)}
       {canDeleteSwipe && iconButton("Delete swipe", Rewind, () => runDelete("variant"))}
       {canAct && (
         <DropdownMenu.Root onOpenChange={resetMenuFocus}>
@@ -610,6 +685,7 @@ function MessageRow(props: {
       {editDialog}
       {deleteConfirm}
       {branchConfirm}
+      {summarizeConfirm}
       {directForm}
     </article>
   );
@@ -712,6 +788,39 @@ export function ChatPlay(props: {
     if (!docked) setDetailsOpen(true);
   };
   const showEmptyOpening = messages.length === 0 && !busy && (!live || live.phase === "error");
+
+  // Edits, deletes, and swipes can drop chapters server-side, so they reload whenever the transcript changes.
+  const [loadedChapters, setLoadedChapters] = useState<{ chatId: string; chapters: Chapter[] } | null>(null);
+  const chapters = loadedChapters?.chatId === props.chatId ? loadedChapters.chapters : [];
+  const transcriptKey = messages.map((message) => `${message.id}@${message.updated_at}:${message.status}`).join(",");
+  useEffect(() => {
+    let current = true;
+    const chatId = props.chatId;
+    fetchChapters(chatId).then(
+      (loaded) => { if (current) setLoadedChapters({ chatId, chapters: loaded }); },
+      (error: unknown) => { if (current) surfaceActionError(error); },
+    );
+    return () => { current = false; };
+  }, [props.chatId, transcriptKey]);
+  const coveredThrough = chapters.at(-1)?.end_position ?? 0;
+  const canSummarize = actionsAllowed && !noModel;
+  const sentMessagesBetween = (start: number, end: number) => messages.filter((message) =>
+    message.position >= start && message.position <= end && (message.role === "user" || message.status === "complete")).length;
+  const updateChapters = (chatId: string, update: (chapters: Chapter[]) => Chapter[]) => {
+    setLoadedChapters((loaded) => loaded?.chatId === chatId ? { chatId, chapters: update(loaded.chapters) } : loaded);
+  };
+  const chapterAction = <T,>(action: Promise<T>, apply: (result: T) => void): Promise<void> => {
+    setActionError("");
+    const done = action.then(apply);
+    done.catch(surfaceActionError);
+    return done;
+  };
+  const handleSummarize = (messageId: string) => {
+    const chatId = props.chatId;
+    return chapterAction(createChapter(chatId, messageId, selection), (chapter) => updateChapters(chatId, (current) => [...current, chapter]));
+  };
+  const replaceChapter = (chatId: string) => (chapter: Chapter) =>
+    updateChapters(chatId, (current) => current.map((existing) => existing.id === chapter.id ? chapter : existing));
 
   useEffect(() => {
     setFollowing(true);
@@ -997,9 +1106,13 @@ export function ChatPlay(props: {
                 </div>
               ) : displayedMessages.map((message, index) => {
                 const isLive = regenerateInPlace ? index === displayedMessages.length - 1 : message.id === live?.pendingMessageId && message.status === "pending";
+                const coveringIndex = chapters.findIndex((chapter) => message.position <= chapter.end_position);
+                const closesIndex = chapters.findIndex((chapter) => chapter.end_position === message.position);
+                const closes = chapters[closesIndex];
+                const summarizable = message.role === "assistant" && message.status === "complete" && message.position > coveredThrough && canSummarize;
                 return (
+                <Fragment key={message.id}>
                 <MessageRow
-                  key={message.id}
                   message={message}
                   liveText={isLive && live?.text ? live.text : undefined}
                   reasoning={isLive ? live?.reasoning : message.reasoning ?? undefined}
@@ -1021,8 +1134,31 @@ export function ChatPlay(props: {
                   onEditMessage={handleEditMessage}
                   onDeleteMessage={handleDeleteMessage}
                   onBranchMessage={handleBranchFromMessage}
+                  summarize={summarizable ? {
+                    chapterNumber: chapters.length + 1,
+                    messageCount: sentMessagesBetween(coveredThrough + 1, message.position),
+                    onSummarize: handleSummarize,
+                  } : undefined}
+                  coveredBy={coveringIndex === -1 ? undefined : coveringIndex + 1}
                   controls={messageControls}
                 />
+                {closes && (
+                  <ChapterCard
+                    chapter={closes}
+                    number={closesIndex + 1}
+                    messageCount={sentMessagesBetween(closes.start_position, closes.end_position)}
+                    laterCount={chapters.length - closesIndex - 1}
+                    canAct={actionsAllowed}
+                    canSummarize={canSummarize}
+                    onSave={(summary) => chapterAction(updateChapter(props.chatId, closes.id, summary), replaceChapter(props.chatId))}
+                    onRegenerate={() => chapterAction(regenerateChapter(props.chatId, closes.id, selection), replaceChapter(props.chatId))}
+                    onDelete={() => {
+                      const chatId = props.chatId;
+                      return chapterAction(deleteChapter(chatId, closes.id), (left) => updateChapters(chatId, () => left));
+                    }}
+                  />
+                )}
+                </Fragment>
                 );
               })}
               {sending && !sentListed && (
