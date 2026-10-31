@@ -1,8 +1,8 @@
-import { chat, EventType } from "@tanstack/ai";
-import type { StreamChunk } from "@tanstack/ai";
+import { chat, EventType, fromSpecTokenUsage } from "@tanstack/ai";
+import type { StreamChunk, TokenUsage } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
-import type { ReasoningLevel } from "../shared/domain";
+import type { MessageUsage, ReasoningLevel } from "../shared/domain";
 import type { ProviderApi } from "./providers";
 import { adapterThinks } from "./reasoning";
 
@@ -12,6 +12,19 @@ export const MAX_MESSAGE_CHARS = 100_000;
 export interface NarrationMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+/** The provider's counts from a normal finish, null when it reported none. */
+export function providerUsage(chunk: Extract<StreamChunk, { type: EventType.RUN_FINISHED }>): MessageUsage["provider"] {
+  const usage: TokenUsage | undefined = Array.isArray(chunk.usage)
+    ? fromSpecTokenUsage(chunk.usage, chunk.metadata?.tanstack?.usage)
+    : chunk.usage;
+  if (!usage) return null;
+  return {
+    prompt_tokens: usage.promptTokens,
+    cached_tokens: usage.promptTokensDetails?.cachedTokens ?? 0,
+    completion_tokens: usage.completionTokens,
+  };
 }
 
 interface SafeErrorPayload {

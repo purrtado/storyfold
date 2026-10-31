@@ -11,6 +11,7 @@ import {
   parseSelection,
   publicProvider,
   type ModelSelection,
+  type ProviderConfig,
 } from "./providers";
 import { openDatabase } from "./db";
 import {
@@ -24,8 +25,18 @@ import {
   SoleVariantError,
   parseDirection,
   parsePlayerContent,
+  type PlaySettings,
   type ReservedTurn,
 } from "./play";
+import {
+  ChapterService,
+  SummaryFailedError,
+  deleteChapter,
+  listChapters,
+  parseChapterInput,
+  parseChapterPatch,
+  updateChapterSummary,
+} from "./chapters";
 import {
   ConflictError,
   UnknownEntityError,
@@ -127,6 +138,7 @@ export interface App {
 interface AppContext {
   db: Database;
   play: PlayService;
+  chapters: ChapterService;
   store: ProviderStore;
   models: ModelCatalog;
   upstreamFetch: typeof fetch | undefined;
@@ -233,7 +245,23 @@ function domainErrorResponse(error: unknown): Response | null {
   if (error instanceof RelationshipValidationError) {
     return jsonError(400, error.message, undefined, { code: "invalid_input", accepted: false });
   }
+  if (error instanceof SummaryFailedError) {
+    return jsonError(502, error.message, undefined, { code: error.code });
+  }
   return null;
+}
+
+/** Provider settings for a selection; null when nothing is selected or the provider is gone. */
+function selectedSettings(config: ProviderConfig, selection: ModelSelection | null): PlaySettings | null {
+  const provider = selection ? config.providers.find((candidate) => candidate.id === selection.provider_id) : undefined;
+  if (!selection || !provider) return null;
+  return {
+    api: provider.api,
+    baseUrl: provider.base_url,
+    model: selection.model,
+    apiKey: provider.api_key,
+    reasoning: provider.reasoning[selection.model],
+  };
 }
 
 /** Reads a JSON object body or the error response to send instead. */
@@ -666,10 +694,7 @@ async function handlePlayPost(
   // always finds the run registered, and the commit still precedes every
   // model invocation.
   const config = await ctx.store.load();
-  const selection = requested ?? config.selection;
-  const provider = selection
-    ? config.providers.find((candidate) => candidate.id === selection.provider_id)
-    : undefined;
+  const settings = selectedSettings(config, requested ?? config.selection);
   const reserveTurn = (chat: Chat): ReservedTurn => {
     if (kind === "messages") {
       return ctx.play.reservePlayerTurn(chatId, content, getCharacter(ctx.db, chat.protagonist_id)!.name, direction);
@@ -684,7 +709,7 @@ async function handlePlayPost(
     const chat = getChat(ctx.db, chatId);
     if (!chat) return notFound("Unknown chat");
     const reserved = reserveTurn(chat);
-    if (!selection || !provider) {
+    if (!settings) {
       ctx.play.failPending(reserved.pendingId);
       return jsonError(400, "No model selected. Add a provider in Settings.", undefined, {
         code: "no_provider",
@@ -697,13 +722,7 @@ async function handlePlayPost(
       chatId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
-      settings: {
-        api: provider.api,
-        baseUrl: provider.base_url,
-        model: selection.model,
-        apiKey: provider.api_key,
-        reasoning: provider.reasoning[selection.model],
-      },
+      settings,
       disconnectSignal: request.signal,
       upstreamFetch: ctx.upstreamFetch,
     });
@@ -712,7 +731,58 @@ async function handlePlayPost(
   }
 }
 
-/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop]]`. */
+/**
+ * Chapter summaries are written synchronously: the response carries the
+ * finished chapter. An optional `provider_id` plus `model` pair overrides the
+ * saved selection, like play requests.
+ */
+async function handleChapters(
+  request: Request,
+  chatId: string,
+  chapterId: string | undefined,
+  chapterAction: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  try {
+    if (chapterId === undefined) {
+      if (request.method === "GET") return jsonResponse({ chapters: listChapters(ctx.db, chatId) });
+      if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    } else if (chapterAction === undefined) {
+      if (request.method === "PATCH") {
+        const body = await readObjectBody(request);
+        if (body instanceof Response) return body;
+        const chapter = updateChapterSummary(ctx.db, chatId, chapterId, parseChapterPatch(body).summary);
+        return chapter ? jsonResponse({ chapter }) : notFound("Unknown chapter");
+      }
+      if (request.method === "DELETE") {
+        const chapters = deleteChapter(ctx.db, chatId, chapterId);
+        return chapters ? jsonResponse({ chapters }) : notFound("Unknown chapter");
+      }
+      return jsonError(405, "Method not allowed");
+    } else if (chapterAction !== "regenerate" || request.method !== "POST") {
+      return jsonError(404, "Not found");
+    }
+
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    const input = chapterId === undefined ? parseChapterInput(body) : null;
+    const requested = body.provider_id !== undefined || body.model !== undefined ? parseSelection(body) : null;
+    const config = await ctx.store.load();
+    const settings = selectedSettings(config, requested ?? config.selection);
+    if (!settings) {
+      return jsonError(400, "No model selected. Add a provider in Settings.", undefined, { code: "no_provider" });
+    }
+    const options = { signal: request.signal, upstreamFetch: ctx.upstreamFetch };
+    if (input) {
+      return jsonResponse({ chapter: await ctx.chapters.create(chatId, input.through_message_id, settings, options) }, 201);
+    }
+    return jsonResponse({ chapter: await ctx.chapters.regenerate(chatId, chapterId!, settings, options) });
+  } catch (error) {
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+  }
+}
+
+/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|chapters[/:cid[/regenerate]]|regenerate|opening|stop]]`. */
 async function handleChats(request: Request, path: string[], ctx: AppContext): Promise<Response> {
   const [chatId, action, messageId, messageAction] = path;
   if (chatId === undefined) {
@@ -795,6 +865,7 @@ async function handleChats(request: Request, path: string[], ctx: AppContext): P
     }
     return jsonError(405, "Method not allowed");
   }
+  if (action === "chapters") return handleChapters(request, chatId, messageId, messageAction, ctx);
   if (action === "regenerate" && request.method === "POST") return handlePlayPost(request, "regenerate", chatId, ctx);
   if (action === "opening" && request.method === "POST") return handlePlayPost(request, "opening", chatId, ctx);
   if (action === "stop" && request.method === "POST") return jsonResponse(ctx.play.stop(chatId));
@@ -857,6 +928,7 @@ export function createApp(options: CreateAppOptions = {}): App {
   const ctx: AppContext = {
     db,
     play: new PlayService(db),
+    chapters: new ChapterService(db),
     store: new ProviderStore(options.configDirectory),
     models: new ModelCatalog(options.upstreamFetch),
     upstreamFetch: options.upstreamFetch,

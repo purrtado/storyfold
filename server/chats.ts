@@ -92,9 +92,10 @@ export function renameChat(db: Database, id: string, title: string): Chat | null
   return next;
 }
 
-/** Discard: the chat and its whole transcript, every alternate included. */
+/** Discard: the chat, its chapters, and its whole transcript, every alternate included. */
 export function deleteChat(db: Database, id: string): boolean {
   const remove = db.transaction(() => {
+    db.query("DELETE FROM chapters WHERE chat_id = ?").run(id);
     db.query("DELETE FROM messages WHERE chat_id = ?").run(id);
     return db.query("DELETE FROM chats WHERE id = ?").run(id).changes > 0;
   });
@@ -105,8 +106,9 @@ export function deleteChat(db: Database, id: string): boolean {
  * "Branch from here": a new chat in the same world with the same protagonist
  * and opening, carrying the selected messages up to and including the chosen
  * one — drafts and unselected alternates excluded — renumbered from 1 with
- * their timestamps kept. Null when the chat or the message does not exist
- * (message ids are chat-scoped).
+ * their timestamps kept, and the chapters that end by then, renumbered with
+ * them. Null when the chat or the message does not exist (message ids are
+ * chat-scoped).
  */
 export function branchChat(db: Database, chatId: string, messageId: string, title?: string): Chat | null {
   const branch = db.transaction((): Chat | null => {
@@ -136,6 +138,7 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
     const history = db
       .query<
         {
+          position: number;
           role: string;
           speaker_name: string;
           content: string;
@@ -149,7 +152,7 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
         },
         [string, number]
       >(
-        `SELECT role, speaker_name, content, status, direction, lore, reasoning, reasoning_ms, created_at, updated_at FROM messages
+        `SELECT position, role, speaker_name, content, status, direction, lore, reasoning, reasoning_ms, created_at, updated_at FROM messages
          WHERE chat_id = ? AND selected = 1 AND position <= ?
            AND (role = 'user' OR status = 'complete')
          ORDER BY position`,
@@ -177,6 +180,29 @@ export function branchChat(db: Database, chatId: string, messageId: string, titl
         row.updated_at,
       );
     });
+
+    // Copied messages are renumbered from 1 in position order, so a position
+    // maps to how many copied messages come at or before it.
+    const oldPositions = history.map((row) => row.position);
+    const renumbered = (position: number) => oldPositions.filter((old) => old <= position).length;
+    const chapters = db
+      .query<
+        { start_position: number; end_position: number; summary: string; edited: number; model: string; usage: string | null; created_at: string; updated_at: string },
+        [string, number]
+      >(
+        `SELECT start_position, end_position, summary, edited, model, usage, created_at, updated_at FROM chapters
+         WHERE chat_id = ? AND end_position <= ? ORDER BY end_position`,
+      )
+      .all(chatId, message.position);
+    const insertChapter = db.query(
+      `INSERT INTO chapters (id, chat_id, start_position, end_position, summary, edited, model, usage, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of chapters) {
+      const first = renumbered(row.start_position - 1) + 1;
+      const last = renumbered(row.end_position);
+      insertChapter.run(newId(), chat.id, first, last, row.summary, row.edited, row.model, row.usage, row.created_at, row.updated_at);
+    }
     return chat;
   });
   return branch.immediate();

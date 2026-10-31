@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { EventType, fromSpecTokenUsage, toServerSentEventsResponse } from "@tanstack/ai";
-import type { StreamChunk, TokenUsage } from "@tanstack/ai";
+import { EventType, toServerSentEventsResponse } from "@tanstack/ai";
+import type { StreamChunk } from "@tanstack/ai";
 import type { Message, MessageLore, MessageUsage, ReasoningLevel } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
@@ -9,7 +9,8 @@ import { selectReplyContext, type LoreSelection } from "./lore";
 import { getChat } from "./chats";
 import { chatGrounding, chatSystemPrompt } from "./grounding";
 import { UnknownEntityError, ValidationError } from "./worlds";
-import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { providerUsage, startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { chapterCoverage, dropChaptersFrom } from "./chapters";
 import type { ProviderApi } from "./providers";
 
 
@@ -67,19 +68,6 @@ function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selec
     ...row,
     lore: row.lore === null ? null : (JSON.parse(row.lore) as MessageLore),
     usage: row.usage === null ? null : (JSON.parse(row.usage) as MessageUsage),
-  };
-}
-
-/** The provider's counts from a normal finish, null when it reported none. */
-function providerUsage(chunk: Extract<StreamChunk, { type: EventType.RUN_FINISHED }>): MessageUsage["provider"] {
-  const usage: TokenUsage | undefined = Array.isArray(chunk.usage)
-    ? fromSpecTokenUsage(chunk.usage, chunk.metadata?.tanstack?.usage)
-    : chunk.usage;
-  if (!usage) return null;
-  return {
-    prompt_tokens: usage.promptTokens,
-    cached_tokens: usage.promptTokensDetails?.cachedTokens ?? 0,
-    completion_tokens: usage.completionTokens,
   };
 }
 
@@ -209,8 +197,9 @@ export class PlayService {
   /**
    * Regeneration adds a selected pending alternate at the trailing narration's
    * position: complete alternates stay as swipes, failed or interrupted drafts
-   * are discarded. A chat ending on a player turn reserves a fresh reply;
-   * an empty chat has nothing to regenerate.
+   * are discarded, and a chapter covering it is dropped. A chat ending on a
+   * player turn reserves a fresh reply; an empty chat has nothing to
+   * regenerate.
    */
   reserveRegeneration(chatId: string, direction: string | null = null): ReservedTurn {
     const reserve = this.db.transaction((id: string): ReservedTurn => {
@@ -239,6 +228,7 @@ export class PlayService {
       this.db
         .query("UPDATE messages SET selected = 0 WHERE chat_id = ? AND position = ?")
         .run(id, position);
+      dropChaptersFrom(this.db, id, position);
       this.assertWithinBudget(id, directionTokens(direction));
       const pendingId = newId();
       this.insertMessage(id, position, "assistant", NARRATOR_NAME, "", "pending", nowIso(), pendingId, direction);
@@ -249,8 +239,9 @@ export class PlayService {
 
   /**
    * Selects one alternate of the trailing narration; drafts left behind are
-   * deleted. Anything else — a player message, older narration — is a
-   * conflict; a foreign or unknown id is missing.
+   * deleted, and a chapter covering it is dropped. Anything else — a player
+   * message, older narration — is a conflict; a foreign or unknown id is
+   * missing.
    */
   selectVariant(chatId: string, messageId: string): TranscriptMessage[] {
     const select = this.db.transaction((sid: string, id: string): TranscriptMessage[] => {
@@ -269,6 +260,7 @@ export class PlayService {
         )
         .run(sid, message.position, id);
       this.db.query("UPDATE messages SET selected = 1, updated_at = ? WHERE id = ?").run(nowIso(), id);
+      dropChaptersFrom(this.db, sid, message.position);
       return this.transcript(sid);
     });
     return select.immediate(chatId, messageId);
@@ -280,6 +272,8 @@ export class PlayService {
    * refused — delete the message instead), a message with all its alternates
    * (default), or the message and everything after it (scope "after").
    * Positions never shift: the next turn continues after the highest survivor.
+   * A change to a selected message drops the chapter covering it and every
+   * later one.
    */
   deleteMessage(chatId: string, messageId: string, scope: "variant" | "after" | null): TranscriptMessage[] {
     const remove = this.db.transaction(
@@ -301,6 +295,7 @@ export class PlayService {
           }
           this.db.query("DELETE FROM messages WHERE id = ?").run(id);
           if (message.selected === 1) {
+            dropChaptersFrom(this.db, sid, message.position);
             this.db
               .query(
                 `UPDATE messages SET selected = 1, updated_at = ? WHERE id = (
@@ -312,8 +307,10 @@ export class PlayService {
           }
         } else if (cut === "after") {
           this.db.query("DELETE FROM messages WHERE chat_id = ? AND position >= ?").run(sid, message.position);
+          dropChaptersFrom(this.db, sid, message.position);
         } else {
           this.db.query("DELETE FROM messages WHERE chat_id = ? AND position = ?").run(sid, message.position);
+          dropChaptersFrom(this.db, sid, message.position);
         }
         return this.transcript(sid);
       },
@@ -323,7 +320,9 @@ export class PlayService {
 
   /**
    * Edits a completed message in place; narration edits change only that
-   * alternate. Role, speaker, and position never move; only growth past the
+   * alternate. Role, speaker, and position never move. Editing a selected
+   * message a chapter covers drops that chapter and every later one, so its
+   * messages go back to model history; otherwise only growth past the
    * narration budget is refused.
    */
   editMessage(chatId: string, messageId: string, content: string): Message {
@@ -334,8 +333,12 @@ export class PlayService {
       if (message.status !== "complete") throw new NotEditableError("Only completed messages can be edited");
       // Only the selected row feeds the model, so only its growth is checked.
       if (message.selected === 1) {
-        const growth = countTokens(text) - countTokens(message.content);
-        if (growth > 0) this.assertWithinBudget(sid, growth);
+        if (message.position <= chapterCoverage(this.db, sid).coveredThrough) {
+          dropChaptersFrom(this.db, sid, message.position);
+        } else {
+          const growth = countTokens(text) - countTokens(message.content);
+          if (growth > 0) this.assertWithinBudget(sid, growth);
+        }
       }
       const now = nowIso();
       this.db.query("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?").run(text, now, id);
@@ -366,7 +369,6 @@ export class PlayService {
     );
   }
 
-
   /**
    * The one size rule: the system prompt plus the completed history the model
    * would see, grown by `extra` tokens, must fit the narration budget.
@@ -378,16 +380,16 @@ export class PlayService {
     if (total > NARRATION_TOKEN_BUDGET) {
       throw new ContextLimitError(
         `This would send ${total} tokens to the narrator; the budget is ${NARRATION_TOKEN_BUDGET}. ` +
-          "Shorten the world's characters, entries or relationships, or start a new chat.",
+          "Summarize older messages into a chapter, shorten the world's characters, entries or relationships, or start a new chat.",
       );
     }
   }
 
   /**
    * Triggered characters and keyword lore for one reply, scanned from the
-   * recent history — the opening message included — with the direction
-   * counted as part of the latest input. It gets only the room the budget
-   * leaves.
+   * recent history — the opening message included, chapter summaries not —
+   * with the direction counted as part of the latest input. It gets only the
+   * room the budget leaves.
    */
   private replyLore(
     chatId: string,
@@ -397,7 +399,7 @@ export class PlayService {
   ): LoreSelection {
     const chat = getChat(this.db, chatId)!;
     const grounding = chatGrounding(this.db, chat);
-    const recent = history.map((message) => message.content);
+    const recent = this.history(chatId, false).map((message) => message.content);
     if (direction !== null) recent[recent.length - 1] += `\n${direction}`;
     const room = NARRATION_TOKEN_BUDGET - countTokens(systemPrompt) - historyTokens(history) - directionTokens(direction);
     return selectReplyContext(
@@ -455,18 +457,24 @@ export class PlayService {
   }
 
   /**
-   * The opening message, then completed narration and accepted player input
-   * in position order. A player turn sent before any narration joins the
-   * opening message, so every call starts with one user message that never
-   * changes for the chat.
+   * The opening message with the chat's chapter summaries, then the completed
+   * narration and accepted player input after the last chapter, in position
+   * order. A player turn sent before any of that narration joins the opening
+   * message, so every call starts with one user message that changes only
+   * when a chapter does.
    */
   modelHistory(chatId: string): NarrationMessage[] {
-    const opening = openingMessage(getChat(this.db, chatId)!.opening);
+    return this.history(chatId, true);
+  }
+
+  private history(chatId: string, withSummaries: boolean): NarrationMessage[] {
+    const { summaries, coveredThrough } = chapterCoverage(this.db, chatId);
+    const opening = openingMessage(getChat(this.db, chatId)!.opening, withSummaries ? summaries : []);
     const stored = this.db
-      .query<{ role: "user" | "assistant"; content: string }, [string]>(
-        "SELECT role, content FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') ORDER BY position",
+      .query<{ role: "user" | "assistant"; content: string }, [string, number]>(
+        "SELECT role, content FROM messages WHERE chat_id = ? AND selected = 1 AND (role = 'user' OR status = 'complete') AND position > ? ORDER BY position",
       )
-      .all(chatId);
+      .all(chatId, coveredThrough);
     const [first, ...rest] = stored;
     if (first?.role === "user") return [{ role: "user", content: `${opening}\n\n${first.content}` }, ...rest];
     return [{ role: "user", content: opening }, ...stored];

@@ -202,6 +202,31 @@ export interface MessageUsage {
 }
 
 /**
+ * A summary that replaces a chat's selected messages at positions
+ * `start_position`..`end_position` in what the narrator is sent; the
+ * transcript keeps every message. Chapters cover a contiguous run of
+ * positions from the chat's start. `covered_tokens` counts the messages it
+ * replaces and `summary_tokens` the summary itself.
+ */
+export interface Chapter {
+  id: string;
+  chat_id: string;
+  start_position: number;
+  end_position: number;
+  summary: string;
+  /** The summary was edited by hand since it was written. */
+  edited: boolean;
+  /** The model that wrote the summary. */
+  model: string;
+  /** What the provider reported for the summary call; null when it reported nothing. */
+  usage: MessageUsage["provider"];
+  covered_tokens: number;
+  summary_tokens: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
  * One ordered piece of a prompt preset. The active preset's enabled bodies are
  * sent in `position` order, each wrapped in a tag named after its title.
  */

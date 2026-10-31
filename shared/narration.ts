@@ -259,13 +259,51 @@ export function narratorSystemPrompt(
 
 /**
  * The first user message of every narrator call: the chat's opening, or a
- * request for one. It never changes for a chat, so it stays part of the
- * cached prefix along with the system prompt.
+ * request for one, then the chapter summaries standing in for the oldest
+ * messages. It changes only when a chapter does, so between chapters it
+ * stays part of the cached prefix along with the system prompt.
  */
-export function openingMessage(opening: string): string {
-  return opening.trim().length > 0
-    ? `<opening>\n${escapeMarkup(opening)}\n</opening>\nBegin the story with this opening scene.`
-    : "Begin the story with an opening scene that fits the world.";
+export function openingMessage(opening: string, chapters: ReadonlyArray<string> = []): string {
+  const start =
+    opening.trim().length > 0
+      ? `<opening>\n${escapeMarkup(opening)}\n</opening>\nBegin the story with this opening scene.`
+      : "Begin the story with an opening scene that fits the world.";
+  if (chapters.length === 0) return start;
+  return `${start}\n\n<story_so_far>\n${chapterElements(chapters)}\n</story_so_far>\nThese chapters summarize the story so far, oldest first. Continue from where they end.`;
+}
+
+function chapterElements(summaries: ReadonlyArray<string>): string {
+  return summaries.map((summary, index) => taggedElement("chapter", { number: String(index + 1) }, summary)).join("\n");
+}
+
+/** Instructions for the call that writes one chapter summary. */
+export const CHAPTER_SUMMARY_PROMPT = `You summarize one chapter of an interactive story so its narrator can continue the story without the original messages.
+
+Write plain prose paragraphs in story order, in the past tense and third person. Say who did what, where, and what came of it. Keep the names, places, objects, numbers, promises, deadlines, secrets and who knows them, changes between characters, and the few lines of dialogue a later scene could call back to. Leave out atmosphere and description that nothing later depends on; aim for about a fifth of the messages' length. End with where things stand: where everyone is and what is unresolved.
+
+Write only what the messages show. A character saying something makes it a claim, not a fact: write that they said it. Do not invent, guess at motives the messages do not show, or comment on the story. Reply with the summary only.`;
+
+export interface ChapterSummarySource {
+  world: { name: string; setting_brief: string };
+  opening: string;
+  /** Summaries of the chapters before this one, oldest first. */
+  previous: ReadonlyArray<string>;
+  messages: ReadonlyArray<{ role: "user" | "assistant"; speaker_name: string; content: string }>;
+}
+
+/** The one user message of a chapter summary call: grounding, earlier chapters as context, then the chapter's messages. */
+export function chapterSummaryRequest(source: ChapterSummarySource): string {
+  const parts = [taggedElement("world", { name: source.world.name }, source.world.setting_brief)];
+  if (source.opening.trim().length > 0) parts.push(taggedElement("opening", {}, source.opening));
+  if (source.previous.length > 0) parts.push(`<earlier_chapters>\n${chapterElements(source.previous)}\n</earlier_chapters>`);
+  const messages = source.messages.map((message) =>
+    taggedElement("message", { role: message.role === "user" ? "player" : "narrator", speaker: message.speaker_name }, message.content),
+  );
+  parts.push(`<chapter_messages>\n${messages.join("\n")}\n</chapter_messages>`);
+  parts.push(
+    `Summarize chapter ${source.previous.length + 1} from its messages.${source.previous.length > 0 ? " The earlier chapters are context only; do not repeat them." : ""}`,
+  );
+  return parts.join("\n\n");
 }
 
 /** The out-of-character note appended to the latest player input for one reply. */
