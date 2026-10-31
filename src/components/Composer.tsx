@@ -45,7 +45,7 @@ export function Composer({
 }: ComposerProps) {
   const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const directionRef = useRef<HTMLInputElement>(null);
+  const directionRef = useRef<HTMLTextAreaElement>(null);
   const directionOpen = direction !== null;
   const canSubmit = Boolean(value.trim()) && !busy;
 
@@ -86,10 +86,11 @@ export function Composer({
         className="relative mx-auto w-full max-w-3xl rounded-2xl border border-border/80 bg-raised p-2 transition-colors focus-within:border-foreground/25"
       >
         {directionOpen && onDirectionChange && (
-          <div className="mbe-1 flex items-center gap-2 rounded-lg bg-surface ps-2 pe-1">
-            <span className="flex-none text-xs font-medium text-muted">OOC</span>
-            <input
+          <div className="mbe-1 flex items-start gap-2 rounded-lg bg-surface ps-2 pe-1">
+            <span className="flex-none pbs-2 text-xs font-medium leading-5 text-muted">OOC</span>
+            <textarea
               ref={directionRef}
+              rows={1}
               value={direction}
               onChange={(event) => onDirectionChange(event.target.value)}
               onKeyDown={(event) => {
@@ -97,19 +98,19 @@ export function Composer({
                   event.preventDefault();
                   onDirectionChange(null);
                   textareaRef.current?.focus({ preventScroll: true });
-                } else if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   textareaRef.current?.focus({ preventScroll: true });
                 }
               }}
               placeholder="Direction for the next reply only"
               aria-label="Out-of-character direction for the next reply"
-              className="composer-direction min-h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted/55"
+              className="composer-direction min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-5 text-foreground placeholder:text-muted/55"
             />
             <button
               type="button"
               aria-label="Remove direction"
-              className="pressable inline-flex size-7 flex-none items-center justify-center rounded-md text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
+              className="pressable mbs-1 inline-flex size-7 flex-none items-center justify-center rounded-md text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-raised [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"
               onClick={() => {
                 onDirectionChange(null);
                 textareaRef.current?.focus({ preventScroll: true });

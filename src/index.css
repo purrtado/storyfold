@@ -219,6 +219,12 @@ button, [role="button"] {
   max-block-size: 12rem;
 }
 
+/* The OOC direction grows to a few lines, then scrolls */
+.composer-direction {
+  field-sizing: content;
+  max-block-size: 6.5rem;
+}
+
 /* Markdown replies */
 .md > * { margin-block: 0.75em; }
 .md > *:first-child { margin-block-start: 0; }

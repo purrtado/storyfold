@@ -16,13 +16,24 @@ import {
   editChatMessage,
   fetchChat,
   fetchChatMessages,
+  attachScratchpadGeneration,
+  requestScratchpadGeneration,
   selectChatVariant,
+  stopScratchpadGeneration,
   type TranscriptMessage,
 } from "./lib/storyApi";
 import type { ModelSelection } from "./lib/providers";
-import { refreshChats, refreshLibraries, warmLibraries } from "./lib/libraryCache";
+import { refreshChats, refreshLibraries, refreshScratchpad, warmLibraries } from "./lib/libraryCache";
+import type { ScratchpadControls } from "./components/Scratchpad";
 import { useChatGeneration } from "./lib/useChatGeneration";
 import { useTheme } from "./lib/useTheme";
+
+const SCRATCHPAD_API = {
+  threadId: "storyfold-scratchpad",
+  request: requestScratchpadGeneration,
+  attach: attachScratchpadGeneration,
+  stop: stopScratchpadGeneration,
+};
 
 type ChatDetails = { chat: Chat; world: World };
 
@@ -43,6 +54,7 @@ export default function App() {
   const [messageErrors, setMessageErrors] = useState<Record<string, string>>({});
   const [messagesLoading, setMessagesLoading] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [scratchpadDrafts, setScratchpadDrafts] = useState<Record<string, string>>({});
   const chatLoads = useRef(new Set<string>());
   const messageRequestSequence = useRef(new Map<string, number>());
   const { preference, setPreference } = useTheme();
@@ -168,6 +180,32 @@ export default function App() {
     attachedTranscript.current = activeMessages;
     attach(activeChatId);
   }, [activeChatId, activeMessages, generation, attach]);
+
+  // Beside the narration's own: the scratchpad streams independently, outlives the panel, and is
+  // re-joined the same way when it is still generating on the server.
+  const scratchpadGeneration = useChatGeneration({
+    api: SCRATCHPAD_API,
+    onAccepted: (chatId) => {
+      void refreshScratchpad(chatId);
+    },
+    onRefused: (chatId, content) => {
+      setScratchpadDrafts((current) => current[chatId] ? current : { ...current, [chatId]: content });
+    },
+    onSettled: (chatId) => refreshScratchpad(chatId),
+  });
+  const { send: sendScratchpad, regenerate: regenerateScratchpad, attach: attachScratchpad } = scratchpadGeneration;
+  const scratchpad: ScratchpadControls = {
+    generation: scratchpadGeneration.generation,
+    drafts: scratchpadDrafts,
+    onDraftChange: (chatId, value) => setScratchpadDrafts((current) => ({ ...current, [chatId]: value })),
+    onSend: (chatId, content, model) => {
+      if (sendScratchpad(chatId, content, undefined, model)) setScratchpadDrafts((current) => ({ ...current, [chatId]: "" }));
+    },
+    onRegenerate: (chatId, model) => regenerateScratchpad(chatId, undefined, model),
+    onAttach: attachScratchpad,
+    onStop: scratchpadGeneration.stop,
+    onDismiss: scratchpadGeneration.dismiss,
+  };
 
   const selectVariant = useCallback(async (chatId: string, messageId: string) => {
     try {
@@ -299,6 +337,7 @@ export default function App() {
               onRefreshMessages={refreshChatMessages}
               onRetryChat={refreshChat}
               onDismissGeneration={dismiss}
+              scratchpad={scratchpad}
             />
           ) : <Navigate to="/worlds" replace />}
         />

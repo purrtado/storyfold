@@ -1,9 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, Brain, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Clapperboard, Ellipsis, GitBranch, Globe2, Maximize2, MessageSquareQuote, Minimize2, PanelRightOpen, Pencil, RefreshCw, Rewind, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { Avatar } from "./Avatar";
+import { PendingDots, ThinkingDisclosure } from "./ReplyNotes";
+import type { ScratchpadControls } from "./Scratchpad";
 import type { Character, Chat, MessageLore, World } from "../../shared/domain";
 import type { ModelSelection } from "../lib/providers";
 import { useModelSelection } from "../lib/useModelSelection";
@@ -39,58 +41,6 @@ function subscribeDocked(onChange: () => void) {
   return () => query.removeEventListener("change", onChange);
 }
 
-function PendingDots() {
-  return (
-    <p className="flex items-center gap-1 py-1" role="status" aria-label="Narration is in progress">
-      {[0, 150, 300].map((delay) => (
-        <span key={delay} className="size-1.5 motion-safe:animate-pulse rounded-full bg-muted" style={{ animationDelay: `${delay}ms` }} />
-      ))}
-    </p>
-  );
-}
-
-function thoughtLabel(thinking: boolean, ms: number | null | undefined): string {
-  if (thinking) return "Thinking…";
-  if (ms === null || ms === undefined) return "Thought";
-  const seconds = Math.max(1, Math.round(ms / 1000));
-  return `Thought for ${seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`}`;
-}
-
-/** Collapsed like the other notes above a reply; the body lines up under the label, its rule under the icon. */
-function ThinkingDisclosure(props: { reasoning: string; thinking: boolean; ms: number | null | undefined }) {
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const pinned = useRef(true);
-  useLayoutEffect(() => {
-    const element = textRef.current;
-    if (element && pinned.current) element.scrollTop = element.scrollHeight;
-  }, [props.reasoning]);
-  return (
-    <details
-      className="group/thought mbs-0 mbe-2 text-xs leading-5 text-muted"
-      onToggle={() => {
-        const element = textRef.current;
-        if (element && pinned.current && props.thinking) element.scrollTop = element.scrollHeight;
-      }}
-    >
-      <summary className="flex w-fit cursor-pointer list-none select-none items-start gap-1.5 [&::-webkit-details-marker]:hidden [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground">
-        <Brain className="mbs-0.5 size-3.5 flex-none" aria-hidden="true" />
-        <span>{thoughtLabel(props.thinking, props.ms)}</span>
-        <ChevronRight className="mbs-0.5 size-3.5 flex-none group-open/thought:rotate-90 motion-safe:transition-transform" aria-hidden="true" />
-      </summary>
-      <p
-        ref={textRef}
-        className="mbs-1 mbe-0 ms-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap border-s-2 border-border ps-3"
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          pinned.current = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
-        }}
-      >
-        {props.reasoning}
-      </p>
-    </details>
-  );
-}
-
 const messageControlClasses =
   "pressable inline-flex size-7 flex-none items-center justify-center rounded-lg text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
 
@@ -123,6 +73,8 @@ function MessageRow(props: {
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
   onBranchMessage: (messageId: string) => Promise<void>;
   controls: MessageControls;
+  /** Opens the regenerate-with-direction form prefilled; a new `key` reopens it. */
+  directRequest?: { text: string; key: number } | null;
 }) {
   const { message } = props;
   const isDraft = message.status !== "complete";
@@ -187,6 +139,11 @@ function MessageRow(props: {
   useEffect(() => {
     if (directing) directFormRef.current?.scrollIntoView({ block: "nearest" });
   }, [directing]);
+  useEffect(() => {
+    if (!props.directRequest || !canDirect) return;
+    setDirectionValue(props.directRequest.text);
+    setDirecting(true);
+  }, [props.directRequest]);
   const startEdit = () => {
     keepMenuFocus.current = true;
     setEditValue(message.content);
@@ -550,7 +507,7 @@ function MessageRow(props: {
       {editing && !editExpanded ? editForm : (
         content
           ? <Narration content={content} streaming={props.streaming} characters={props.characters} protagonistId={props.protagonistId} onAddToCast={props.onAddToCast} onShowCharacter={props.onShowCharacter} />
-          : message.status === "pending" ? <PendingDots /> : null
+          : message.status === "pending" ? <PendingDots label="Narration is in progress" /> : null
       )}
       {(showSwipes || canRegenerate || canRetry || inlineControls) && (
         <div className="mbs-2 flex flex-wrap items-center gap-2">
@@ -659,6 +616,7 @@ export function ChatPlay(props: {
   onRefreshMessages: (chatId: string) => void | Promise<void>;
   onRetryChat: (chatId: string) => void | Promise<void>;
   onDismissGeneration: () => void;
+  scratchpad: ScratchpadControls;
 }) {
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -674,6 +632,7 @@ export function ChatPlay(props: {
   // null: the composer's direction field is closed.
   const [direction, setDirection] = useState<string | null>(null);
   const [openingDirection, setOpeningDirection] = useState("");
+  const [directRequest, setDirectRequest] = useState<{ text: string; key: number } | null>(null);
   const picker = useModelSelection();
   const selection = picker.selection ?? undefined;
   const messages = props.messages ?? [];
@@ -723,6 +682,7 @@ export function ChatPlay(props: {
     setOpeningDirection("");
     setConfirmDiscard(false);
     setDiscarding(false);
+    setDirectRequest(null);
   }, [props.chatId]);
 
   useEffect(() => {
@@ -748,6 +708,13 @@ export function ChatPlay(props: {
     setActionError("");
     setFollowing(true);
     props.onRegenerate(props.chatId, direction, selection);
+  };
+  // A scratchpad suggestion steers the next reply, or reopens the last one's
+  // regenerate form; on narrow screens the panel sheet closes so it shows.
+  const applyDirection = (text: string, target: "next" | "regenerate") => {
+    if (!docked) setDetailsOpen(false);
+    if (target === "next") setDirection(text);
+    else setDirectRequest((current) => ({ text, key: (current?.key ?? 0) + 1 }));
   };
   const handleSelectVariant = (messageId: string) => {
     setActionError("");
@@ -879,6 +846,13 @@ export function ChatPlay(props: {
     chat: props.chat,
     world: props.world,
     revealCharacter: revealedCharacter,
+    scratchpad: {
+      controls: props.scratchpad,
+      model: selection,
+      noModel,
+      canRegenerateStory: canGenerate && messages.at(-1)?.role === "assistant",
+      onUseDirection: applyDirection,
+    },
   } : null;
 
   return (
@@ -1022,6 +996,7 @@ export function ChatPlay(props: {
                   onDeleteMessage={handleDeleteMessage}
                   onBranchMessage={handleBranchFromMessage}
                   controls={messageControls}
+                  directRequest={index === messages.length - 1 ? directRequest : null}
                 />
                 );
               })}
@@ -1067,7 +1042,7 @@ export function ChatPlay(props: {
                   <p className="mbs-0 mbe-2 text-sm font-semibold">Narrator <span className="text-xs font-normal text-muted">Draft · {live.phase === "stopping" ? "Stopping" : live.phase === "error" ? "Failed" : "Generating"}</span></p>
                   {live.direction && <DirectionNote direction={live.direction} />}
                   {live.reasoning && <ThinkingDisclosure reasoning={live.reasoning} thinking={!live.text && live.phase === "streaming"} ms={live.reasoningMs} />}
-                  {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots /> : null}
+                  {live.text ? <Narration content={live.text} streaming={live.phase === "streaming"} characters={characters} onShowCharacter={showCharacter} /> : live.phase === "streaming" ? <PendingDots label="Narration is in progress" /> : null}
                 </article>
               )}
             </MessageScroller>

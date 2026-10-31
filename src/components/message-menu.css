@@ -27,3 +27,9 @@
 .message-menu-item:active {
   background: var(--surface);
 }
+
+.message-menu-item[data-disabled] {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { Chat, Character, Relationship, StatDefinition, World, WorldEntry } from "../../shared/domain";
-import { fetchChats, fetchStats, fetchWorlds, fetchWorldChats, fetchWorldRelationships, fetchWorldStats, listWorldCharacters, listWorldEntries } from "./storyApi";
+import type { Chat, Character, Relationship, ScratchMessage, StatDefinition, World, WorldEntry } from "../../shared/domain";
+import { fetchChats, fetchScratchpad, fetchStats, fetchWorlds, fetchWorldChats, fetchWorldRelationships, fetchWorldStats, listWorldCharacters, listWorldEntries } from "./storyApi";
 
 export type LibrarySnapshot<T> = {
   /** undefined until the first read completes; an empty array is a real, loaded library */
@@ -118,6 +118,7 @@ const worldCharacterLibraries = new Map<string, Library<Character>>();
 const worldStatLibraries = new Map<string, Library<StatDefinition>>();
 const worldRelationshipLibraries = new Map<string, Library<Relationship>>();
 const worldChatLibraries = new Map<string, Library<Chat>>();
+const scratchpadLibraries = new Map<string, Library<ScratchMessage>>();
 
 function getWorldEntriesLibrary(worldId: string): Library<WorldEntry> {
   let library = worldEntryLibraries.get(worldId);
@@ -294,6 +295,25 @@ export function useWorldChats(worldId: string): LibrarySnapshot<Chat> {
 
 export function refreshWorldChats(worldId: string): void {
   void getWorldChatsLibrary(worldId).load();
+}
+
+function getScratchpadLibrary(chatId: string): Library<ScratchMessage> {
+  let library = scratchpadLibraries.get(chatId);
+  if (!library) {
+    library = createLibrary(() => fetchScratchpad(chatId), "Could not load the scratchpad.");
+    scratchpadLibraries.set(chatId, library);
+  }
+  return library;
+}
+
+/** A chat's scratchpad thread, in position order. */
+export function useScratchpad(chatId: string): LibrarySnapshot<ScratchMessage> {
+  const library = getScratchpadLibrary(chatId);
+  return useSyncExternalStore(library.subscribe, library.getSnapshot);
+}
+
+export function refreshScratchpad(chatId: string): Promise<void> {
+  return getScratchpadLibrary(chatId).load();
 }
 
 export function useChats(): LibrarySnapshot<Chat> {
