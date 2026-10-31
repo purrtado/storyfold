@@ -190,6 +190,21 @@ export interface MessageLore {
   dropped: string[];
 }
 
+/** One turn of a chat's scratchpad thread: talk about the story that never reaches the narrator. */
+export interface ScratchMessage {
+  id: string;
+  chat_id: string;
+  position: number;
+  role: MessageRole;
+  content: string;
+  status: MessageStatus;
+  /** The model's summarized thinking, as streamed; never part of model history. */
+  reasoning: string | null;
+  reasoning_ms: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * Token accounting for one narration call. `estimate` splits what was sent,
  * counted with shared/tokens: the system prompt, the chat history (the

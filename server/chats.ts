@@ -92,10 +92,11 @@ export function renameChat(db: Database, id: string, title: string): Chat | null
   return next;
 }
 
-/** Discard: the chat and its whole transcript, every alternate included. */
+/** Discard: the chat, its whole transcript (every alternate included) and its scratchpad thread. */
 export function deleteChat(db: Database, id: string): boolean {
   const remove = db.transaction(() => {
     db.query("DELETE FROM messages WHERE chat_id = ?").run(id);
+    db.query("DELETE FROM scratch_messages WHERE chat_id = ?").run(id);
     return db.query("DELETE FROM chats WHERE id = ?").run(id).changes > 0;
   });
   return remove();

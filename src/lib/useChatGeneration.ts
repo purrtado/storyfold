@@ -51,7 +51,20 @@ export function useChatGeneration(options: {
   /** A sent message the server never accepted, so the player can send it again. */
   onRefused: (chatId: string, content: string) => void;
   onSettled: (chatId: string) => void | Promise<void>;
+  /** Endpoints to generate against; the chat's narration by default. */
+  api?: {
+    threadId: string;
+    request: typeof requestChatGeneration;
+    attach: typeof attachChatGeneration;
+    stop: (chatId: string) => Promise<unknown>;
+  };
 }) {
+  const api = options.api ?? {
+    threadId: "storyfold-generation",
+    request: requestChatGeneration,
+    attach: attachChatGeneration,
+    stop: stopChatGeneration,
+  };
   const [generation, setGeneration] = useState<Generation | null>(null);
   const requestRef = useRef<GenerationRequest | null>(null);
   const activeRequestRef = useRef<GenerationRequest | null>(null);
@@ -72,7 +85,7 @@ export function useChatGeneration(options: {
   onSettledRef.current = options.onSettled;
 
   const chat = useChat({
-    threadId: "storyfold-generation",
+    threadId: api.threadId,
     fetcher: async (_input, { signal }) => {
       const request = requestRef.current;
       if (!request) throw new Error("No chat request was prepared.");
@@ -80,8 +93,8 @@ export function useChatGeneration(options: {
       let response: Response;
       try {
         response = request.kind === "attach"
-          ? await attachChatGeneration(request.chatId, signal)
-          : await requestChatGeneration(
+          ? await api.attach(request.chatId, signal)
+          : await api.request(
               request.chatId,
               request.kind,
               request.content,
@@ -272,7 +285,7 @@ export function useChatGeneration(options: {
     }
 
     try {
-      await stopChatGeneration(chatId);
+      await api.stop(chatId);
       if (localRequest && activeRequestRef.current === localRequest) {
         busyRef.current = false;
         activeRequestRef.current = null;
@@ -302,7 +315,7 @@ export function useChatGeneration(options: {
         };
       });
     }
-  }, [chat]);
+  }, [chat, api.stop]);
 
   const dismiss = useCallback(() => {
     setGeneration((current) => current?.phase === "error" ? null : current);

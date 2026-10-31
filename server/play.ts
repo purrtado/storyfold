@@ -1,7 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { EventType, fromSpecTokenUsage, toServerSentEventsResponse } from "@tanstack/ai";
-import type { StreamChunk, TokenUsage } from "@tanstack/ai";
-import type { Message, MessageLore, MessageUsage, ReasoningLevel } from "../shared/domain";
+import type { Message, MessageLore, MessageUsage } from "../shared/domain";
 import { NARRATION_TOKEN_BUDGET, directionNote, openingMessage } from "../shared/narration";
 import { countTokens } from "../shared/tokens";
 import { newId, nowIso } from "./db";
@@ -9,8 +7,8 @@ import { selectReplyContext, type LoreSelection } from "./lore";
 import { getChat } from "./chats";
 import { chatGrounding, chatSystemPrompt } from "./grounding";
 import { UnknownEntityError, ValidationError } from "./worlds";
-import { startNarrationRun, MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
-import type { ProviderApi } from "./providers";
+import { MAX_MESSAGE_CHARS, type NarrationMessage } from "./chat";
+import { ReplyRuns, type PlaySettings } from "./runs";
 
 
 export const NARRATOR_NAME = "Narrator";
@@ -70,58 +68,19 @@ function messageFromRow({ selected: _selected, ...row }: MessageRecord & { selec
   };
 }
 
-/** The provider's counts from a normal finish, null when it reported none. */
-function providerUsage(chunk: Extract<StreamChunk, { type: EventType.RUN_FINISHED }>): MessageUsage["provider"] {
-  const usage: TokenUsage | undefined = Array.isArray(chunk.usage)
-    ? fromSpecTokenUsage(chunk.usage, chunk.metadata?.tanstack?.usage)
-    : chunk.usage;
-  if (!usage) return null;
-  return {
-    prompt_tokens: usage.promptTokens,
-    cached_tokens: usage.promptTokensDetails?.cachedTokens ?? 0,
-    completion_tokens: usage.completionTokens,
-  };
-}
-
-export interface PlaySettings {
-  api: ProviderApi;
-  baseUrl: string;
-  model: string;
-  apiKey: string | null;
-  reasoning?: ReasoningLevel;
-}
-
-interface ActiveRun {
-  controller: AbortController;
-  messageId: string;
-  partial: string;
-  reasoning: string;
-  settled: boolean;
-  /** Bound during streamNarration; Stop uses the same first-wins settlement. */
-  settle: (status: "complete" | "interrupted" | "failed") => void;
-  /** Written when the call starts; the provider's counts join it on a normal finish. */
-  estimate: MessageUsage["estimate"];
-  /** Every chunk forwarded so far, replayed to readers that attach mid-run. */
-  log: StreamChunk[];
-  readers: Set<RunReader>;
-  /** Ends every reader's stream. */
-  end: () => void;
-}
-
-interface RunReader {
-  push: (chunk: StreamChunk) => void;
-  end: () => void;
-}
-
 /**
  * Owns the server-side play lifecycle: reserving turns atomically, streaming
  * narration, and settling every pending reply exactly once. One Bun backend
  * means the in-memory registry covers every live generation.
  */
 export class PlayService {
-  private runs = new Map<string, ActiveRun>();
+  private replies: ReplyRuns;
 
-  constructor(private db: Database) {}
+  constructor(private db: Database) {
+    this.replies = new ReplyRuns(db, "messages", (messageId) => {
+      this.db.query("UPDATE chats SET updated_at = ? WHERE id = (SELECT chat_id FROM messages WHERE id = ?)").run(nowIso(), messageId);
+    });
+  }
 
   /** Selected rows in position order; the trailing narration carries its alternates. */
   transcript(chatId: string): TranscriptMessage[] {
@@ -148,21 +107,6 @@ export class PlayService {
   getMessage(messageId: string): Message | null {
     const row = this.db.query<MessageRecord, [string]>(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`).get(messageId);
     return row ? messageFromRow(row) : null;
-  }
-
-  /**
-   * CAS settlement: only a still-pending row can change status, so Stop,
-   * disconnect, failure and completion can race without overwriting each
-   * other, and late chunks can never alter a settled reply.
-   */
-  settlePending(messageId: string, status: "complete" | "interrupted" | "failed", content: string): boolean {
-    const now = nowIso();
-    const settled =
-      this.db
-        .query("UPDATE messages SET status = ?, content = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
-        .run(status, content, now, messageId).changes > 0;
-    if (settled) this.db.query("UPDATE chats SET updated_at = ? WHERE id = (SELECT chat_id FROM messages WHERE id = ?)").run(now, messageId);
-    return settled;
   }
 
   /** Accepted player input plus the reserved pending narration, one transaction. */
@@ -483,13 +427,10 @@ export class PlayService {
   }
 
   /**
-   * Starts one narration run that the server owns until it settles: a single
-   * lifecycle generator persists and settles before each chunk is forwarded,
-   * and deltas persist into the pending row as they arrive, so partial text
-   * survives Stop and crashes. Browsers only read the run: closing one leaves
-   * it generating, and only Stop cancels it. The returned response is the
-   * first reader and carries the acceptance headers the browser needs before
-   * the first byte of narration.
+   * Starts one narration run with the lore and direction notes appended to
+   * the latest player input. The run belongs to the server until it settles;
+   * the response is its first reader, carrying the acceptance headers the
+   * browser needs before the first byte of narration.
    */
   streamNarration(options: {
     chatId: string;
@@ -498,7 +439,6 @@ export class PlayService {
     settings: PlaySettings;
     upstreamFetch?: typeof fetch;
   }): Response {
-    const service = this;
     const chatId = options.chatId;
 
     const systemPrompt = this.systemPrompt(chatId);
@@ -517,236 +457,36 @@ export class PlayService {
       else history.push({ role: "user", content: notes.trimStart() });
     }
 
-    // First terminal settlement wins and releases the exclusivity slot, so a
-    // stalled upstream can never hold a chat hostage.
-    const run: ActiveRun = {
-      controller: new AbortController(),
-      messageId: options.pendingId,
-      partial: "",
-      reasoning: "",
-      settled: false,
-      settle(status) {
-        if (run.settled) return;
-        run.settled = true;
-        service.settlePending(run.messageId, status, run.partial);
-        service.unregister(chatId, run);
-      },
-      estimate,
-      log: [],
-      readers: new Set(),
-      end() {
-        for (const reader of run.readers) reader.end();
-        run.readers.clear();
-      },
-    };
-    this.runs.set(chatId, run);
-
-    const { stream: upstream } = startNarrationRun({
-      threadId: chatId,
-      api: options.settings.api,
-      baseUrl: options.settings.baseUrl,
-      model: options.settings.model,
-      apiKey: options.settings.apiKey,
-      reasoning: options.settings.reasoning,
-      systemPrompt,
-      messages: history,
-      abortController: run.controller,
-      upstreamFetch: options.upstreamFetch,
-    });
-
-    void (async () => {
-      try {
-        for await (const chunk of this.lifecycle(run, upstream)) {
-          run.log.push(chunk);
-          for (const reader of run.readers) reader.push(chunk);
-        }
-      } catch (error) {
-        // Nothing awaits this task: an escaping error would be an unhandled rejection.
-        console.error("Narration run failed", error);
-      } finally {
-        run.end();
-      }
-    })();
-
     const headers: Record<string, string> = { "x-storyfold-accepted": "true" };
     if (options.playerId !== null) headers["x-storyfold-player-message-id"] = options.playerId;
-    return this.readerResponse(run, headers);
-  }
 
-  /**
-   * Joins the chat's live run from any browser: every chunk forwarded so
-   * far, then the rest as they arrive. `null` when nothing is generating.
-   */
-  attach(chatId: string): Response | null {
-    const run = this.runs.get(chatId);
-    return run ? this.readerResponse(run, {}) : null;
-  }
-
-  /**
-   * One SSE reader of a run. Copying the log and registering happen in the
-   * same synchronous step, so no chunk is missed or repeated; cancelling the
-   * response removes only this reader.
-   */
-  private readerResponse(run: ActiveRun, headers: Record<string, string>): Response {
-    const queue = [...run.log];
-    let ended = false;
-    let wake: (() => void) | undefined;
-    const reader: RunReader = {
-      push(chunk) {
-        queue.push(chunk);
-        wake?.();
-      },
-      end() {
-        ended = true;
-        wake?.();
-      },
-    };
-    run.readers.add(reader);
-    const cancel = new AbortController();
-    const detach = () => {
-      run.readers.delete(reader);
-      reader.end();
-    };
-    cancel.signal.addEventListener("abort", detach, { once: true });
-
-    async function* read(): AsyncGenerator<StreamChunk> {
-      try {
-        while (true) {
-          const next = queue.shift();
-          if (next) {
-            yield next;
-            continue;
-          }
-          if (ended) return;
-          const { promise, resolve } = Promise.withResolvers<void>();
-          wake = resolve;
-          await promise;
-          wake = undefined;
-        }
-      } finally {
-        detach();
-      }
-    }
-
-    return toServerSentEventsResponse(read(), {
-      headers: {
-        ...headers,
-        "x-storyfold-pending-message-id": run.messageId,
-        "access-control-expose-headers":
-          "x-storyfold-accepted, x-storyfold-player-message-id, x-storyfold-pending-message-id",
-      },
-      abortController: cancel,
-      debug: false,
+    return this.replies.stream({
+      chatId,
+      messageId: options.pendingId,
+      systemPrompt,
+      messages: history,
+      settings: options.settings,
+      estimate,
+      emptyReply: "The narrator returned an empty reply. Try again.",
+      headers,
+      upstreamFetch: options.upstreamFetch,
     });
   }
 
-  /**
-   * The only consumer of the upstream stream. Each terminal outcome settles
-   * the pending row before the corresponding chunk reaches the browser, and a
-   * stream without a normal-stop terminal (the transport rewrites everything
-   * else to RUN_ERROR) can never mark complete.
-   */
-  private lifecycle(
-    run: ActiveRun,
-    upstream: AsyncIterable<StreamChunk>,
-  ): AsyncGenerator<StreamChunk> {
-    const persist = this.db.query(
-      "UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
-    );
-    const recordUsage = this.db.query("UPDATE messages SET usage = ? WHERE id = ?");
-    const persistReasoning = this.db.query("UPDATE messages SET reasoning = ? WHERE id = ? AND status = 'pending'");
-    const recordReasoningTime = this.db.query("UPDATE messages SET reasoning_ms = ? WHERE id = ?");
-    // Providers and gateways may hold thinking back and send it in one burst
-    // just before the reply, so its time runs from the request to the first
-    // reply text (or the end of a run without any), not from its own deltas.
-    let requestedAt = 0;
-    let reasoningTimed = false;
-    const endReasoning = () => {
-      if (reasoningTimed || run.reasoning === "") return;
-      reasoningTimed = true;
-      recordReasoningTime.run(Date.now() - requestedAt, run.messageId);
-    };
-    async function* generate(): AsyncGenerator<StreamChunk> {
-      requestedAt = Date.now();
-      try {
-        for await (const chunk of upstream) {
-          if (run.settled) return; // Stop settled already: swallow late chunks.
-          if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
-            endReasoning();
-            run.partial += chunk.delta;
-            persist.run(run.partial, nowIso(), run.messageId);
-            yield chunk;
-            continue;
-          }
-          if (chunk.type === EventType.REASONING_MESSAGE_CONTENT) {
-            run.reasoning += chunk.delta;
-            persistReasoning.run(run.reasoning, run.messageId);
-            yield chunk;
-            continue;
-          }
-          if (chunk.type === EventType.RUN_FINISHED) {
-            endReasoning();
-            const usage: MessageUsage = { estimate: run.estimate, provider: providerUsage(chunk) };
-            recordUsage.run(JSON.stringify(usage), run.messageId);
-            if (run.partial.trim().length > 0) {
-              // Normal-stop evidence with real narration: complete.
-              run.settle("complete");
-              yield chunk;
-              return;
-            }
-            // An empty reply is a failure, never a silent success.
-            run.settle("failed");
-            yield {
-              type: EventType.RUN_ERROR,
-              message: "The narrator returned an empty reply. Try again.",
-              code: "incomplete_generation",
-              timestamp: Date.now(),
-            };
-            return;
-          }
-          if (chunk.type === EventType.RUN_ERROR) {
-            run.settle("failed");
-            yield chunk;
-            return;
-          }
-          yield chunk;
-        }
-        // Ended without any terminal event and not aborted: a failed draft.
-        if (!run.controller.signal.aborted) run.settle("failed");
-      } catch {
-        // Abort from Stop, which settles synchronously.
-        run.settle("interrupted");
-      } finally {
-        run.settle("interrupted");
-      }
-    }
-    return generate();
+  /** Joins the chat's live run from any browser; see `ReplyRuns.attach`. */
+  attach(chatId: string): Response | null {
+    return this.replies.attach(chatId);
   }
 
-  /** Only the run still registered for this chat may remove itself. */
-  private unregister(chatId: string, run: ActiveRun): void {
-    if (this.runs.get(chatId) === run) this.runs.delete(chatId);
-  }
-
-  /**
-   * Server-owned Stop, usable from any browser and the only way to cancel a
-   * run: settles the pending row first (releasing the exclusivity slot even
-   * if the upstream never notices the abort), ends every reader, then
-   * cancels the shared controller — aborting the real provider call. Late
-   * chunks land on a settled run and are dropped.
-   */
+  /** Server-owned Stop, usable from any browser; see `ReplyRuns.stop`. */
   stop(chatId: string): { pending: boolean; message: Message | null } {
-    const run = this.runs.get(chatId);
-    if (!run) return { pending: false, message: null };
-    run.settle("interrupted");
-    run.end();
-    run.controller.abort();
-    return { pending: true, message: this.getMessage(run.messageId) };
+    const messageId = this.replies.stop(chatId);
+    return messageId === null ? { pending: false, message: null } : { pending: true, message: this.getMessage(messageId) };
   }
 
   /** Missing-provider path: the reserved pending reply settles as failed. */
   failPending(pendingId: string): void {
-    this.settlePending(pendingId, "failed", "");
+    this.replies.settlePending(pendingId, "failed", "");
   }
 }
 

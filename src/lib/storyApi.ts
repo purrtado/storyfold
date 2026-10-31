@@ -1,4 +1,4 @@
-import type { Chat, Character, CharacterProfile, Message, PromptCard, PromptPreset, Relationship, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
+import type { Chat, Character, CharacterProfile, Message, PromptCard, PromptPreset, Relationship, ScratchMessage, StatDefinition, StatFields, StatValues, World, WorldEntry } from "../../shared/domain";
 import type { ModelSelection } from "./providers";
 
 export type RelationshipInput = {
@@ -457,6 +457,52 @@ export async function stopChatGeneration(chatId: string): Promise<{ pending: boo
     `/api/chats/${encodeURIComponent(chatId)}/stop`,
     { method: "POST" },
   );
+}
+
+export async function fetchScratchpad(chatId: string): Promise<ScratchMessage[]> {
+  return (await request<{ messages: ScratchMessage[] }>(`/api/chats/${encodeURIComponent(chatId)}/scratchpad`)).messages;
+}
+
+/** Same shape as `requestChatGeneration`; the scratchpad has no opening and takes no direction. */
+export async function requestScratchpadGeneration(
+  chatId: string,
+  kind: "opening" | "message" | "regenerate",
+  content: string,
+  _direction: string | undefined,
+  model: ModelSelection | undefined,
+  signal: AbortSignal,
+): Promise<Response> {
+  const path = `/api/chats/${encodeURIComponent(chatId)}/scratchpad${kind === "regenerate" ? "/regenerate" : ""}`;
+  return fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...(kind === "message" ? { content } : {}),
+      ...(model ? { provider_id: model.provider_id, model: model.model } : {}),
+    }),
+    signal,
+  });
+}
+
+/** The chat's scratchpad reply still generating on the server as SSE, or `204` when there is none. */
+export async function attachScratchpadGeneration(chatId: string, signal: AbortSignal): Promise<Response> {
+  return fetch(`/api/chats/${encodeURIComponent(chatId)}/scratchpad/generation`, { signal });
+}
+
+export async function stopScratchpadGeneration(chatId: string): Promise<{ pending: boolean; message: ScratchMessage | null }> {
+  return request<{ pending: boolean; message: ScratchMessage | null }>(
+    `/api/chats/${encodeURIComponent(chatId)}/scratchpad/stop`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteScratchpadMessage(chatId: string, messageId: string): Promise<ScratchMessage[]> {
+  const path = `/api/chats/${encodeURIComponent(chatId)}/scratchpad/messages/${encodeURIComponent(messageId)}`;
+  return (await request<{ messages: ScratchMessage[] }>(path, { method: "DELETE" })).messages;
+}
+
+export async function clearScratchpad(chatId: string): Promise<void> {
+  await request<{ messages: ScratchMessage[] }>(`/api/chats/${encodeURIComponent(chatId)}/scratchpad`, { method: "DELETE" });
 }
 
 export async function editChatMessage(

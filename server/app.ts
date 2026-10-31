@@ -26,6 +26,8 @@ import {
   parsePlayerContent,
   type ReservedTurn,
 } from "./play";
+import type { PlaySettings } from "./runs";
+import { ScratchpadService } from "./scratchpad";
 import {
   ConflictError,
   UnknownEntityError,
@@ -127,6 +129,7 @@ export interface App {
 interface AppContext {
   db: Database;
   play: PlayService;
+  scratchpad: ScratchpadService;
   store: ProviderStore;
   models: ModelCatalog;
   upstreamFetch: typeof fetch | undefined;
@@ -632,6 +635,35 @@ async function handleWorldChats(request: Request, worldId: string | undefined, d
 }
 
 /**
+ * The requested (or saved) provider and model as run settings, loaded before
+ * any reservation; null when no usable selection exists.
+ */
+async function loadSettings(ctx: AppContext, requested: ModelSelection | null): Promise<PlaySettings | null> {
+  const config = await ctx.store.load();
+  const selection = requested ?? config.selection;
+  const provider = selection
+    ? config.providers.find((candidate) => candidate.id === selection.provider_id)
+    : undefined;
+  if (!selection || !provider) return null;
+  return {
+    api: provider.api,
+    baseUrl: provider.base_url,
+    model: selection.model,
+    apiKey: provider.api_key,
+    reasoning: provider.reasoning[selection.model],
+  };
+}
+
+function noProviderResponse(reserved: ReservedTurn): Response {
+  return jsonError(400, "No model selected. Add a provider in Settings.", undefined, {
+    code: "no_provider",
+    accepted: true,
+    ...(reserved.playerId !== null ? { player_message_id: reserved.playerId } : {}),
+    pending_message_id: reserved.pendingId,
+  });
+}
+
+/**
  * Player turns, opening requests, and regenerations share one shape: reserve
  * input + pending reply atomically (committed before any model setup), then
  * stream. A missing provider settles the reserved reply as failed while
@@ -665,11 +697,7 @@ async function handlePlayPost(
   // atomic for the single Bun process. A Stop from another browser therefore
   // always finds the run registered, and the commit still precedes every
   // model invocation.
-  const config = await ctx.store.load();
-  const selection = requested ?? config.selection;
-  const provider = selection
-    ? config.providers.find((candidate) => candidate.id === selection.provider_id)
-    : undefined;
+  const settings = await loadSettings(ctx, requested);
   const reserveTurn = (chat: Chat): ReservedTurn => {
     if (kind === "messages") {
       return ctx.play.reservePlayerTurn(chatId, content, getCharacter(ctx.db, chat.protagonist_id)!.name, direction);
@@ -684,26 +712,15 @@ async function handlePlayPost(
     const chat = getChat(ctx.db, chatId);
     if (!chat) return notFound("Unknown chat");
     const reserved = reserveTurn(chat);
-    if (!selection || !provider) {
+    if (!settings) {
       ctx.play.failPending(reserved.pendingId);
-      return jsonError(400, "No model selected. Add a provider in Settings.", undefined, {
-        code: "no_provider",
-        accepted: true,
-        ...(reserved.playerId !== null ? { player_message_id: reserved.playerId } : {}),
-        pending_message_id: reserved.pendingId,
-      });
+      return noProviderResponse(reserved);
     }
     return ctx.play.streamNarration({
       chatId,
       pendingId: reserved.pendingId,
       playerId: reserved.playerId,
-      settings: {
-        api: provider.api,
-        baseUrl: provider.base_url,
-        model: selection.model,
-        apiKey: provider.api_key,
-        reasoning: provider.reasoning[selection.model],
-      },
+      settings,
       upstreamFetch: ctx.upstreamFetch,
     });
   } catch (error) {
@@ -711,7 +728,66 @@ async function handlePlayPost(
   }
 }
 
-/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop|generation]]`. */
+/**
+ * `/api/chats/:id/scratchpad[/regenerate|stop|generation|messages/:mid]`: the chat's
+ * side thread. Posts reserve and stream like play, with their own pending
+ * slot, so the scratchpad and the narrator can generate at the same time.
+ */
+async function handleScratchpad(
+  request: Request,
+  chatId: string,
+  action: string | undefined,
+  messageId: string | undefined,
+  ctx: AppContext,
+): Promise<Response> {
+  try {
+    if (action === undefined) {
+      if (request.method === "GET") return jsonResponse({ messages: ctx.scratchpad.list(chatId) });
+      if (request.method === "DELETE") {
+        ctx.scratchpad.clear(chatId);
+        return jsonResponse({ messages: [] });
+      }
+      if (request.method !== "POST") return jsonError(405, "Method not allowed");
+    } else if (action === "messages" && messageId !== undefined) {
+      if (request.method !== "DELETE") return jsonError(405, "Method not allowed");
+      return jsonResponse({ messages: ctx.scratchpad.deleteMessage(chatId, messageId) });
+    } else if (action === "stop") {
+      if (request.method !== "POST") return jsonError(405, "Method not allowed");
+      return jsonResponse(ctx.scratchpad.stop(chatId));
+    } else if (action === "generation") {
+      if (request.method !== "GET") return jsonError(405, "Method not allowed");
+      return ctx.scratchpad.attach(chatId) ?? new Response(null, { status: 204 });
+    } else if (action !== "regenerate") {
+      return jsonError(404, "Not found");
+    } else if (request.method !== "POST") {
+      return jsonError(405, "Method not allowed");
+    }
+
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    const content = action === undefined ? parsePlayerContent(body) : "";
+    const requested = body.provider_id !== undefined || body.model !== undefined ? parseSelection(body) : null;
+    // Same ordering as play: settings load first, then reserve→stream with no await between.
+    const settings = await loadSettings(ctx, requested);
+    if (!getChat(ctx.db, chatId)) return notFound("Unknown chat");
+    const reserved = action === undefined ? ctx.scratchpad.reserveMessage(chatId, content) : ctx.scratchpad.reserveRegeneration(chatId);
+    if (!settings) {
+      ctx.scratchpad.failPending(reserved.pendingId);
+      return noProviderResponse(reserved);
+    }
+    return ctx.scratchpad.stream({
+      chatId,
+      pendingId: reserved.pendingId,
+      playerId: reserved.playerId!,
+      settings,
+      upstreamFetch: ctx.upstreamFetch,
+    });
+  } catch (error) {
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+  }
+}
+
+/** `/api/chats[/:id[/messages[/:mid[/branch|select]]|regenerate|opening|stop|generation|scratchpad/…]]`. */
 async function handleChats(request: Request, path: string[], ctx: AppContext): Promise<Response> {
   const [chatId, action, messageId, messageAction] = path;
   if (chatId === undefined) {
@@ -735,7 +811,9 @@ async function handleChats(request: Request, path: string[], ctx: AppContext): P
     }
     if (request.method === "DELETE") {
       try {
-        if (ctx.play.hasPending(chatId)) throw new BusyError("A reply is already being generated for this chat");
+        if (ctx.play.hasPending(chatId) || ctx.scratchpad.hasPending(chatId)) {
+          throw new BusyError("A reply is already being generated for this chat");
+        }
         return deleteChat(ctx.db, chatId) ? jsonResponse({ ok: true }) : notFound("Unknown chat");
       } catch (error) {
         return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -800,6 +878,7 @@ async function handleChats(request: Request, path: string[], ctx: AppContext): P
   if (action === "generation" && request.method === "GET") {
     return ctx.play.attach(chatId) ?? new Response(null, { status: 204 });
   }
+  if (action === "scratchpad") return handleScratchpad(request, chatId, messageId, messageAction, ctx);
   return jsonError(404, "Not found");
 }
 
@@ -856,9 +935,11 @@ export function createApp(options: CreateAppOptions = {}): App {
     openDatabase(
       options.databasePath ?? join(options.dataDirectory ?? defaultDataDirectory(), DATABASE_FILENAME),
     );
+  const play = new PlayService(db);
   const ctx: AppContext = {
     db,
-    play: new PlayService(db),
+    play,
+    scratchpad: new ScratchpadService(db, play),
     store: new ProviderStore(options.configDirectory),
     models: new ModelCatalog(options.upstreamFetch),
     upstreamFetch: options.upstreamFetch,

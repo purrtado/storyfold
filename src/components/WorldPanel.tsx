@@ -1,24 +1,27 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { PanelRightClose, PanelRightOpen, ScrollText, Users } from "lucide-react";
+import { NotebookPen, PanelRightClose, PanelRightOpen, ScrollText, Users } from "lucide-react";
 import type { Chat, World } from "../../shared/domain";
 import { refreshWorldData, useWorldCharacters } from "../lib/libraryCache";
 import { Avatar } from "./Avatar";
 import { CharacterRoster } from "./CharacterRoster";
 import { Tooltip } from "./Tooltip";
 import { WorldCompendium } from "./WorldCompendium";
+import { Scratchpad, type ScratchpadPanelProps } from "./Scratchpad";
 
 const panelTabs = [
   { id: "characters", label: "Characters", Icon: Users },
   { id: "compendium", label: "Compendium", Icon: ScrollText },
+  { id: "scratchpad", label: "Scratchpad", Icon: NotebookPen },
 ] as const;
 
 type PanelTabId = (typeof panelTabs)[number]["id"];
 
 /**
  * The world beside play: characters, relationships and the compendium, edited
- * live — every change reaches the narrator from the next reply. Docked on wide
- * screens (with a collapsed rail) and hosted in a sheet on narrow ones;
- * collapsing keeps the full panel mounted so open cards and drafts survive.
+ * live — every change reaches the narrator from the next reply — plus the
+ * chat's scratchpad. Docked on wide screens (with a collapsed rail) and hosted
+ * in a sheet on narrow ones; collapsing keeps the full panel mounted so open
+ * cards and drafts survive.
  */
 export function WorldPanel(props: {
   world: World;
@@ -27,9 +30,10 @@ export function WorldPanel(props: {
   onCollapsedChange?: (collapsed: boolean) => void;
   /** Opens this character's card; a new `key` re-reveals the same character. */
   revealCharacter?: { id: string; key: number } | null;
+  scratchpad: ScratchpadPanelProps;
 }) {
   const [tab, setTab] = useState<PanelTabId>("characters");
-  const [mounted, setMounted] = useState<Record<PanelTabId, boolean>>({ characters: true, compendium: false });
+  const [mounted, setMounted] = useState<Record<PanelTabId, boolean>>({ characters: true, compendium: false, scratchpad: false });
   const [openCharacterId, setOpenCharacterId] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Partial<Record<PanelTabId, HTMLButtonElement | null>>>({});
@@ -133,12 +137,12 @@ export function WorldPanel(props: {
                   ? "text-foreground after:absolute after:inset-be-0 after:inset-is-2 after:inset-ie-2 after:block after:h-0.5 after:rounded-full after:bg-accent after:content-['']"
                   : "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-foreground"}`}
               >
-                <Icon className="size-4" aria-hidden="true" />{label}
+                <Icon className="size-4 flex-none" aria-hidden="true" />{label}
               </button>
             );
           })}
         </div>
-        <div ref={scrollerRef} className="chat-scroll flex-1 min-block-0 p-3">
+        <div ref={scrollerRef} className="chat-scroll flex-1 min-block-0 p-3" hidden={tab === "scratchpad"}>
           <div role="tabpanel" id="world-panel-characters" aria-labelledby="world-tab-characters" hidden={tab !== "characters"}>
             <CharacterRoster
               world={props.world}
@@ -153,6 +157,16 @@ export function WorldPanel(props: {
             {mounted.compendium && <WorldCompendium world={props.world} />}
           </div>
         </div>
+        {mounted.scratchpad && (
+          <div
+            role="tabpanel"
+            id="world-panel-scratchpad"
+            aria-labelledby="world-tab-scratchpad"
+            className={tab === "scratchpad" ? "flex flex-1 min-block-0 flex-col" : "hidden"}
+          >
+            <Scratchpad key={props.chat.id} chat={props.chat} {...props.scratchpad} />
+          </div>
+        )}
       </div>
     </>
   );
