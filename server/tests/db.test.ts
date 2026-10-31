@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_PROMPT_CARDS } from "../../shared/narration";
@@ -55,7 +55,7 @@ describe("schema version", () => {
 
       const reopened = openDatabase(path);
       try {
-        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(12);
+        expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(13);
         expect(listStatDefinitions(reopened, null)).toHaveLength(8);
         const cards = listPromptCards(reopened);
         expect(cards.map((card) => card.title)).toEqual(DEFAULT_PROMPT_CARDS.map((card) => card.title));
@@ -68,10 +68,15 @@ describe("schema version", () => {
     }
   });
 
-  test("a workspace from an older schema is refused with its path and left untouched", () => {
+  test("a workspace too old to migrate, or from a newer Storyfold, is refused with its path and left untouched", () => {
     const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
     try {
-      for (const version of [1, 3, 8]) {
+      for (const [version, reason] of [
+        [1, "predates the world-as-save model"],
+        [8, "predates the world-as-save model"],
+        [11, "predates the world-as-save model"],
+        [14, "newer Storyfold"],
+      ] as const) {
         const path = join(directory, `v${version}.db`);
         const stale = new Database(path, { create: true });
         stale.exec("CREATE TABLE campaigns (id TEXT PRIMARY KEY)");
@@ -79,12 +84,56 @@ describe("schema version", () => {
         stale.close();
 
         expect(() => openDatabase(path)).toThrow(path);
-        expect(() => openDatabase(path)).toThrow("predates the world-as-save model");
+        expect(() => openDatabase(path)).toThrow(reason);
 
         const after = new Database(path);
         expect(after.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(version);
         expect(after.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([{ name: "campaigns" }]);
         after.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a schema 12 workspace is backed up, then migrated to the fresh schema with its data kept", () => {
+    const directory = mkdtempSync(join(tmpdir(), "storyfold-schema-"));
+    const schemaOf = (database: Database) =>
+      database.query("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all();
+    try {
+      const freshPath = join(directory, "fresh.db");
+      const fresh = openDatabase(freshPath);
+      const freshSchema = schemaOf(fresh);
+      fresh.close();
+
+      const path = join(directory, "v12.db");
+      const old = openDatabase(path);
+      const world = createWorld(old, { name: "Kept World", setting_brief: "Brief." });
+      const hero = createCharacter(old, world.id, parseCharacterInput({ name: "Kept", description: "Desc." }))!;
+      const chatId = createChat(old, world.id, { protagonist_id: hero.id, opening: "" })!.id;
+      old.exec("DROP TABLE chapters");
+      old.exec("PRAGMA user_version = 12");
+      old.close();
+
+      const migrated = openDatabase(path);
+      try {
+        expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(13);
+        expect(schemaOf(migrated)).toEqual(freshSchema);
+        expect(migrated.query("SELECT id FROM chats").all()).toEqual([{ id: chatId }]);
+      } finally {
+        migrated.close();
+      }
+
+      const backups = readdirSync(join(directory, "backups"));
+      expect(backups).toHaveLength(1);
+      expect(backups[0]).toMatch(/^storyfold-schema12-\d{8}T\d{6}\.db$/);
+      const backup = new Database(join(directory, "backups", backups[0]!));
+      try {
+        expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(12);
+        expect(backup.query("SELECT id FROM chats").all()).toEqual([{ id: chatId }]);
+        expect(backup.query("SELECT name FROM sqlite_master WHERE name = 'chapters'").all()).toEqual([]);
+      } finally {
+        backup.close();
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });
