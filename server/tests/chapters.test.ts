@@ -20,12 +20,12 @@ type Turn = { role: string; content: string };
 
 /** Every upstream call in order; request i gets `replies[i]`, held until `gate` resolves when one is set. */
 let replies: Reply[] = [];
-let calls: Array<{ messages: Turn[] }> = [];
+let calls: Array<{ model: string; messages: Turn[] }> = [];
 let gate: Promise<void> | null = null;
 let arrived = Promise.withResolvers<void>();
 
 const upstream = (async (_input: string | URL | Request, init?: RequestInit) => {
-  calls.push(JSON.parse(String(init?.body)) as { messages: Turn[] });
+  calls.push(JSON.parse(String(init?.body)) as { model: string; messages: Turn[] });
   arrived.resolve();
   const reply = replies.shift() ?? "Onward.";
   if (gate) await gate;
@@ -38,11 +38,12 @@ const upstream = (async (_input: string | URL | Request, init?: RequestInit) => 
 
 let configDirectory: string;
 let server: TestServer;
+let providerId: string;
 
 beforeAll(async () => {
   configDirectory = await makeConfigDirectory();
   server = await startTestServer({ configDirectory, databasePath: join(configDirectory, "chapters.db"), upstreamFetch: upstream });
-  await configureProvider(server.url, "sk-chapters-test-key");
+  providerId = await configureProvider(server.url, "sk-chapters-test-key");
 });
 
 afterAll(async () => {
@@ -277,5 +278,28 @@ describe("summary calls", () => {
     expect(body.code).toBe("upstream_unavailable");
     expect(body.error).not.toContain("boom");
     expect(await chapters(chat)).toEqual([]);
+  });
+});
+
+describe("summary model", () => {
+  test("summaries use the saved summary model, else the narrator's, unless the request names one", async () => {
+    const chat = await seedChat();
+    await play(chat, ["The harbor wakes.", "The ferry sails."], ["I board the ferry."]);
+    const lastModel = () => calls.at(-1)!.model;
+
+    expect((await api("PUT", "/api/summary-model-selection", { provider_id: "missing", model: "cheap-summarizer" })).status).toBe(404);
+    const saved = await api("PUT", "/api/summary-model-selection", { provider_id: providerId, model: "cheap-summarizer" });
+    expect(await saved.json()).toEqual({ summary_selection: { provider_id: providerId, model: "cheap-summarizer" } });
+    const first = await summarize(chat, 1, "The harbor woke.");
+    expect(lastModel()).toBe("cheap-summarizer");
+    expect(first.model).toBe("cheap-summarizer");
+
+    replies.push("The harbor woke at dawn.");
+    await api("POST", `/api/chats/${chat.id}/chapters/${first.id}/regenerate`, { provider_id: providerId, model: "named-model" });
+    expect(lastModel()).toBe("named-model");
+
+    expect(await (await api("DELETE", "/api/summary-model-selection")).json()).toEqual({ summary_selection: null });
+    await summarize(chat, 3, "Sable boarded.");
+    expect(lastModel()).toBe("glm-5.3");
   });
 });

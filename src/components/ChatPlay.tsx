@@ -129,7 +129,7 @@ function MessageRow(props: {
   onDeleteMessage: (messageId: string, scope?: "variant" | "after") => Promise<void>;
   onBranchMessage: (messageId: string) => Promise<void>;
   /** Offered on a completed narration after the last chapter: the chapter it would close. */
-  summarize?: { chapterNumber: number; messageCount: number; onSummarize: (messageId: string) => Promise<void> };
+  summarize?: { chapterNumber: number; messageCount: number; model: string; onSummarize: (messageId: string) => Promise<void> };
   /** The chapter whose summary stands in for this message; changing the message clears it. */
   coveredBy?: number;
   controls: MessageControls;
@@ -410,7 +410,7 @@ function MessageRow(props: {
       aria-label="Confirm summarizing up to this message"
     >
       <p className="text-sm text-muted">
-        Summarize {props.summarize.messageCount === 1 ? "this message" : `these ${props.summarize.messageCount} messages`} into chapter {props.summarize.chapterNumber}? The narrator gets the summary instead of them; the transcript keeps them.
+        Summarize {props.summarize.messageCount === 1 ? "this message" : `these ${props.summarize.messageCount} messages`} into chapter {props.summarize.chapterNumber} with {props.summarize.model}? The narrator gets the summary instead of them; the transcript keeps them.
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -803,7 +803,8 @@ export function ChatPlay(props: {
     return () => { current = false; };
   }, [props.chatId, transcriptKey]);
   const coveredThrough = chapters.at(-1)?.end_position ?? 0;
-  const canSummarize = actionsAllowed && !noModel;
+  const summaryModel = picker.summarySelection ?? selection;
+  const canSummarize = actionsAllowed && Boolean(summaryModel);
   const sentMessagesBetween = (start: number, end: number) => messages.filter((message) =>
     message.position >= start && message.position <= end && (message.role === "user" || message.status === "complete")).length;
   const updateChapters = (chatId: string, update: (chapters: Chapter[]) => Chapter[]) => {
@@ -817,7 +818,7 @@ export function ChatPlay(props: {
   };
   const handleSummarize = (messageId: string) => {
     const chatId = props.chatId;
-    return chapterAction(createChapter(chatId, messageId, selection), (chapter) => updateChapters(chatId, (current) => [...current, chapter]));
+    return chapterAction(createChapter(chatId, messageId, summaryModel), (chapter) => updateChapters(chatId, (current) => [...current, chapter]));
   };
   const replaceChapter = (chatId: string) => (chapter: Chapter) =>
     updateChapters(chatId, (current) => current.map((existing) => existing.id === chapter.id ? chapter : existing));
@@ -1136,6 +1137,7 @@ export function ChatPlay(props: {
                   onBranchMessage={handleBranchFromMessage}
                   summarize={summarizable ? {
                     chapterNumber: chapters.length + 1,
+                    model: summaryModel?.model ?? "",
                     messageCount: sentMessagesBetween(coveredThrough + 1, message.position),
                     onSummarize: handleSummarize,
                   } : undefined}
@@ -1151,7 +1153,7 @@ export function ChatPlay(props: {
                     canAct={actionsAllowed}
                     canSummarize={canSummarize}
                     onSave={(summary) => chapterAction(updateChapter(props.chatId, closes.id, summary), replaceChapter(props.chatId))}
-                    onRegenerate={() => chapterAction(regenerateChapter(props.chatId, closes.id, selection), replaceChapter(props.chatId))}
+                    onRegenerate={() => chapterAction(regenerateChapter(props.chatId, closes.id, summaryModel), replaceChapter(props.chatId))}
                     onDelete={() => {
                       const chatId = props.chatId;
                       return chapterAction(deleteChapter(chatId, closes.id), (left) => updateChapters(chatId, () => left));

@@ -23,6 +23,8 @@ export type ModelSelection = {
 export type ProviderList = {
   providers: Provider[];
   selection: ModelSelection | null;
+  /** The model that writes chapter summaries; null uses `selection`. */
+  summary_selection: ModelSelection | null;
 };
 
 export type ModelEntry = {
@@ -101,4 +103,9 @@ export function fetchModels(id: string, refresh = false): Promise<ModelListing> 
 
 export async function saveSelection(selection: ModelSelection): Promise<void> {
   await request("/api/model-selection", { method: "PUT", body: selection });
+}
+
+/** null goes back to summarizing with the narrator's model. */
+export async function saveSummarySelection(selection: ModelSelection | null): Promise<void> {
+  await request("/api/summary-model-selection", selection ? { method: "PUT", body: selection } : { method: "DELETE" });
 }

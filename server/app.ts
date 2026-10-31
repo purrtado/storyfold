@@ -154,7 +154,11 @@ async function handleProviders(
     if (id === undefined) {
       if (request.method === "GET") {
         const config = await ctx.store.load();
-        return jsonResponse({ providers: config.providers.map(publicProvider), selection: config.selection });
+        return jsonResponse({
+          providers: config.providers.map(publicProvider),
+          selection: config.selection,
+          summary_selection: config.summary_selection,
+        });
       }
       if (request.method === "POST") {
         const body = await readObjectBody(request);
@@ -197,6 +201,20 @@ async function handleModelSelection(request: Request, ctx: AppContext): Promise<
   if (body instanceof Response) return body;
   try {
     return jsonResponse({ selection: await ctx.store.setSelection(parseSelection(body)) });
+  } catch (error) {
+    if (error instanceof ProviderNotFoundError) return notFound("Unknown provider");
+    return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
+  }
+}
+
+/** PUT names the model that writes chapter summaries; DELETE goes back to the narrator's model. */
+async function handleSummaryModelSelection(request: Request, ctx: AppContext): Promise<Response> {
+  try {
+    if (request.method === "DELETE") return jsonResponse({ summary_selection: await ctx.store.setSummarySelection(null) });
+    if (request.method !== "PUT") return jsonError(405, "Method not allowed");
+    const body = await readObjectBody(request);
+    if (body instanceof Response) return body;
+    return jsonResponse({ summary_selection: await ctx.store.setSummarySelection(parseSelection(body)) });
   } catch (error) {
     if (error instanceof ProviderNotFoundError) return notFound("Unknown provider");
     return domainErrorResponse(error) ?? jsonError(500, "Internal server error");
@@ -734,7 +752,7 @@ async function handlePlayPost(
 /**
  * Chapter summaries are written synchronously: the response carries the
  * finished chapter. An optional `provider_id` plus `model` pair overrides the
- * saved selection, like play requests.
+ * saved summary model, which falls back to the narrator's selection.
  */
 async function handleChapters(
   request: Request,
@@ -768,7 +786,7 @@ async function handleChapters(
     const input = chapterId === undefined ? parseChapterInput(body) : null;
     const requested = body.provider_id !== undefined || body.model !== undefined ? parseSelection(body) : null;
     const config = await ctx.store.load();
-    const settings = selectedSettings(config, requested ?? config.selection);
+    const settings = selectedSettings(config, requested ?? config.summary_selection ?? config.selection);
     if (!settings) {
       return jsonError(400, "No model selected. Add a provider in Settings.", undefined, { code: "no_provider" });
     }
@@ -887,6 +905,7 @@ async function route(request: Request, pathname: string, ctx: AppContext): Promi
 
   if (resource === "providers") return handleProviders(request, segments[2], segments[3], ctx);
   if (resource === "model-selection") return handleModelSelection(request, ctx);
+  if (resource === "summary-model-selection") return handleSummaryModelSelection(request, ctx);
   if (resource === "stats") return handleStats(request, segments[2], ctx.db);
   if (resource === "prompt-cards") return handlePromptCards(request, segments[2], ctx.db);
   if (resource === "prompt-presets") return handlePromptPresets(request, segments[2], segments[3], ctx.db);

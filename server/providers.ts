@@ -46,6 +46,8 @@ export interface ModelSelection {
 export interface ProviderConfig {
   providers: StoredProvider[];
   selection: ModelSelection | null;
+  /** The model that writes chapter summaries; null uses `selection`. */
+  summary_selection: ModelSelection | null;
 }
 
 export interface PublicProvider {
@@ -211,7 +213,7 @@ export function parseSelection(body: Record<string, unknown>): ModelSelection {
 }
 
 function emptyConfig(): ProviderConfig {
-  return { providers: [], selection: null };
+  return { providers: [], selection: null, summary_selection: null };
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -259,10 +261,18 @@ function migrateLegacyConfig(record: Record<string, unknown>): ProviderConfig | 
       reasoning: {},
       updated_at: record.updated_at,
     };
-    return { providers: [provider], selection: { provider_id: provider.id, model: record.model } };
+    return { providers: [provider], selection: { provider_id: provider.id, model: record.model }, summary_selection: null };
   } catch {
     return null;
   }
+}
+
+/** A stored selection naming an existing provider; anything else is dropped. */
+function storedSelection(stored: unknown, providers: ReadonlyArray<StoredProvider>): ModelSelection | null {
+  if (typeof stored !== "object" || stored === null || !("model" in stored) || !("provider_id" in stored)) return null;
+  const { model, provider_id } = stored;
+  if (!isValidModel(model) || typeof provider_id !== "string" || !providers.some((provider) => provider.id === provider_id)) return null;
+  return { provider_id, model };
 }
 
 function parseStoredConfig(raw: string): ProviderConfig {
@@ -279,15 +289,11 @@ function parseStoredConfig(raw: string): ProviderConfig {
   const providers = record.providers
     .map(parseStoredProvider)
     .filter((provider): provider is StoredProvider => provider !== null);
-  const stored = record.selection as Record<string, unknown> | null | undefined;
-  const selection =
-    typeof stored === "object"
-    && stored !== null
-    && isValidModel(stored.model)
-    && providers.some((provider) => provider.id === stored.provider_id)
-      ? { provider_id: stored.provider_id as string, model: stored.model }
-      : null;
-  return { providers, selection };
+  return {
+    providers,
+    selection: storedSelection(record.selection, providers),
+    summary_selection: storedSelection(record.summary_selection, providers),
+  };
 }
 
 export class ProviderNotFoundError extends Error {}
@@ -391,6 +397,7 @@ export class ProviderStore {
       config.providers = config.providers.filter((provider) => provider.id !== id);
       if (config.providers.length === before) throw new ProviderNotFoundError();
       if (config.selection?.provider_id === id) config.selection = null;
+      if (config.summary_selection?.provider_id === id) config.summary_selection = null;
     });
   }
 
@@ -400,6 +407,17 @@ export class ProviderStore {
         throw new ProviderNotFoundError();
       }
       config.selection = selection;
+      return selection;
+    });
+  }
+
+  /** null goes back to summarizing with the narrator's model. */
+  setSummarySelection(selection: ModelSelection | null): Promise<ModelSelection | null> {
+    return this.mutate((config) => {
+      if (selection && !config.providers.some((provider) => provider.id === selection.provider_id)) {
+        throw new ProviderNotFoundError();
+      }
+      config.summary_selection = selection;
       return selection;
     });
   }
